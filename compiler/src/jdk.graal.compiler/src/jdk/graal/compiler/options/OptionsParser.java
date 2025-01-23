@@ -101,6 +101,9 @@ public class OptionsParser {
     public static LibGraalOptionsInfo setLibgraalOptions(LibGraalOptionsInfo info) {
         GraalError.guarantee(inImageBuildtimeCode(), "Can only set libgraal compiler options when building libgraal");
         GraalError.guarantee(libgraalOptions == null, "Libgraal compiler options must be set exactly once");
+        System.out.println("==> setLibgraalOptions(" + info + ")");
+        System.out.println("    " + info.enterpriseOptions);
+        new Throwable().printStackTrace(System.out);
         OptionsParser.libgraalOptions = info;
         return info;
     }
@@ -357,6 +360,9 @@ public class OptionsParser {
     }
 
     static boolean isEnterpriseOption(OptionDescriptor desc) {
+        System.out.println("==> isEnterpriseOption(" + desc + ")");
+        System.out.println("    " + libgraalOptions);
+        System.out.println("    " + libgraalOptions.enterpriseOptions);
         if (inImageRuntimeCode()) {
             return Objects.requireNonNull(libgraalOptions.enterpriseOptions, "missing options").contains(desc.getName());
         }

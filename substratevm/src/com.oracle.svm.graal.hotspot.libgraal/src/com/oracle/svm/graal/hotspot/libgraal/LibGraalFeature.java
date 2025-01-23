@@ -299,6 +299,7 @@ public final class LibGraalFeature implements Feature {
 
         @Override
         public void accept(Object option) {
+            System.out.println("==> OptionCollector::accept(" + option + ")");
             if (sealed) {
                 VMError.guarantee(options.contains(option), "All options must have been discovered during static analysis: %s", option);
             } else {

@@ -48,6 +48,7 @@ import com.oracle.svm.core.option.XOptions;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.graal.hotspot.LibGraalJNIMethodScope;
 import com.oracle.svm.util.ClassUtil;
+import com.oracle.svm.util.LogUtils;
 import com.oracle.truffle.compiler.TruffleCompilerOptionDescriptor;
 import com.oracle.truffle.compiler.hotspot.libgraal.TruffleToLibGraal;
 import com.oracle.truffle.compiler.hotspot.libgraal.TruffleToLibGraal.Id;
@@ -326,11 +327,13 @@ final class LibGraalEntryPoints {
     static EconomicMap<String, OptionDescriptor> vmOptionDescriptors = EconomicMap.create();
 
     static void initializeOptions(Map<String, String> settings) {
+        LogUtils.info("==> initializeOptions(" + settings.toString() + ")");
         EconomicMap<String, String> nonXSettings = processXOptions(settings);
         EconomicMap<OptionKey<?>, Object> vmOptionValues = OptionValues.newOptionMap();
         Iterable<OptionDescriptors> vmOptionLoader = List.of(new OptionDescriptorsMap(vmOptionDescriptors));
         OptionsParser.parseOptions(nonXSettings, vmOptionValues, vmOptionLoader);
         RuntimeOptionValues.singleton().update(vmOptionValues);
+        LogUtils.info("  " + RuntimeOptionValues.singleton());
     }
 
     /**
@@ -355,6 +358,8 @@ final class LibGraalEntryPoints {
     }
 
     static void printOptions(PrintStream out, String prefix) {
+        LogUtils.info("==> printOptions(.., " + prefix + ")");
+        LogUtils.info("  " + RuntimeOptionValues.singleton());
         RuntimeOptionValues vmOptions = RuntimeOptionValues.singleton();
         Iterable<OptionDescriptors> vmOptionLoader = Collections.singletonList(new OptionDescriptorsMap(vmOptionDescriptors));
         vmOptions.printHelp(vmOptionLoader, out, prefix, true);

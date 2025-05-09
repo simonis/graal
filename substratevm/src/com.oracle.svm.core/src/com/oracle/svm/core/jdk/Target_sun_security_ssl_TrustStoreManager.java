@@ -26,6 +26,8 @@ package com.oracle.svm.core.jdk;
 
 import java.io.File;
 import java.security.KeyStore;
+import java.security.Provider;
+import java.security.Security;
 import java.security.cert.X509Certificate;
 import java.util.Set;
 
@@ -69,10 +71,21 @@ final class TrustStoreManagerFeature implements InternalFeature {
     public void afterRegistration(AfterRegistrationAccess access) {
         try {
             Class<?> trustStoreManagerClass = access.findClassByName(TRUST_STORE_MANAGER_CLASS_NAME);
+            Provider providers[] = Security.getProviders();
+            String ACCP = "AmazonCorrettoCryptoProvider";
+            Provider accp = null;
+            if (providers.length > 0 && ACCP.equals(providers[0].getName())) {
+                System.out.println("TrustStoreManagerFeature: temporary removing ACCP as default provider");
+                accp = providers[0];
+                Security.removeProvider(ACCP);
+            }
             @SuppressWarnings("unchecked")
             Set<X509Certificate> trustedCerts = (Set<X509Certificate>) ReflectionUtil.lookupMethod(trustStoreManagerClass, "getTrustedCerts").invoke(null);
             KeyStore trustedKeyStore = (KeyStore) ReflectionUtil.lookupMethod(trustStoreManagerClass, "getTrustedKeyStore").invoke(null);
-
+            if (accp != null) {
+                System.out.println("TrustStoreManagerFeature: re-adding ACCP as default provider");
+                Security.insertProviderAt(accp, 1);
+            }
             ImageSingletons.add(TrustStoreManagerSupport.class, new TrustStoreManagerSupport(trustedCerts, trustedKeyStore));
         } catch (ReflectiveOperationException ex) {
             throw VMError.shouldNotReachHere(ex);

@@ -1056,7 +1056,16 @@ suite = {
             "sourceDirs": ["src"],
             "dependencies": [
                 "com.oracle.svm.util",
+                "com.oracle.svm.core",
             ],
+            "requires" : [
+                "org.graalvm.nativeimage.builder"
+            ],
+            "requiresConcealed" : {
+                "org.graalvm.nativeimage.builder" : [
+                    "com.oracle.svm.core.jdk",
+                ],
+            },
             "checkstyle": "com.oracle.svm.core",
             "javaCompliance" : "17+",
             "annotationProcessors": [

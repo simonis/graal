@@ -14,8 +14,10 @@ import org.graalvm.nativeimage.hosted.RuntimeClassInitialization;
 import org.graalvm.nativeimage.hosted.RuntimeResourceAccess;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -27,7 +29,7 @@ final class AccpFeature implements Feature {
     private static final String JNI_LIBRARY_NAME = "amazonCorrettoCryptoProvider";
     private static final String ACCP_PACKAGE = "com.amazon.corretto.crypto.provider.";
     private static final String ACCP_NAME = ACCP_PACKAGE + "AmazonCorrettoCryptoProvider";
-    private static final String USE_EXTERNAL_LIB = ACCP_PACKAGE + "useExternalLib";
+    private static final String USE_EXTERNAL_LIB = ACCP_PACKAGE + "useExternalLibInNativeImage";
 
     @Override
     public String getDescription() {
@@ -53,10 +55,8 @@ final class AccpFeature implements Feature {
         RuntimeResourceAccess.addResource(accpProvider.getModule(), "com/amazon/corretto/crypto/provider/version.properties");
         if (!Boolean.getBoolean(USE_EXTERNAL_LIB)) {
             // If we don't load `libamazonCorrettoCryptoProvider.so` from the file system, we have to embed it into the image.
-            String javaHome = System.getProperty("java.home");
-            assert javaHome != null;
-            Path p = Path.of(javaHome, "lib", accpLibName);
-            // Now embed `libamazonCorrettoCryptoProvider.so` into the native image. It will be extracted and laoded at runtime.
+            Path p = Path.of(System.getProperty("java.home"), "lib", accpLibName);
+            // Now embed `libamazonCorrettoCryptoProvider.so` into the native image. It will be extracted and loaded at runtime.
             // Eventually, ACCP could provide a static version of `libamazonCorrettoCryptoProvider.so` which can be linked
             // right into the native image to avoid extraction and loading at runtime.
             // Another alternative is to use the shared library which `native-image` will by default place in the same directory
@@ -65,8 +65,8 @@ final class AccpFeature implements Feature {
                 // This is for the case where ACCP is bundled with the JDK and `libamazonCorrettoCryptoProvider.so`
                 // can be found under the JDK's `lib/` directory.
                 try {
-                    byte[] b = Files.readAllBytes(p);
-                    RuntimeResourceAccess.addResource(accpProvider.getModule(), "com/amazon/corretto/crypto/provider/" + accpLibName, Files.readAllBytes(Path.of(javaHome, "lib", accpLibName)));
+                    byte[] accpBytes = Files.readAllBytes(p);
+                    RuntimeResourceAccess.addResource(accpProvider.getModule(), "com/amazon/corretto/crypto/provider/" + accpLibName, accpBytes);
                 } catch (IOException ioe) {
                     System.out.println("AccpFeature: WARNING : can't inject ACCP library " + p.toString());
                     ioe.printStackTrace(System.out);
@@ -97,6 +97,28 @@ final class AccpFeature implements Feature {
             // `libamazonCorrettoCryptoProvider.so` from the native image itself (see call to `RuntimeResourceAccess.addResource()`
             // in `beforeAnalysis()` above) in order to make it self-contained.
             NativeLibrarySupport.singleton().preregisterUninitializedBuiltinLibrary(JNI_LIBRARY_NAME);
+        }
+    }
+
+    @Override
+    public void afterImageWrite(AfterImageWriteAccess a) {
+        if (Boolean.getBoolean(USE_EXTERNAL_LIB)) {
+            String accpLibName = System.mapLibraryName(JNI_LIBRARY_NAME);
+            Class<?> accpProvider = a.findClassByName(ACCP_NAME);
+            assert accpProvider != null;
+
+            Path destPath = a.getImagePath().resolveSibling(accpLibName);
+            InputStream accpInputStream = accpProvider.getResourceAsStream("com/amazon/corretto/crypto/provider/" + accpLibName);
+            if (accpInputStream != null) {
+                try {
+                    Files.copy(accpInputStream, destPath, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException | NullPointerException e) {
+                    System.out.println("AccpFeature: WARNING : can't copy ACCP library to " + destPath);
+                    e.printStackTrace(System.out);
+                }
+            } else {
+                System.out.println("AccpFeature: WARNING : can't find com/amazon/corretto/crypto/provider/" + accpLibName);
+            }
         }
     }
 

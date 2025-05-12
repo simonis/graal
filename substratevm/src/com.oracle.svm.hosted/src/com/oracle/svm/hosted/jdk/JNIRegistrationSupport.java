@@ -89,6 +89,11 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
     private final ConcurrentMap<String, Boolean> registeredLibraries = new ConcurrentHashMap<>();
     private NativeLibraries nativeLibraries = null;
     private boolean isSunMSCAPIProviderReachable = false;
+    // From com.amazon.corretto.crypto.provider.Loader
+    private static final String ACCP_LIBRARY_NAME = "amazonCorrettoCryptoProvider";
+    private static final String ACCP_PACKAGE = "com.amazon.corretto.crypto.provider.";
+    private static final String USE_EXTERNAL_ACCP_LIB = ACCP_PACKAGE + "useExternalLibInNativeImage";
+    private boolean isAccpReachable = false;
 
     public static JNIRegistrationSupport singleton() {
         return ImageSingletons.lookup(JNIRegistrationSupport.class);
@@ -105,6 +110,8 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
             var optSunMSCAPIClass = optionalClazz(access, "sun.security.mscapi.SunMSCAPI");
             isSunMSCAPIProviderReachable = optSunMSCAPIClass.isPresent() && access.isReachable(optSunMSCAPIClass.get());
         }
+        var optAccpClass = optionalClazz(access, "sun.security.mscapi.SunMSCAPI");
+        isAccpReachable = optAccpClass.isPresent() && access.isReachable(optAccpClass.get());
     }
 
     @Override
@@ -246,6 +253,15 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                     /*
                      * Ignore `sunmscapi` library if `SunMSCAPI` provider is not reachable (it's
                      * always registered as a workaround in `Target_java_security_Provider`).
+                     */
+                    debug.log(DebugContext.INFO_LEVEL, "%s: IGNORED", library);
+                    continue;
+                }
+
+                if (libname.equals(ACCP_LIBRARY_NAME) && (!isAccpReachable || Boolean.getBoolean(USE_EXTERNAL_ACCP_LIB))) {
+                    /*
+                     * Ignore `amazonCorrettoCryptoProvider` library if `AmazonCorrettoCryptoProvider` provider is not reachable
+                     * or if we are building with USE_EXTERNAL_ACCP_LIB=true.
                      */
                     debug.log(DebugContext.INFO_LEVEL, "%s: IGNORED", library);
                     continue;

@@ -1,15 +1,9 @@
 package com.oracle.svm.thirdparty.accp;
 
-import com.oracle.svm.core.annotate.Alias;
-import com.oracle.svm.core.annotate.RecomputeFieldValue;
-import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
+import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.jdk.NativeLibrarySupport;
-import com.oracle.svm.util.ReflectionUtil;
 import org.graalvm.nativeimage.hosted.Feature;
-import org.graalvm.nativeimage.hosted.Feature.IsInConfigurationAccess;
-import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 import org.graalvm.nativeimage.hosted.RuntimeClassInitialization;
 import org.graalvm.nativeimage.hosted.RuntimeResourceAccess;
 
@@ -19,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 
 // Eventually, this feature should be moved to ACCP and enabled by a Native Image Build Configuration
 // in ACCP's `META_INF/native-image/software.amazon.cryptools/AmazonCorrettoCryptoProvider/native-image.properties`.
@@ -29,7 +22,7 @@ final class AccpFeature implements Feature {
     private static final String JNI_LIBRARY_NAME = "amazonCorrettoCryptoProvider";
     private static final String ACCP_PACKAGE = "com.amazon.corretto.crypto.provider.";
     private static final String ACCP_NAME = ACCP_PACKAGE + "AmazonCorrettoCryptoProvider";
-    private static final String USE_EXTERNAL_LIB = ACCP_PACKAGE + "useExternalLibInNativeImage";
+    public static final String USE_EXTERNAL_LIB = ACCP_PACKAGE + "useExternalLibInNativeImage";
 
     @Override
     public String getDescription() {
@@ -90,14 +83,6 @@ final class AccpFeature implements Feature {
         RuntimeClassInitialization.initializeAtBuildTime("com.amazon.corretto.crypto.provider.SelfTestSuite$SelfTest");
         RuntimeClassInitialization.initializeAtBuildTime("com.amazon.corretto.crypto.provider.SelfTestResult");
         RuntimeClassInitialization.initializeAtBuildTime("com.amazon.corretto.crypto.provider.SelfTestStatus");
-
-        if (!Boolean.getBoolean(USE_EXTERNAL_LIB)) {
-            // This is required to avoid copying `libamazonCorrettoCryptoProvider.so` near to the generated native executable as
-            // a "required" library in `JNIRegistrationSupport::copyJDKLibraries()`. In the native image, ACCP will unpack and load
-            // `libamazonCorrettoCryptoProvider.so` from the native image itself (see call to `RuntimeResourceAccess.addResource()`
-            // in `beforeAnalysis()` above) in order to make it self-contained.
-            NativeLibrarySupport.singleton().preregisterUninitializedBuiltinLibrary(JNI_LIBRARY_NAME);
-        }
     }
 
     @Override
@@ -108,34 +93,35 @@ final class AccpFeature implements Feature {
             assert accpProvider != null;
 
             Path destPath = a.getImagePath().resolveSibling(accpLibName);
-            InputStream accpInputStream = accpProvider.getResourceAsStream("com/amazon/corretto/crypto/provider/" + accpLibName);
+            InputStream accpInputStream = accpProvider.getResourceAsStream(accpLibName);
             if (accpInputStream != null) {
                 try {
                     Files.copy(accpInputStream, destPath, StandardCopyOption.REPLACE_EXISTING);
+                    BuildArtifacts.singleton().add(BuildArtifacts.ArtifactType.SHARED_LIBRARY, destPath);
                 } catch (IOException | NullPointerException e) {
                     System.out.println("AccpFeature: WARNING : can't copy ACCP library to " + destPath);
                     e.printStackTrace(System.out);
                 }
             } else {
-                System.out.println("AccpFeature: WARNING : can't find com/amazon/corretto/crypto/provider/" + accpLibName);
+                System.out.println("AccpFeature: WARNING : can't find resource " +
+                        accpProvider.getPackageName().replace(".", "/") + "/" + accpLibName);
             }
         }
     }
+}
 
-    @TargetClass(className = "com.amazon.corretto.crypto.provider.Loader", onlyWith = UseExternalLib.class)
-    final static class Target_com_amazon_corretto_crypto_provider_Loader {
-        @Substitute
-        private static void tryLoadLibraryFromJar() throws IOException {
-            throw new IOException("This native image was compiled with `" + USE_EXTERNAL_LIB + "=true` and therefore " +
-                    "expects `libamazonCorrettoCryptoProvider.so` in the same directory like the native executable.");
-        }
+@TargetClass(className = "com.amazon.corretto.crypto.provider.Loader", onlyWith = UseExternalLib.class)
+final class Target_com_amazon_corretto_crypto_provider_Loader {
+    @Substitute
+    private static void tryLoadLibraryFromJar() throws IOException {
+        throw new IOException("This native image was compiled with `" + AccpFeature.USE_EXTERNAL_LIB + "=true` and therefore " +
+                "expects `libamazonCorrettoCryptoProvider.so` in the same directory like the native executable.");
     }
+}
 
-    final static class UseExternalLib implements Predicate<String> {
-        @Override
-        public boolean test(String className) {
-            return ReflectionUtil.lookupClass(true, className) != null && Boolean.getBoolean(USE_EXTERNAL_LIB);
-        }
+final class UseExternalLib implements Predicate<String> {
+    @Override
+    public boolean test(String className) {
+        return Boolean.getBoolean(AccpFeature.USE_EXTERNAL_LIB);
     }
-
 }

@@ -258,10 +258,10 @@ public final class JNIRegistrationSupport extends JNIRegistrationUtil implements
                     continue;
                 }
 
-                if (libname.equals(ACCP_LIBRARY_NAME) && (!isAccpReachable || Boolean.getBoolean(USE_EXTERNAL_ACCP_LIB))) {
+                if (libname.equals(ACCP_LIBRARY_NAME) && (!isAccpReachable || !Boolean.getBoolean(USE_EXTERNAL_ACCP_LIB))) {
                     /*
                      * Ignore `amazonCorrettoCryptoProvider` library if `AmazonCorrettoCryptoProvider` provider is not reachable
-                     * or if we are building with USE_EXTERNAL_ACCP_LIB=true.
+                     * or if we are building with USE_EXTERNAL_ACCP_LIB=false.
                      */
                     debug.log(DebugContext.INFO_LEVEL, "%s: IGNORED", library);
                     continue;

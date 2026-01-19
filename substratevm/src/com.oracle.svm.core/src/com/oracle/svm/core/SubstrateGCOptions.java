@@ -28,6 +28,7 @@ import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.I
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.IsolateCreationOnly;
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RegisterForIsolateArgumentParser;
 
+import com.oracle.svm.core.util.UserError;
 import org.graalvm.collections.EconomicMap;
 
 import com.oracle.svm.core.heap.HeapSizeVerifier;
@@ -40,6 +41,9 @@ import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
 import jdk.graal.compiler.word.Word;
+
+import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Garbage collection-specific options that are supported by all garbage collectors. Some of these
@@ -99,6 +103,15 @@ public class SubstrateGCOptions {
 
     @Option(help = "Print more information about the heap before and after each collection.", type = OptionType.Expert)//
     public static final RuntimeOptionKey<Boolean> VerboseGC = new NotifyGCRuntimeOptionKey<>(false);
+
+    @Option(help = "The log level for the VerboseGC option. Corresponds to the HotSpot Unified Logging log levels, i.e. one " +
+                   "of ['off', 'trace', 'debug', 'info', 'warning', 'error'] (defaults to 'info').", type = OptionType.Expert)//
+    public static final RuntimeOptionKey<String> VerboseGCLevel = new NotifyGCRuntimeOptionKey<>("info", key -> {
+        List<String> logLevels = List.of("off", "trace", "debug", "info", "warning", "error");
+        if (!logLevels.contains(key.getValue())) {
+            throw UserError.invalidOptionValue(key, key.getValue(), "Invalid value, use one of " + logLevels);
+        }
+    });
 
     @Option(help = "Verify the heap before and after each collection.", type = OptionType.Debug)//
     public static final HostedOptionKey<Boolean> VerifyHeap = new HostedOptionKey<>(false);

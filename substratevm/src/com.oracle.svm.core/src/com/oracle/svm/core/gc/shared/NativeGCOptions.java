@@ -329,7 +329,12 @@ public class NativeGCOptions {
                         HostedOptionKey<?> key = (HostedOptionKey<?>) field.get(null);
                         if (shouldPassToCpp(key)) {
                             buffer.putString(key.getName());
-                            buffer.putPrimitive(key.getValueOrDefault(map));
+                            Object val = key.getValueOrDefault(map);
+                            if (val instanceof String strVal) {
+                                buffer.putString(strVal);
+                            } else {
+                                buffer.putPrimitive(val);
+                            }
                         }
                     }
                 } catch (IllegalArgumentException | IllegalAccessException e) {
@@ -368,7 +373,12 @@ public class NativeGCOptions {
                         RuntimeOptionKey<?> key = (RuntimeOptionKey<?>) field.get(null);
                         if (key.hasBeenSet(optionValues)) {
                             buffer.putString(key.getName());
-                            buffer.putPrimitive(key.getValue(optionValues));
+                            Object val = key.getValue(optionValues);
+                            if (val instanceof String strVal) {
+                                buffer.putString(strVal);
+                            } else {
+                                buffer.putPrimitive(val);
+                            }
                         }
                     }
                 } catch (IllegalArgumentException | IllegalAccessException e) {

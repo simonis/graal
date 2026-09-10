@@ -190,6 +190,19 @@ public class ShenandoahBarrierSet extends BarrierSet {
         }
     }
 
+    /**
+     * A card barrier is only meaningful for stores into the Java heap, i.e. when the store address
+     * is based on an object. Reference stores through raw addresses (for example SubstrateVM's VM
+     * thread locals, which live outside the heap but may hold object references and thus carry a
+     * {@link BarrierType#FIELD} barrier for the SATB pre-write barrier) must not mark cards: the
+     * card table is indexed by heap address, so computing a card for a non-heap address writes to
+     * an arbitrary location outside the card table.
+     */
+    private static boolean hasObjectBase(AddressNode address) {
+        ValueNode base = address.getBase();
+        return base != null && base.stamp(NodeView.DEFAULT) instanceof AbstractObjectStamp;
+    }
+
     private void addWriteBarriers(FixedAccessNode node, ValueNode writtenValue, ValueNode expectedValue) {
         BarrierType barrierType = node.getBarrierType();
         switch (barrierType) {
@@ -212,7 +225,7 @@ public class ShenandoahBarrierSet extends BarrierSet {
                          */
                         addShenandoahSATBBarrier(node, node.getAddress(), writtenValue, expectedValue, graph);
                     }
-                    if (!init && useCardBarrier && !StampTool.isPointerAlwaysNull(writtenValue)) {
+                    if (!init && useCardBarrier && !StampTool.isPointerAlwaysNull(writtenValue) && hasObjectBase(node.getAddress())) {
                         graph.addAfterFixed(node, graph.add(new ShenandoahCardBarrierNode(node.getAddress())));
                     }
                 }

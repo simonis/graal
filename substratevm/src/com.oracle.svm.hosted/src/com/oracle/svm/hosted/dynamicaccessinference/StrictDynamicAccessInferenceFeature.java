@@ -26,7 +26,6 @@ package com.oracle.svm.hosted.dynamicaccessinference;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
@@ -48,25 +47,26 @@ import org.graalvm.nativeimage.hosted.RuntimeProxyCreation;
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
 import org.graalvm.nativeimage.hosted.RuntimeResourceAccess;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
-import com.oracle.graal.pointsto.util.GraalAccess;
 import com.oracle.svm.core.ParsingReason;
 import com.oracle.svm.core.annotate.Delete;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.hub.PredefinedClassesSupport;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.hub.registry.ClassRegistries;
 import com.oracle.svm.hosted.ExceptionSynthesizer;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.ReachabilityCallbackNode;
 import com.oracle.svm.hosted.substitute.DeletedElementException;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.OriginalClassProvider;
 import com.oracle.svm.util.TypeResult;
 
 import jdk.graal.compiler.nodes.ConstantNode;
@@ -84,6 +84,7 @@ import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.annotation.Annotated;
 
 /**
  * Feature for controlling the optimization independent inference of invocations which would
@@ -144,7 +145,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
     public void afterRegistration(AfterRegistrationAccess access) {
         FeatureImpl.AfterRegistrationAccessImpl accessImpl = (FeatureImpl.AfterRegistrationAccessImpl) access;
         applicationClassLoader = accessImpl.getApplicationClassLoader();
-        ConstantExpressionAnalyzer analyzer = new ConstantExpressionAnalyzer(GraalAccess.getOriginalProviders(), applicationClassLoader);
+        ConstantExpressionAnalyzer analyzer = new ConstantExpressionAnalyzer(GuestAccess.get().getProviders(), applicationClassLoader);
         registry = new ConstantExpressionRegistry(analyzer);
         ImageSingletons.add(ConstantExpressionRegistry.class, registry);
     }
@@ -296,7 +297,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
                 @Override
                 public boolean defaultHandler(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode... args) {
                     String className = registry.getArgument(b.getMethod(), b.bci(), targetMethod, 0, String.class);
-                    ClassLoader classLoader = ClassForNameSupport.respectClassLoader()
+                    ClassLoader classLoader = ClassRegistries.respectClassLoader()
                                     ? OriginalClassProvider.getJavaClass(b.getMethod().getDeclaringClass()).getClassLoader()
                                     : applicationClassLoader;
                     return tryToFoldClassForName(b, reason, initializationPlugin, targetMethod, className, true, classLoader);
@@ -311,7 +312,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
                     String className = registry.getArgument(b.getMethod(), b.bci(), targetMethod, 0, String.class);
                     Boolean initialize = registry.getArgument(b.getMethod(), b.bci(), targetMethod, 1, Boolean.class);
                     ClassLoader classLoader;
-                    if (ClassForNameSupport.respectClassLoader()) {
+                    if (ClassRegistries.respectClassLoader()) {
                         Object loader = registry.getArgument(b.getMethod(), b.bci(), targetMethod, 2);
                         if (loader == null) {
                             return false;
@@ -333,7 +334,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
 
             Object[] argValues = targetMethod.getParameters().length == 1
                             ? new Object[]{className}
-                            : new Object[]{className, initialize, ClassForNameSupport.respectClassLoader() ? classLoader : DynamicAccessInferenceLog.ignoreArgument()};
+                            : new Object[]{className, initialize, ClassRegistries.respectClassLoader() ? classLoader : DynamicAccessInferenceLog.ignoreArgument()};
 
             TypeResult<Class<?>> type = ImageClassLoader.findClass(className, false, classLoader);
             if (!type.isPresent()) {
@@ -461,11 +462,14 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
                  */
                 return null;
             }
-            return (T) analysisUniverse.replaceObject(element);
+            /* GR-71955: Migrate this feature's builder-object handling to JVMCI. */
+            JavaConstant constant = GuestAccess.get().getSnippetReflection().forObject(element);
+            JavaConstant replacedConstant = analysisUniverse.replaceConstantWithOrdinaryReplacers(constant);
+            return (T) analysisUniverse.getHostedValuesProvider().asObject(Object.class, replacedConstant);
         }
 
         private static <T> boolean isDeleted(T element, MetaAccessProvider metaAccess) {
-            AnnotatedElement annotated = null;
+            Annotated annotated = null;
             try {
                 if (element instanceof Executable) {
                     annotated = metaAccess.lookupJavaMethod((Executable) element);
@@ -483,7 +487,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
              * If ReportUnsupportedElementsAtRuntime is set looking up a @Delete-ed element will
              * return a substitution method that has the @Delete annotation.
              */
-            return annotated != null && annotated.isAnnotationPresent(Delete.class);
+            return annotated != null && GuestAnnotationAccess.isAnnotationPresent(annotated, Delete.class);
         }
 
         private void registerBulkPlugin(InvocationPlugins invocationPlugins, ParsingReason reason, String methodName, Consumer<Class<?>> registrationCallback) {

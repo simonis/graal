@@ -24,14 +24,15 @@
  */
 package com.oracle.svm.core.code;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.util.CounterFeature;
+import java.util.Arrays;
+import java.util.List;
+
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 
-import java.util.Arrays;
-import java.util.List;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.util.CounterFeature;
 
 @AutomaticallyRegisteredFeature
 public class CodeInfoFeature implements InternalFeature {

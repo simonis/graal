@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -273,6 +273,7 @@ import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.Equivalence;
 import org.graalvm.word.LocationIdentity;
 
+import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.bytecode.Bytecode;
@@ -460,7 +461,6 @@ import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.JavaTypeProfile;
 import jdk.vm.ci.meta.LineNumberTable;
 import jdk.vm.ci.meta.ProfilingInfo;
-import jdk.vm.ci.meta.RawConstant;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -984,7 +984,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         this.optimisticOpts = graphBuilderInstance.optimisticOpts;
         assert code.getCode() != null : method;
         this.stream = new BytecodeStream(code.getCode());
-        this.profilingInfo = graph.getProfilingInfo(method);
+        this.profilingInfo = parent == null ? graph.getProfilingInfo(graph.getCallerContext(), method) : graph.getProfilingInfo(getCallerPosition(parent), method);
         this.constantPool = code.getConstantPool();
         this.intrinsicContext = intrinsicContext;
         this.entryBCI = entryBCI;
@@ -1017,12 +1017,36 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
 
         /*
          * If some code (via graph builder config) requested to not use allocations with exceptions
-         * or the user explicitly we disable it.
+         * or the user explicitly disables it, keep allocation nodes non-throwing.
          */
         boolean userUseAllocWithException = BytecodeParserOptions.DoNotMoveAllocationsWithOOMEHandlers.getValue(graph.getOptions());
         this.disableExplicitAllocationExceptionEdges = !userUseAllocWithException || graphBuilderConfig.oomeExceptionEdges() == ExplicitOOMEExceptionEdges.DisableOOMEExceptionEdges;
         this.calleeInOOMEBlock = graphBuilderConfig.oomeExceptionEdges() == ExplicitOOMEExceptionEdges.ForceOOMEExceptionEdges;
         assert !disableExplicitAllocationExceptionEdges || !calleeInOOMEBlock : Assertions.errorMessage("Cannot force callee to have exception edges if we explicitly disable them everywhere");
+    }
+
+    private static NodeSourcePosition getCallerPosition(BytecodeParser parent) {
+        BytecodeParser cur = parent;
+        // we use a list here to avoid iterating the call chain multiple times when building the
+        // context
+        List<NodeSourcePosition> callChain = null;
+        while (cur != null) {
+            if (callChain == null) {
+                callChain = new ArrayList<>();
+            }
+            NodeSourcePosition p = new NodeSourcePosition(null, cur.method, cur.bci());
+            callChain.add(p);
+            cur = cur.parent;
+        }
+        if (callChain == null) {
+            return null;
+        }
+        // callChain(0) is the leaf and callChain(size-1) is the start of the call chain
+        NodeSourcePosition toLeaf = callChain.getLast();
+        for (int i = callChain.size() - 2; i >= 0; i--) {
+            toLeaf = callChain.get(i).addCaller(toLeaf);
+        }
+        return toLeaf;
     }
 
     /**
@@ -1304,6 +1328,8 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
 
     private static final ParserSpeculation UNRESOLVED_CATCH_TYPE = new ParserSpeculation("UnresolvedCatchType", int.class);
 
+    private static final String OUT_OF_MEMORY_ERROR_TYPE_NAME = "Ljava/lang/OutOfMemoryError;";
+
     /**
      * Returns a speculation object if it's possible to speculate on an unresolved type or field at
      * the current bytecode location.
@@ -1336,6 +1362,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
             case NEW:
             case NEWARRAY:
             case ANEWARRAY:
+            case MULTIANEWARRAY:
                 return;
         }
         throw new GraalError("bytecode %s can't use precise deopts", Bytecodes.nameOf(bytecode));
@@ -1575,7 +1602,12 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     private void createHandleExceptionTarget(FixedWithNextNode afterExceptionLoaded, int bci, FrameStateBuilder dispatchState) {
         FixedWithNextNode afterInstrumentation = afterExceptionLoaded;
         for (NodePlugin plugin : graphBuilderConfig.getPlugins().getNodePlugins()) {
-            afterInstrumentation = plugin.instrumentExceptionDispatch(graph, afterInstrumentation, () -> dispatchState.create(bci, getNonIntrinsicAncestor(), false, null, null));
+            /*
+             * Run instrumentation before createTarget so plugins can still update the mutable
+             * dispatch state that is used for exception-handler merge construction.
+             */
+            afterInstrumentation = plugin.instrumentExceptionDispatch(graph, bci, afterInstrumentation, dispatchState,
+                            () -> dispatchState.create(bci, getNonIntrinsicAncestor(), false, null, null));
             assert afterInstrumentation.next() == null : "exception dispatch instrumentation will be linked to dispatch block";
         }
 
@@ -1899,7 +1931,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     /**
      * Creates a frame state for the current parse position.
      */
-    private FrameState createCurrentFrameState() {
+    protected FrameState createCurrentFrameState() {
         return frameState.create(bci(), getNonIntrinsicAncestor(), false, null, null);
     }
 
@@ -1962,6 +1994,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         ValueNode appendixNode = null;
 
         if (appendix != null) {
+            handleDynamicInvokeAppendix(appendix);
             appendixNode = ConstantNode.forConstant(appendix, getMetaAccess(), graph);
 
             frameState.push(JavaKind.Object, appendixNode);
@@ -1977,6 +2010,9 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         }
 
         return true;
+    }
+
+    protected void handleDynamicInvokeAppendix(@SuppressWarnings("unused") JavaConstant appendix) {
     }
 
     protected void genInvokeSpecial(int cpi, int opcode) {
@@ -1999,11 +2035,13 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         final ValueNode[] args;
         final InvokeKind kind;
         final JavaType returnType;
+        final ResolvedJavaType referencedType;
 
-        CurrentInvoke(ValueNode[] args, InvokeKind kind, JavaType returnType) {
+        CurrentInvoke(ValueNode[] args, InvokeKind kind, JavaType returnType, ResolvedJavaType referencedType) {
             this.args = args;
             this.kind = kind;
             this.returnType = returnType;
+            this.referencedType = referencedType;
         }
     }
 
@@ -2043,6 +2081,11 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     @Override
     public JavaType getInvokeReturnType() {
         return currentInvoke == null ? null : currentInvoke.returnType;
+    }
+
+    @Override
+    public ResolvedJavaType getInvokeReferencedType() {
+        return currentInvoke == null ? null : currentInvoke.referencedType;
     }
 
     private boolean forceInliningEverything;
@@ -2112,7 +2155,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
 
         InlineInfo inlineInfo = null;
         try {
-            currentInvoke = new CurrentInvoke(args, invokeKind, returnType);
+            currentInvoke = new CurrentInvoke(args, invokeKind, returnType, referencedType);
             Mark pluginMark = graph.getMark();
             if (tryNodePluginForInvocation(args, targetMethod)) {
                 if (TraceParserPlugins.getValue(options)) {
@@ -2227,7 +2270,6 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
      */
     protected void emitCheckForInvokeSuperSpecial(ValueNode[] args) {
         ResolvedJavaType callingClass = method.getDeclaringClass();
-        callingClass = getHostClass(callingClass);
         if (callingClass.isInterface()) {
             args[0] = emitIncompatibleClassChangeCheck(args[0], callingClass);
         }
@@ -2243,12 +2285,6 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
             guardingNode = append(new FixedGuardNode(condition, ClassCastException, None, false));
         }
         return append(PiNode.create(object, StampFactory.object(checkedTypeRef, true), guardingNode));
-    }
-
-    @SuppressWarnings("deprecation")
-    private static ResolvedJavaType getHostClass(ResolvedJavaType type) {
-        ResolvedJavaType hostClass = type.getHostClass();
-        return hostClass != null ? hostClass : type;
     }
 
     protected JavaTypeProfile getProfileForInvoke(InvokeKind invokeKind) {
@@ -2648,6 +2684,8 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
                     ValueNode receiver = invocationPluginReceiver.init(targetMethod, args).get(true);
                     ResolvedJavaField resolvedField = (ResolvedJavaField) field;
                     try (DebugCloseable context = openNodeContext(targetMethod, 1)) {
+                        // A nested BytecodeParser would record this dependency in build().
+                        graph.recordMethod(targetMethod);
                         genGetField(resolvedField, receiver);
                         notifyBeforeInline(targetMethod);
                         String reason = "inline accessor method (bytecode parsing)";
@@ -2752,7 +2790,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     protected boolean canInlinePartialIntrinsicExit() {
         assert !inRuntimeCode();
         return InlinePartialIntrinsicExitDuringParsing.getValue(options) && !inBuildtimeCode() &&
-                        method.getAnnotation(Snippet.class) == null;
+                        AnnotationValueSupport.getAnnotationValue(method, Snippet.class) == null;
     }
 
     private void printInlining(ResolvedJavaMethod targetMethod, ResolvedJavaMethod inlinedMethod, boolean success, String msg) {
@@ -2810,10 +2848,9 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     protected void parseAndInlineCallee(ResolvedJavaMethod targetMethod, ValueNode[] args, IntrinsicContext calleeIntrinsicContext) {
         FixedWithNextNode calleeBeforeUnwindNode = null;
         ValueNode calleeUnwindValue = null;
+        int invokeBci = bci();
 
-        try (InliningScope s = parsingIntrinsic() ? null
-                        : (calleeIntrinsicContext != null ? new IntrinsicScope(this, targetMethod, args)
-                                        : new InliningScope(this, targetMethod, args))) {
+        try (InliningScope s = parsingIntrinsic() ? null : (calleeIntrinsicContext != null ? new IntrinsicScope(this, targetMethod, args) : new InliningScope(this, targetMethod, args))) {
             BytecodeParser parser = graphBuilderInstance.createBytecodeParser(graph, this, targetMethod, INVOCATION_ENTRY_BCI, calleeIntrinsicContext);
             if (currentBlockCatchesOOME()) {
                 parser.calleeInOOMEBlock = true;
@@ -2856,8 +2893,19 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
          * FrameStates are not replaced.
          */
         if (calleeBeforeUnwindNode != null) {
-            calleeBeforeUnwindNode.setNext(handleException(calleeUnwindValue, bci(), false));
+            calleeBeforeUnwindNode.setNext(handleInlinedCalleeException(calleeUnwindValue, invokeBci));
         }
+    }
+
+    /**
+     * Handles an exception edge produced while parsing an inlined callee.
+     *
+     * @param calleeUnwindValue the value thrown by the inlined callee
+     * @param invokeBci the bytecode index of the call site in the caller
+     * @return the begin node for the caller-side exception dispatch
+     */
+    protected AbstractBeginNode handleInlinedCalleeException(ValueNode calleeUnwindValue, int invokeBci) {
+        return handleException(calleeUnwindValue, invokeBci, false);
     }
 
     private ValueNode processCalleeReturn(ResolvedJavaMethod targetMethod, InliningScope inliningScope, List<ReturnToCallerData> calleeReturnDataList) {
@@ -2947,8 +2995,8 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
                             ResolvedJavaMethod targetMethod = ((Invoke) stateSplit).getTargetMethod();
                             if (!inRuntimeCode()) {
                                 GraalError.guarantee(targetMethod != null, "%s has null target method", stateSplit);
-                                GraalError.guarantee(targetMethod.getAnnotation(Fold.class) != null ||
-                                                targetMethod.getAnnotation(Node.NodeIntrinsic.class) != null,
+                                GraalError.guarantee(AnnotationValueSupport.getAnnotationValue(targetMethod, Fold.class) != null ||
+                                                AnnotationValueSupport.getAnnotationValue(targetMethod, Node.NodeIntrinsic.class) != null,
                                                 "Target should be fold or intrinsic ", targetMethod);
                             }
                             state = new FrameState(BytecodeFrame.AFTER_BCI);
@@ -3183,8 +3231,8 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         throw new JsrNotSupportedBailout(msg);
     }
 
-    private ConstantNode getJsrConstant(long bci) {
-        JavaConstant nextBciConstant = new RawConstant(bci);
+    private ConstantNode getJsrConstant(int bci) {
+        JavaConstant nextBciConstant = JavaConstant.forInt(bci);
         Stamp nextBciStamp = StampFactory.forConstant(nextBciConstant);
         ConstantNode nextBciNode = new ConstantNode(nextBciConstant, nextBciStamp);
         return graph.unique(nextBciNode);
@@ -3204,7 +3252,7 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         } else {
             this.controlFlowSplit = true;
             double[] successorProbabilities = successorProbabilites(actualSuccessors.size(), keySuccessors, keyProbabilities);
-            IntegerSwitchNode switchNode = append(new IntegerSwitchNode(value, actualSuccessors.size(), keys, keySuccessors, SwitchProbabilityData.create(keyProbabilities, profileSource)));
+            IntegerSwitchNode switchNode = append(new IntegerSwitchNode(value, actualSuccessors.size(), keys, keySuccessors, SwitchProbabilityData.create(keyProbabilities, profileSource), false));
             for (int i = 0; i < actualSuccessors.size(); i++) {
                 switchNode.setBlockSuccessor(i, createBlockTarget(successorProbabilities[i], actualSuccessors.get(i), frameState));
             }
@@ -5074,9 +5122,11 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
     }
 
     /**
-     * Note that we only handle {@link OutOfMemoryError} catch blocks here and no subclasses.
-     * JVMS-6.3 states that virtual machine errors only include OutOfMemoryError for allocation
-     * failures.
+     * Returns whether the current parse position is protected by a handler that can observe an
+     * {@link OutOfMemoryError}. This currently covers only direct {@code OutOfMemoryError} catch
+     * clauses. Broader catch clauses such as {@code Error}, {@code VirtualMachineError}, or
+     * {@code Throwable}, and bytecode-level catch-all/finally entries, are intentionally not used
+     * for automatic allocation OOME edges.
      */
     @Override
     public boolean currentBlockCatchesOOME() {
@@ -5086,17 +5136,43 @@ public abstract class BytecodeParser extends CoreProvidersDelegate implements Gr
         if (calleeInOOMEBlock) {
             return true;
         }
-        boolean inOOMETry = false;
-        if (currentBlock.exceptionDispatchBlock() != null) {
-            ExceptionDispatchBlock edb = (ExceptionDispatchBlock) currentBlock.exceptionDispatchBlock();
-            ExceptionHandler handler = edb.handler;
-            if (handler != null) {
-                JavaType catchType = handler.getCatchType();
-                // catch type can be null for java.lang.Throwable which catches everything
-                inOOMETry = catchType != null && catchType.getName().equals("Ljava/lang/OutOfMemoryError;");
+        if (currentBlock != null) {
+            BciBlock dispatchBlock = currentBlock.exceptionDispatchBlock();
+            while (dispatchBlock instanceof ExceptionDispatchBlock edb) {
+                ExceptionHandler handler = edb.handler;
+                if (handler != null && catchTypeIncludesOOME(handler)) {
+                    return true;
+                }
+                dispatchBlock = edb.getSuccessorCount() > 1 ? edb.getSuccessor(1) : null;
             }
         }
-        return inOOMETry;
+        return false;
+    }
+
+    private boolean catchTypeIncludesOOME(ExceptionHandler handler) {
+        JavaType catchType = resolveCatchType(handler);
+        return isDirectOutOfMemoryErrorCatch(catchType);
+    }
+
+    /**
+     * Returns true only for a direct {@code catch (OutOfMemoryError)}. Broader catch clauses and
+     * bytecode catch-all entries are intentionally not used for automatic allocation OOME edges.
+     */
+    public static boolean isDirectOutOfMemoryErrorCatch(JavaType catchType) {
+        return catchType != null && catchType.getName().equals(OUT_OF_MEMORY_ERROR_TYPE_NAME);
+    }
+
+    private JavaType resolveCatchType(ExceptionHandler handler) {
+        JavaType catchType = handler.getCatchType();
+        if (catchType == null && handler.catchTypeCPI() != 0) {
+            /*
+             * Some bytecode providers expose only the catch-type CPI. Resolve just that declared
+             * handler type so the OOME classifier can still distinguish typed catches from
+             * catch-all/finally entries.
+             */
+            catchType = lookupType(handler.catchTypeCPI(), INSTANCEOF);
+        }
+        return catchType;
     }
 
     private void createNewInstance(ResolvedJavaType resolvedType) {

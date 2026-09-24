@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,14 +26,24 @@ package com.oracle.svm.hosted.classloading;
 
 import java.lang.reflect.Field;
 
+import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
+import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
+
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.fieldvaluetransformer.NewInstanceFieldValueTransformer;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
 import com.oracle.svm.hosted.FeatureImpl;
+import com.oracle.svm.hosted.FeatureImpl.AfterCompilationAccessImpl;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class SymbolsFeature implements InternalFeature {
+    private final ScanReason scanReason = new OtherReason("Manual rescan triggered from " + SymbolsFeature.class);
+    private boolean symbolsSupportReachable;
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
@@ -43,11 +53,22 @@ public class SymbolsFeature implements InternalFeature {
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess a) {
         FeatureImpl.BeforeAnalysisAccessImpl access = (FeatureImpl.BeforeAnalysisAccessImpl) a;
-        /*
-         * This works around issues when analysis concurrently scans the readWriteLock in
-         * SymbolsImpl and might add a Thread to the image heap. It could be generalized (GR-62530).
-         */
-        Field readWriteLockField = access.findField("com.oracle.svm.espresso.classfile.descriptors.SymbolsImpl", "readWriteLock");
-        access.registerFieldValueTransformer(readWriteLockField, new NewInstanceFieldValueTransformer());
+        Field strongMapField = access.findField("com.oracle.svm.espresso.classfile.descriptors.SymbolsImpl", "strongMap");
+        access.registerFieldValueTransformer(strongMapField, new NewInstanceFieldValueTransformer());
+        Field weakMapField = access.findField("com.oracle.svm.espresso.classfile.descriptors.SymbolsImpl", "weakMap");
+        access.registerFieldValueTransformer(weakMapField, new NewInstanceFieldValueTransformer());
+    }
+
+    @Override
+    public void afterAnalysis(AfterAnalysisAccess access) {
+        symbolsSupportReachable = access.isReachable(SymbolsSupport.class);
+    }
+
+    @Override
+    public void afterCompilation(AfterCompilationAccess a) {
+        if (symbolsSupportReachable) {
+            SymbolsSupport.prepareSymbolsForImageHeap();
+            ((AfterCompilationAccessImpl) a).getHeapScanner().rescanObject(SymbolsSupport.hostedLookup(), scanReason);
+        }
     }
 }

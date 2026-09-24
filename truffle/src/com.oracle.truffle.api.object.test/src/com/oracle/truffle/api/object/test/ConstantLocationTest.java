@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -43,10 +43,6 @@ package com.oracle.truffle.api.object.test;
 import java.util.Arrays;
 import java.util.List;
 
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.object.DynamicObjectLibrary;
-import com.oracle.truffle.api.object.Property;
-import com.oracle.truffle.api.object.Shape;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
 import org.junit.Assert;
@@ -55,11 +51,13 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
-import com.oracle.truffle.api.test.AbstractParametrizedLibraryTest;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Property;
+import com.oracle.truffle.api.object.Shape;
 
 @SuppressWarnings("deprecation")
 @RunWith(Parameterized.class)
-public class ConstantLocationTest extends AbstractParametrizedLibraryTest {
+public class ConstantLocationTest extends ParametrizedDynamicObjectTest {
 
     @Parameters(name = "{0}")
     public static List<TestRun> data() {
@@ -82,7 +80,7 @@ public class ConstantLocationTest extends AbstractParametrizedLibraryTest {
     public void testConstantLocation() {
         DynamicObject object = newInstanceWithConstant();
 
-        DynamicObjectLibrary library = createLibrary(DynamicObjectLibrary.class, object);
+        var library = createLibrary(object);
 
         Assert.assertSame(value, library.getOrDefault(object, "constant", null));
 
@@ -113,7 +111,7 @@ public class ConstantLocationTest extends AbstractParametrizedLibraryTest {
     public void testMigrateConstantLocation() {
         DynamicObject object = newInstanceWithConstant();
 
-        DynamicObjectLibrary library = createLibrary(DynamicObjectLibrary.class, object);
+        var library = createLibrary(object);
 
         Assert.assertSame(shapeWithConstant, object.getShape());
         Assert.assertSame(value, library.getOrDefault(object, "constant", null));
@@ -124,32 +122,6 @@ public class ConstantLocationTest extends AbstractParametrizedLibraryTest {
         Assert.assertSame(newValue, library.getOrDefault(object, "constant", null));
     }
 
-    @SuppressWarnings("deprecation")
-    @Test
-    public void testAddConstantLocation() throws com.oracle.truffle.api.object.IncompatibleLocationException {
-        Property property = shapeWithConstant.getProperty("constant");
-
-        DynamicObject object = newInstance();
-
-        DynamicObjectLibrary library = createLibrary(DynamicObjectLibrary.class, object);
-
-        property.getLocation().set(object, value, rootShape, shapeWithConstant);
-        Assert.assertSame(shapeWithConstant, object.getShape());
-        Assert.assertSame(value, library.getOrDefault(object, "constant", null));
-
-        DynamicObject object2 = newInstance();
-        Object newValue = new Object();
-        Assert.assertFalse(property.getLocation().canStore(newValue));
-        try {
-            property.getLocation().set(object2, newValue, rootShape, shapeWithConstant);
-            Assert.fail();
-        } catch (com.oracle.truffle.api.object.IncompatibleLocationException e) {
-            // expected
-        }
-        Assert.assertSame(rootShape, object2.getShape());
-        Assert.assertFalse(library.containsKey(object2, "constant"));
-    }
-
     @Test
     public void testGetConstantValue() {
         Property property = shapeWithConstant.getProperty("constant");
@@ -158,7 +130,7 @@ public class ConstantLocationTest extends AbstractParametrizedLibraryTest {
 
         DynamicObject object = newInstance();
 
-        DynamicObjectLibrary library = createLibrary(DynamicObjectLibrary.class, object);
+        var library = createLibrary(object);
         library.put(object, "other", "otherValue");
 
         Property otherProperty = object.getShape().getProperty("other");

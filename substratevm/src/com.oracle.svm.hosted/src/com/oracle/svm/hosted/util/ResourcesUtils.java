@@ -39,7 +39,8 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
 
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.jdk.resources.NativeImageResourceFileSystemUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import sun.net.www.ParseUtil;
 
@@ -144,7 +145,7 @@ public class ResourcesUtils {
             }
         }
 
-        return String.join(System.lineSeparator(), content);
+        return String.join(NativeImageResourceFileSystemUtil.DIRECTORY_CONTENT_SEPARATOR, content);
     }
 
     private static URI urlToJarUri(URL url) {

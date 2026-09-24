@@ -33,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
+
 import com.oracle.objectfile.BuildDependency;
 import com.oracle.objectfile.ElementImpl;
 import com.oracle.objectfile.LayoutDecision;
@@ -108,9 +110,9 @@ public class PECoffObjectFile extends ObjectFile {
     }
 
     @Override
-    public Symbol createDefinedSymbol(String name, Element baseSection, long position, int size, boolean isCode, boolean isGlobal) {
+    public Symbol createDefinedSymbol(String name, Element baseSection, long position, int size, boolean isCode, boolean isGlobal, boolean isExported) {
         PECoffSymtab st = createSymbolTable();
-        return st.newDefinedEntry(name, (Section) baseSection, position, size, isGlobal, isCode);
+        return st.newDefinedEntry(name, (Section) baseSection, position, size, isGlobal, isCode, isExported);
     }
 
     @Override
@@ -330,7 +332,7 @@ public class PECoffObjectFile extends ObjectFile {
             // The Header depends on the section count and symbol table size and offset.
 
             // We don't use the default dependencies, because our offset mustn't depend on anything.
-            HashSet<BuildDependency> dependencies = new HashSet<>();
+            EconomicSet<BuildDependency> dependencies = EconomicSet.create(4);
 
             LayoutDecision ourContent = decisions.get(this).getDecision(LayoutDecision.Kind.CONTENT);
             LayoutDecision ourOffset = decisions.get(this).getDecision(LayoutDecision.Kind.OFFSET);
@@ -458,7 +460,7 @@ public class PECoffObjectFile extends ObjectFile {
              * Table are "Elements" and not "Sections".
              *
              */
-            HashSet<BuildDependency> deps = ObjectFile.defaultDependencies(decisions, this);
+            EconomicSet<BuildDependency> deps = ObjectFile.defaultDependencies(decisions, this);
 
             LayoutDecision ourOffset = decisions.get(this).getDecision(LayoutDecision.Kind.OFFSET);
             LayoutDecision ourContent = decisions.get(this).getDecision(LayoutDecision.Kind.CONTENT);
@@ -633,7 +635,7 @@ public class PECoffObjectFile extends ObjectFile {
 
     @Override
     public Set<Segment> getSegments() {
-        return new HashSet<>();
+        return new HashSet<>(); // noEconomicSet(streaming)
     }
 
     @Override

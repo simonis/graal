@@ -24,31 +24,28 @@
  */
 package com.oracle.svm.core.jfr;
 
-import java.util.Collections;
 import java.util.List;
 
 import org.graalvm.nativeimage.ImageSingletons;
-import org.graalvm.nativeimage.Platform;
-import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.jdk.RuntimeSupport;
-import com.oracle.svm.core.jfr.traceid.JfrTraceIdEpoch;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
+import com.oracle.svm.core.jfr.traceid.JfrEpoch;
 import com.oracle.svm.core.jfr.traceid.JfrTraceIdMap;
 import com.oracle.svm.core.sampler.SamplerJfrStackTraceSerializer;
 import com.oracle.svm.core.sampler.SamplerStackTraceSerializer;
 import com.oracle.svm.core.sampler.SamplerStatistics;
 import com.oracle.svm.core.thread.ThreadListenerSupport;
-import com.oracle.svm.core.thread.ThreadListenerSupportFeature;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.sun.management.HotSpotDiagnosticMXBean;
 import com.sun.management.internal.PlatformMBeanProviderImpl;
 
@@ -57,8 +54,9 @@ import jdk.jfr.internal.JVMSupport;
 import jdk.jfr.internal.jfc.JFC;
 
 /**
- * Provides basic JFR support. As this support is both platform-dependent and JDK-specific, the
- * current support is limited to Linux & MacOS.
+ * Provides basic JFR support. The core event infrastructure is shared across platforms, while some
+ * integration points such as out-of-process control and platform events remain platform-dependent
+ * and JDK-specific.
  *
  * There are two different kinds of JFR events:
  * <ul>
@@ -83,7 +81,7 @@ import jdk.jfr.internal.jfc.JFC;
  * <li>When the active chunk exceeds a certain threshold, then it is necessary to start a new chunk
  * (and maybe a new file), see {@link JfrChunkWriter}. Before doing that, some metadata and all
  * thread-local/global data that is currently in flight must be flushed to the old file. This
- * operation needs a safepoint and also changes the JFR epoch, see {@link JfrTraceIdEpoch}.</li>
+ * operation needs a safepoint and also changes the JFR epoch, see {@link JfrEpoch}.</li>
  * </ul>
  *
  * A lot of the JFR infrastructure is {@link Uninterruptible} and uses native memory instead of the
@@ -119,24 +117,24 @@ public class JfrFeature implements InternalFeature {
     }
 
     public static boolean isInConfiguration(boolean allowPrinting) {
-        boolean systemSupported = osSupported();
+        boolean systemSupported = VMInspectionOptions.hasJfrPlatformSupport();
         if (HOSTED_ENABLED && !systemSupported) {
             throw UserError.abort("FlightRecorder cannot be used to profile the image generator on this platform. " +
-                            "The image generator can only be profiled on platforms where FlightRecoder is also supported at run time.");
+                            "The image generator can only be profiled on platforms where FlightRecorder is also supported at run time.");
         }
         boolean runtimeEnabled = VMInspectionOptions.hasJfrSupport();
         if (HOSTED_ENABLED && !runtimeEnabled) {
             if (allowPrinting) {
                 LogUtils.warning("When FlightRecorder is used to profile the image generator, it is also automatically enabled in the native image at run time. " +
-                                "This can affect the measurements because it can can make the image larger and image build time longer.");
+                                "This can affect the measurements because it can make the image larger and image build time longer.");
             }
             runtimeEnabled = true;
         }
+        if (ImageLayerBuildingSupport.buildingImageLayer()) {
+            // GR-68066 support JFR in layered images
+            return false;
+        }
         return runtimeEnabled && systemSupported;
-    }
-
-    private static boolean osSupported() {
-        return Platform.includedIn(Platform.LINUX.class) || Platform.includedIn(Platform.DARWIN.class);
     }
 
     /**
@@ -153,11 +151,6 @@ public class JfrFeature implements InternalFeature {
     }
 
     @Override
-    public List<Class<? extends Feature>> getRequiredFeatures() {
-        return Collections.singletonList(ThreadListenerSupportFeature.class);
-    }
-
-    @Override
     public void afterRegistration(AfterRegistrationAccess access) {
 
         // Initialize some parts of JFR/JFC at image build time.
@@ -168,7 +161,7 @@ public class JfrFeature implements InternalFeature {
         ImageSingletons.add(SubstrateJVM.class, new SubstrateJVM(knownConfigurations, true));
         ImageSingletons.add(JfrSerializerSupport.class, new JfrSerializerSupport());
         ImageSingletons.add(JfrTraceIdMap.class, new JfrTraceIdMap());
-        ImageSingletons.add(JfrTraceIdEpoch.class, new JfrTraceIdEpoch());
+        ImageSingletons.add(JfrEpoch.class, new JfrEpoch());
         ImageSingletons.add(JfrGCNames.class, new JfrGCNames());
         ImageSingletons.add(JfrExecutionSamplerSupported.class, new JfrExecutionSamplerSupported());
         ImageSingletons.add(SamplerStackTraceSerializer.class, new SamplerJfrStackTraceSerializer());
@@ -204,6 +197,6 @@ public class JfrFeature implements InternalFeature {
         RuntimeSupport runtime = RuntimeSupport.getRuntimeSupport();
         runtime.addInitializationHook(JfrManager.initializationHook());
         runtime.addStartupHook(JfrManager.startupHook());
-        runtime.addShutdownHook(JfrManager.shutdownHook());
+        runtime.addTearDownHook(JfrManager.teardownHook());
     }
 }

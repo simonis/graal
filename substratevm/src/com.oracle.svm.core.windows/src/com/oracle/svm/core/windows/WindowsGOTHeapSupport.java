@@ -24,24 +24,29 @@
  */
 package com.oracle.svm.core.windows;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
 import com.oracle.svm.core.os.VirtualMemoryProvider.Access;
 import com.oracle.svm.core.pltgot.GOTHeapSupport;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.shared.util.UnsignedUtils;
 import com.oracle.svm.core.windows.headers.MemoryAPI;
 import com.oracle.svm.core.windows.headers.WinBase;
 import com.oracle.svm.core.windows.headers.WinBase.HANDLE;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class WindowsGOTHeapSupport extends GOTHeapSupport {
 
     private static final CGlobalData<WordPointer> GOT_MAPPING_HANDLE = CGlobalDataFactory.createWord();
@@ -49,14 +54,14 @@ public class WindowsGOTHeapSupport extends GOTHeapSupport {
     @Override
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     protected int initialize(WordPointer gotStartAddress) {
-        UnsignedWord alignedGotSize = getPageAlignedGotSize();
+        UnsignedWord alignedGOTSize = getPageAlignedGOTSize();
 
         HANDLE gotMappingHandle = MemoryAPI.CreateFileMappingW(
                         WinBase.INVALID_HANDLE_VALUE(), // in-memory
                         Word.nullPointer(),
                         MemoryAPI.PAGE_READWRITE(),
                         0,
-                        UnsignedUtils.safeToInt(alignedGotSize),
+                        UnsignedUtils.safeToInt(alignedGOTSize),
                         Word.nullPointer() // anonymous
         );
 
@@ -77,8 +82,8 @@ public class WindowsGOTHeapSupport extends GOTHeapSupport {
             return CEntryPointErrors.DYNAMIC_METHOD_ADDRESS_RESOLUTION_GOT_FD_MAP_FAILED;
         }
 
-        Pointer gotStartInMemory = gotMappedAddress.add(getGotOffsetFromStartOfMapping());
-        LibC.memcpy(gotStartInMemory, IMAGE_GOT_BEGIN.get(), getGotSectionSize());
+        Pointer gotStartInMemory = gotMappedAddress.add(getGOTOffsetFromStartOfMapping());
+        LibC.memcpy(gotStartInMemory, IMAGE_GOT_BEGIN.get(), getGOTSectionSize());
 
         // Keep the initial GOT mapping for writing.
 
@@ -90,7 +95,7 @@ public class WindowsGOTHeapSupport extends GOTHeapSupport {
 
     @Override
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public int mapGot(Pointer address) {
+    public int mapGOT(Pointer address) {
         HANDLE gotMappingHandle = GOT_MAPPING_HANDLE.get().read();
         if (gotMappingHandle.isNull()) {
             return CEntryPointErrors.DYNAMIC_METHOD_ADDRESS_RESOLUTION_GOT_FD_INVALID;
@@ -98,7 +103,7 @@ public class WindowsGOTHeapSupport extends GOTHeapSupport {
 
         Pointer mappedAddress = VirtualMemoryProvider.get().mapFile(
                         address,
-                        getPageAlignedGotSize(),
+                        getPageAlignedGOTSize(),
                         gotMappingHandle,
                         Word.zero(),
                         Access.READ);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -54,6 +54,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Collection;
@@ -64,6 +66,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.interop.HeapIsolationException;
 import org.graalvm.polyglot.HostAccess.MutableTargetMapping;
 import org.graalvm.polyglot.Value;
 
@@ -183,9 +187,10 @@ abstract class HostToTypeNode extends Node {
                 return convertedValue;
             }
         }
-        HostLanguage language = HostLanguage.get(interop);
-        if (HostObject.isJavaInstance(language, targetType, value)) {
-            return HostObject.valueOf(language, value);
+
+        Object hostValue;
+        if ((hostValue = toJavaInstance(value, targetType, interop)) != null) {
+            return hostValue;
         }
 
         if (useCustomTargetTypes) {
@@ -201,6 +206,8 @@ abstract class HostToTypeNode extends Node {
                 return convertedValue;
             }
         }
+
+        HostLanguage language = HostLanguage.get(interop);
         if (targetType == language.valueClass && context != null) {
             return language.valueClass.isInstance(value) ? value : context.asValue(interop, value);
         } else if (interop.isNull(value)) {
@@ -209,7 +216,7 @@ abstract class HostToTypeNode extends Node {
             }
             return null;
         } else if (value instanceof TruffleObject) {
-            convertedValue = asJavaObject(node, context, (TruffleObject) value, targetType, genericType, allowsImplementation);
+            convertedValue = asJavaObject(node, context, value, targetType, genericType, allowsImplementation);
             if (convertedValue != null) {
                 return convertedValue;
             }
@@ -269,7 +276,7 @@ abstract class HostToTypeNode extends Node {
                 return true;
             }
         }
-        if (HostObject.isJavaInstance(language, targetType, value)) {
+        if (toJavaInstance(value, targetType, interop) != null) {
             return true;
         }
 
@@ -293,8 +300,10 @@ abstract class HostToTypeNode extends Node {
             return interop.isTime(value);
         } else if (targetType == LocalDateTime.class) {
             return interop.isDate(value) && interop.isTime(value);
-        } else if (targetType == ZonedDateTime.class || targetType == Date.class || targetType == Instant.class) {
+        } else if (targetType == ZonedDateTime.class || targetType == OffsetDateTime.class || targetType == Date.class || targetType == Instant.class) {
             return interop.isInstant(value);
+        } else if (targetType == OffsetTime.class) {
+            return interop.isTime(value) && interop.isTimeZone(value);
         } else if (targetType == ZoneId.class) {
             return interop.isTimeZone(value);
         } else if (targetType == Duration.class) {
@@ -317,7 +326,7 @@ abstract class HostToTypeNode extends Node {
         }
 
         if (value instanceof TruffleObject) {
-            if (priority < HOST_PROXY && HostObject.isInstance(language, value)) {
+            if (priority < HOST_PROXY && interop.isHostObject(value)) {
                 return false;
             } else {
                 if (priority >= FUNCTION_PROXY && HostInteropReflect.isFunctionalInterface(targetType) &&
@@ -427,8 +436,9 @@ abstract class HostToTypeNode extends Node {
         InteropLibrary interop = InteropLibrary.getFactory().getUncached(value);
         assert !interop.isNull(value); // already handled
         Object obj;
-        if (HostObject.isJavaInstance(hostContext.language, targetType, value)) {
-            obj = HostObject.valueOf(hostContext.language, value);
+        Object hostObject = toJavaInstance(value, targetType, interop);
+        if (hostObject != null) {
+            obj = hostObject;
         } else if (targetType == Object.class) {
             obj = convertToObject(node, hostContext, value, interop);
         } else if (targetType == List.class || targetType == Collection.class) {
@@ -542,7 +552,7 @@ abstract class HostToTypeNode extends Node {
             } else {
                 throw HostInteropErrors.cannotConvert(hostContext, value, targetType, "Value must have date and time information.");
             }
-        } else if (targetType == ZonedDateTime.class) {
+        } else if (targetType == ZonedDateTime.class || targetType == OffsetDateTime.class) {
             if (interop.isDate(value) && interop.isTime(value) && interop.isTimeZone(value)) {
                 LocalDate date;
                 LocalTime time;
@@ -554,9 +564,28 @@ abstract class HostToTypeNode extends Node {
                 } catch (UnsupportedMessageException e) {
                     throw shouldNotReachHere(e);
                 }
-                obj = createZonedDateTime(date, time, timeZone);
+                ZonedDateTime zonedDateTime = createZonedDateTime(date, time, timeZone);
+                obj = targetType == OffsetDateTime.class ? zonedDateTime.toOffsetDateTime() : zonedDateTime;
             } else {
                 throw HostInteropErrors.cannotConvert(hostContext, value, targetType, "Value must have date, time and time-zone information.");
+            }
+        } else if (targetType == OffsetTime.class) {
+            if (interop.isTime(value) && interop.isTimeZone(value)) {
+                LocalTime time;
+                ZoneId timeZone;
+                try {
+                    time = interop.asTime(value);
+                    timeZone = interop.asTimeZone(value);
+                    if (interop.isDate(value)) {
+                        obj = createZonedDateTime(interop.asDate(value), time, timeZone).toOffsetDateTime().toOffsetTime();
+                    } else {
+                        obj = createOffsetTime(time, timeZone);
+                    }
+                } catch (UnsupportedMessageException e) {
+                    throw shouldNotReachHere(e);
+                }
+            } else {
+                throw HostInteropErrors.cannotConvert(hostContext, value, targetType, "Value must have time and time-zone information.");
             }
         } else if (targetType == ZoneId.class) {
             if (interop.isTimeZone(value)) {
@@ -651,6 +680,22 @@ abstract class HostToTypeNode extends Node {
         return targetType.cast(obj);
     }
 
+    private static Object toJavaInstance(Object value, Class<?> targetType, InteropLibrary interop) {
+        if (interop.isHostObject(value)) {
+            try {
+                Object hostObject = interop.asHostObject(value);
+                if (hostObject != null && targetType.isInstance(hostObject)) {
+                    return hostObject;
+                }
+            } catch (HeapIsolationException e) {
+                return null;
+            } catch (UnsupportedMessageException e) {
+                throw CompilerDirectives.shouldNotReachHere(e);
+            }
+        }
+        return null;
+    }
+
     private static Object asPolyglotException(HostContext hostContext, Object value, InteropLibrary interop) {
         try {
             interop.throwException(value);
@@ -672,6 +717,12 @@ abstract class HostToTypeNode extends Node {
     @TruffleBoundary
     private static LocalDateTime createDateTime(LocalDate date, LocalTime time) {
         return LocalDateTime.of(date, time);
+    }
+
+    @TruffleBoundary
+    private static OffsetTime createOffsetTime(LocalTime time, ZoneId timeZone) {
+        assert timeZone.getRules().isFixedOffset();
+        return OffsetTime.of(time, timeZone.getRules().getOffset(Instant.EPOCH));
     }
 
     private static boolean shouldImplementFunction(Object truffleObject, InteropLibrary interop) {

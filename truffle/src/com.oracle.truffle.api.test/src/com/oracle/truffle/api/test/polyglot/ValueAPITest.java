@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -73,6 +73,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.Serial;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -89,6 +90,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.AbstractList;
@@ -131,6 +134,7 @@ import org.junit.Test;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.exception.AbstractTruffleException;
@@ -187,8 +191,20 @@ public class ValueAPITest {
 
     @AfterClass
     public static void tearDown() {
-        context.close();
-        secondaryContext.close();
+        try {
+            if (context != null) {
+                context.close();
+            }
+        } finally {
+            try {
+                if (secondaryContext != null) {
+                    secondaryContext.close();
+                }
+            } finally {
+                context = null;
+                secondaryContext = null;
+            }
+        }
     }
 
     @Test
@@ -250,6 +266,8 @@ public class ValueAPITest {
         assertValueInContexts(context.asValue(LocalDateTime.now()), HOST_OBJECT, MEMBERS, DATE, TIME, EXECUTABLE);
         assertValueInContexts(context.asValue(Instant.now()), HOST_OBJECT, MEMBERS, DATE, TIME, TIMEZONE, EXECUTABLE);
         assertValueInContexts(context.asValue(ZonedDateTime.now()), HOST_OBJECT, MEMBERS, DATE, TIME, TIMEZONE);
+        assertValueInContexts(context.asValue(OffsetDateTime.now()), HOST_OBJECT, MEMBERS, DATE, TIME, TIMEZONE, EXECUTABLE);
+        assertValueInContexts(context.asValue(OffsetTime.now()), HOST_OBJECT, MEMBERS, TIME, TIMEZONE, EXECUTABLE);
         assertValueInContexts(context.asValue(ZoneId.of("UTC")), HOST_OBJECT, MEMBERS, TIMEZONE);
         assertValueInContexts(context.asValue(Date.from(Instant.now())), HOST_OBJECT, MEMBERS, DATE, TIME, TIMEZONE);
         assertValueInContexts(context.asValue(Duration.ofMillis(100)), HOST_OBJECT, MEMBERS, DURATION);
@@ -306,7 +324,7 @@ public class ValueAPITest {
     @Test
     public void testNull() {
         assertValueInContexts(context.asValue(null), HOST_OBJECT, NULL);
-        assertValueInContexts(createDelegateInteropWrapper(context, context.asValue(null)), NULL);
+        assertValueInContexts(createDelegateInteropWrapper(context, context.asValue(null)), HOST_OBJECT, NULL);
     }
 
     private static class BigIntegerSubClass extends BigInteger {
@@ -419,10 +437,7 @@ public class ValueAPITest {
 
             Value v = context.asValue(value);
             assertValueInContexts(v, expectedTraits.toArray(new Trait[0]));
-
-            expectedTraits.remove(HOST_OBJECT);
             assertValueInContexts(createDelegateInteropWrapper(context, v), expectedTraits.toArray(new Trait[0]));
-
         }
     }
 
@@ -519,10 +534,7 @@ public class ValueAPITest {
             final Value value = context.asValue(buffer);
 
             assertValueInContexts(value, BUFFER_ELEMENTS, HOST_OBJECT, MEMBERS);
-
-            // with the wrapper these buffers are no longer host buffers and trigger context to
-            // context migration code
-            assertValueInContexts(createDelegateInteropWrapper(context, value), BUFFER_ELEMENTS, MEMBERS);
+            assertValueInContexts(createDelegateInteropWrapper(context, value), BUFFER_ELEMENTS, HOST_OBJECT, MEMBERS);
         }
     }
 
@@ -2333,7 +2345,7 @@ public class ValueAPITest {
     public void testHostException() {
         Value exceptionValue = context.asValue(new RuntimeException("expected"));
         assertValueInContexts(exceptionValue, HOST_OBJECT, MEMBERS, EXCEPTION);
-        assertValueInContexts(createDelegateInteropWrapper(context, exceptionValue), MEMBERS, EXCEPTION);
+        assertValueInContexts(createDelegateInteropWrapper(context, exceptionValue), HOST_OBJECT, MEMBERS, EXCEPTION);
         try {
             exceptionValue.throwException();
             fail("should have thrown");
@@ -2918,4 +2930,122 @@ public class ValueAPITest {
         assertFails(() -> Value.fromNativeString(1L, -1, 0, StringEncoding.UTF_8, true), IndexOutOfBoundsException.class, null);
     }
 
+    @Test
+    public void testTruffleNumberObject() {
+        try (Context c = Context.create()) {
+            Value val = c.asValue(new TruffleByteObject((byte) 42));
+            Object numberObj = val.as(Object.class);
+            assertTrue(numberObj instanceof Byte);
+            assertEquals(42, (byte) numberObj);
+        }
+    }
+
+    @ExportLibrary(InteropLibrary.class)
+    @SuppressWarnings({"static-method"})
+    static class TruffleByteObject extends Number implements TruffleObject {
+
+        @Serial private static final long serialVersionUID = 1922664232217003500L;
+
+        private final byte byteValue;
+
+        TruffleByteObject(byte byteValue) {
+            this.byteValue = byteValue;
+        }
+
+        @ExportMessage
+        boolean isNumber() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInByte() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInShort() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInInt() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInLong() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInFloat() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInDouble() {
+            return true;
+        }
+
+        @ExportMessage
+        boolean fitsInBigInteger() {
+            return true;
+        }
+
+        @ExportMessage
+        byte asByte() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        short asShort() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        int asInt() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        long asLong() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        float asFloat() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        double asDouble() {
+            return byteValue;
+        }
+
+        @ExportMessage
+        @TruffleBoundary
+        BigInteger asBigInteger() {
+            return BigInteger.valueOf(byteValue);
+        }
+
+        @Override
+        public int intValue() {
+            return byteValue;
+        }
+
+        @Override
+        public long longValue() {
+            return byteValue;
+        }
+
+        @Override
+        public float floatValue() {
+            return byteValue;
+        }
+
+        @Override
+        public double doubleValue() {
+            return byteValue;
+        }
+    }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -49,11 +49,14 @@ import jdk.graal.compiler.nodes.graphbuilderconf.LoopExplosionPlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.NodePlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.ParameterPlugin;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
+import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.BasePhase;
 import jdk.graal.compiler.phases.common.CanonicalizerPhase;
 import jdk.graal.compiler.phases.common.DominatorBasedGlobalValueNumberingPhase;
 import jdk.graal.compiler.phases.util.Providers;
 import jdk.graal.compiler.replacements.PEGraphDecoder;
+import jdk.graal.compiler.truffle.phases.TruffleEarlyEscapeAnalysisPhase;
+import jdk.graal.compiler.truffle.phases.TruffleEarlyInliningPhase;
 import jdk.vm.ci.code.Architecture;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
@@ -67,6 +70,7 @@ public final class CachingPEGraphDecoder extends PEGraphDecoder {
 
     protected final Providers graphCacheProviders;
     protected final GraphBuilderConfiguration graphBuilderConfig;
+    private final KnownTruffleTypes truffleTypes;
     private final EconomicMap<ResolvedJavaMethod, EncodedGraph> persistentGraphCache;
     private final EconomicMap<ResolvedJavaMethod, EncodedGraph> localGraphCache;
     private final Supplier<AutoCloseable> createPersistentCachedGraphScope;
@@ -85,13 +89,13 @@ public final class CachingPEGraphDecoder extends PEGraphDecoder {
                     StructuredGraph graph,
                     Providers graphCacheProviders,
                     Providers decodingProviders,
+                    KnownTruffleTypes truffleTypes,
                     GraphBuilderConfiguration graphBuilderConfig,
                     LoopExplosionPlugin loopExplosionPlugin,
                     InvocationPlugins invocationPlugins,
                     InlineInvokePlugin[] inlineInvokePlugins,
                     ParameterPlugin parameterPlugin,
                     NodePlugin[] nodePlugins,
-                    ResolvedJavaMethod peRootForInlining,
                     SourceLanguagePositionProvider sourceLanguagePositionProvider,
                     BasePhase<? super CoreProviders> postParsingPhase,
                     EconomicMap<ResolvedJavaMethod, EncodedGraph> persistentGraphCache,
@@ -101,9 +105,10 @@ public final class CachingPEGraphDecoder extends PEGraphDecoder {
                     boolean needsExplicitException,
                     boolean forceLink) {
         super(architecture, graph, decodingProviders, loopExplosionPlugin,
-                        invocationPlugins, inlineInvokePlugins, parameterPlugin, nodePlugins, peRootForInlining, sourceLanguagePositionProvider,
+                        invocationPlugins, inlineInvokePlugins, parameterPlugin, nodePlugins, sourceLanguagePositionProvider,
                         new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), needsExplicitException, forceLink);
 
+        this.truffleTypes = truffleTypes;
         assert !graphBuilderConfig.trackNodeSourcePosition() || graph.trackNodeSourcePosition();
 
         this.graphCacheProviders = graphCacheProviders;
@@ -121,16 +126,21 @@ public final class CachingPEGraphDecoder extends PEGraphDecoder {
         CanonicalizerPhase canonicalizer = CanonicalizerPhase.create();
         StructuredGraph graphToEncode = buildGraph(method, canonicalizer);
 
-        /*
-         * ConvertDeoptimizeToGuardPhase reduces the number of merges in the graph, so that fewer
-         * frame states will be created. This significantly reduces the number of nodes in the
-         * initial graph.
-         */
         try (DebugContext.Scope scope = debug.scope("createGraph", graphToEncode)) {
-            new ConvertDeoptimizeToGuardPhase(canonicalizer).apply(graphToEncode, graphCacheProviders);
+            Providers p = this.graphCacheProviders;
+            OptionValues optionValues = graphToEncode.getOptions();
+
+            /*
+             * Keep this in sync with TruffleRuntimeCompiledMethodSupport#applyParsingHookPhases
+             */
+            new TruffleEarlyInliningPhase(optionValues, canonicalizer, p, (m) -> buildGraph(m, canonicalizer), truffleTypes.CompilerDirectives_EarlyInline).apply(graphToEncode, p);
+            new TruffleEarlyEscapeAnalysisPhase(canonicalizer, optionValues, truffleTypes.CompilerDirectives_EarlyEscapeAnalysis).apply(graphToEncode, p);
+
+            new ConvertDeoptimizeToGuardPhase(canonicalizer).apply(graphToEncode, p);
             if (GraalOptions.EarlyGVN.getValue(graphToEncode.getOptions())) {
-                new DominatorBasedGlobalValueNumberingPhase(canonicalizer).apply(graphToEncode, graphCacheProviders);
+                new DominatorBasedGlobalValueNumberingPhase(canonicalizer).apply(graphToEncode, p);
             }
+
         } catch (Throwable t) {
             throw debug.handle(t);
         }

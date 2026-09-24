@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,54 +24,98 @@
  */
 package com.oracle.svm.core.hub.crema;
 
-import java.util.List;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
+import java.lang.reflect.Executable;
+import java.lang.reflect.Field;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
 import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.hub.RuntimeClassLoading.ClassDefinitionInfo;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
+import com.oracle.svm.core.invoke.ResolvedMember;
+import com.oracle.svm.core.invoke.Target_java_lang_invoke_MemberName;
+import com.oracle.svm.core.jni.CallVariant;
+import com.oracle.svm.core.jni.headers.JNIFieldId;
+import com.oracle.svm.espresso.classfile.ConstantPool;
 import com.oracle.svm.espresso.classfile.ParserKlass;
 import com.oracle.svm.espresso.classfile.descriptors.ByteSequence;
+import com.oracle.svm.espresso.classfile.descriptors.Name;
+import com.oracle.svm.espresso.classfile.descriptors.Signature;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
+import com.oracle.svm.espresso.shared.resolver.CallKind;
+import com.oracle.svm.shared.Uninterruptible;
 
-import jdk.vm.ci.meta.JavaType;
+import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.UnresolvedJavaType;
 
 public interface CremaSupport {
     @Platforms(Platform.HOSTED_ONLY.class)
     ResolvedJavaType createInterpreterType(DynamicHub hub, ResolvedJavaType analysisType);
 
-    int getAfterFieldsOffset(DynamicHub hub);
+    Target_java_lang_invoke_MemberName resolveMemberName(Target_java_lang_invoke_MemberName mn, Class<?> caller);
 
-    interface CremaDispatchTable {
-        int vtableLength();
+    <T extends ResolvedJavaMethod & ResolvedMember> T toJVMCI(Executable executable);
 
-        int itableLength(Class<?> iface);
+    <T extends ResolvedJavaField & ResolvedMember> T toJVMCI(Field field);
 
-        int afterFieldsOffset(int superAfterFieldsOffset);
+    /**
+     * Returns any JDK-internal flag that should be added to the modifiers and reference kind to
+     * form the {@code flags} of a {@code java.lang.invoke.MemmberName} denoting the {@code field}
+     * given as argument.
+     *
+     * @see com.oracle.svm.core.methodhandles.Target_java_lang_invoke_MethodHandleNatives_Constants
+     */
+    int getExtraFieldMemberNameFlags(ResolvedJavaField field);
 
-        int[] getDeclaredInstanceReferenceFieldOffsets();
-    }
+    /**
+     * Returns any JDK-internal flag that should be added to the modifiers and reference kind to
+     * form the {@code flags} of a {@code java.lang.invoke.MemmberName} denoting the {@code method}
+     * given as argument.
+     *
+     * @see com.oracle.svm.core.methodhandles.Target_java_lang_invoke_MethodHandleNatives_Constants
+     */
+    int getExtraMethodMemberNameFlags(ResolvedJavaMethod method);
 
-    CremaDispatchTable getDispatchTable(ParserKlass parsed, Class<?> superClass, List<Class<?>> superInterfaces);
+    Object invokeBasic(Target_java_lang_invoke_MemberName memberName, Object methodHandle, Object[] args);
 
-    void fillDynamicHubInfo(DynamicHub hub, CremaDispatchTable table, List<Class<?>> transitiveSuperInterfaces, int[] interfaceIndices);
+    Object linkToVirtual(Object[] args);
+
+    Object linkToStatic(Object[] args);
+
+    Object linkToSpecial(Object[] args);
+
+    Object linkToInterface(Object[] args);
+
+    Object getStaticStorage(ResolvedJavaField resolved);
+
+    DynamicHub createHub(ParserKlass parsed, ClassDefinitionInfo info, int typeID, String externalName, Module module, ClassLoader classLoader, Class<?> superClass,
+                    Class<?>[] superInterfaces);
+
+    DynamicHub getOrCreateArrayHub(DynamicHub dynamicHub);
 
     /**
      * Creates a new instance of {@code type} without running any constructor yet. The caller should
      * make sure to run a constructor before publishing the result.
+     * <p>
+     * This entry point is used by reflection support and therefore reports instantiation failures
+     * with reflection-compatible exceptions.
+     *
+     * @throws InstantiationException if {@code type} cannot be instantiated, matching the exception
+     *             expected by reflection callers
      */
-    Object allocateInstance(ResolvedJavaType type);
+    Object allocateInstance(ResolvedJavaType type) throws InstantiationException;
 
-    Object execute(ResolvedJavaMethod targetMethod, Object[] args);
+    Object execute(ResolvedJavaMethod targetMethod, Object[] args, CallKind callKind);
 
-    Class<?> toClass(ResolvedJavaType resolvedJavaType);
-
-    default Class<?> resolveOrThrow(JavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
+    default Class<?> resolveOrThrow(UnresolvedJavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
         ByteSequence type = ByteSequence.create(unresolvedJavaType.getName());
         Symbol<Type> symbolicType = SymbolsSupport.getTypes().getOrCreateValidType(type);
         return resolveOrThrow(symbolicType, accessingClass);
@@ -79,7 +123,7 @@ public interface CremaSupport {
 
     Class<?> resolveOrThrow(Symbol<Type> type, ResolvedJavaType accessingClass);
 
-    default Class<?> resolveOrNull(JavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
+    default Class<?> resolveOrNull(UnresolvedJavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
         ByteSequence type = ByteSequence.create(unresolvedJavaType.getName());
         Symbol<Type> symbolicType = SymbolsSupport.getTypes().getOrCreateValidType(type);
         return resolveOrNull(symbolicType, accessingClass);
@@ -87,7 +131,7 @@ public interface CremaSupport {
 
     Class<?> resolveOrNull(Symbol<Type> type, ResolvedJavaType accessingClass);
 
-    default Class<?> findLoadedClass(JavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
+    default Class<?> findLoadedClass(UnresolvedJavaType unresolvedJavaType, ResolvedJavaType accessingClass) {
         ByteSequence type = ByteSequence.create(unresolvedJavaType.getName());
         Symbol<Type> symbolicType = SymbolsSupport.getTypes().getOrCreateValidType(type);
         return findLoadedClass(symbolicType, accessingClass);
@@ -95,9 +139,107 @@ public interface CremaSupport {
 
     Class<?> findLoadedClass(Symbol<Type> type, ResolvedJavaType accessingClass);
 
+    Class<?> findLoadedClass(Symbol<Type> type, ClassLoader loader);
+
     Object getStaticStorage(Class<?> cls, boolean primitives, int layerNum);
 
+    /** Gets a field declared by a runtime-loaded {@code clazz} with {@code name}, {@code signature}, and {@code isStatic}. */
+    ResolvedJavaField lookupFieldForRuntimeClass(Class<?> clazz, String name, String signature, boolean isStatic);
+
+    /** Gets the field metadata encoded by {@code fieldId} in the context of a runtime-loaded {@code clazz}. */
+    CremaResolvedJavaField getCremaField(Class<?> clazz, JNIFieldId fieldId, boolean isStatic);
+
+    /** Gets the static storage base encoded by a runtime-loaded static JNI field id. */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    Object getCremaStaticFieldBase(JNIFieldId fieldId, boolean primitive);
+
+    /** Gets a method declared by runtime-loaded {@code clazz} with {@code name}, {@code signature}. */
+    ResolvedJavaMethod lookupMethodForRuntimeClass(Class<?> clazz, String name, String signature);
+
+    ResolvedJavaMethod findMethodHandleIntrinsic(ResolvedJavaMethod signaturePolymorphicMethod, Symbol<Signature> signature);
+
+    Class<?> computeDeclaringClass(DynamicHub hub);
+
+    Object[] computeEnclosingMethod(DynamicHub hub);
+
+    // region linking
+
+    /**
+     * Performs class preparation ({@code JVMS 5.4.2}) and class verification ({@code JVMS 5.4.1})
+     * for the given class.
+     * <p>
+     * Note: This method expects the caller to have already performed synchronization.
+     */
+    void prepareAndVerify(DynamicHub hub);
+
+    /**
+     * Records that the class loader {@code loader} loads the type {@code type} as {@code hub}.
+     * <p>
+     * This is used for subsequent loading constraints checks.
+     */
+    void recordLoadingConstraint(Symbol<Type> type, DynamicHub hub, ClassLoader loader);
+
+    /**
+     * Checks and ensures that both {@code loader1} and {@code loader2} load {@code type} as the
+     * same Class (w.r.t. identity).
+     */
+    void checkLoadingConstraint(Symbol<Type> type, ClassLoader loader1, ClassLoader loader2);
+
+    /**
+     * Frees the memory associated with GC'ed class loaders in the loading constraints.
+     */
+    void purgeLoadingConstraints();
+
+    // endregion linking
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     static CremaSupport singleton() {
         return ImageSingletons.lookup(CremaSupport.class);
     }
+
+    CFunctionPointer getEnterDirectInterpreterStubEntryPoint();
+
+    /** Gets the JNI method-call wrapper entry point for {@code variant} and {@code nonVirtual}. */
+    @Platforms(Platform.HOSTED_ONLY.class)
+    CFunctionPointer getCremaJNIMethodCallWrapperEntryPoint(CallVariant variant, boolean nonVirtual);
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    void setEnterDirectInterpreterStubEntryPoint(CFunctionPointer stubEntryPoint);
+
+    /** Sets the JNI method-call wrapper entry points for all JNI call variants to perform a JNI upcall on a runtime-loaded method. */
+    @Platforms(Platform.HOSTED_ONLY.class)
+    void setCremaJNIMethodCallWrapperEntryPoints(CFunctionPointer varargsVirtual, CFunctionPointer arrayVirtual, CFunctionPointer vaListVirtual, CFunctionPointer varargsNonVirtual,
+                    CFunctionPointer arrayNonVirtual,
+                    CFunctionPointer vaListNonVirtual);
+
+    <T extends ConstantPool & jdk.vm.ci.meta.ConstantPool> T getConstantPool(DynamicHub hub);
+
+    /**
+     * Verifies that a runtime-defined class can access and legally inherit from its direct
+     * supertypes.
+     *
+     * @param externalName the binary name of the runtime-defined class
+     * @param internalName the internal class-file name of the runtime-defined class
+     * @param classModifiers the parsed access flags of the runtime-defined class
+     * @param loader the defining class loader of the runtime-defined class
+     * @param pkgName the runtime package of the runtime-defined class
+     * @param module the runtime module of the runtime-defined class
+     * @param superClass the already-loaded direct superclass
+     * @param superInterfaces the already-loaded direct superinterfaces
+     * @throws IllegalAccessError if a direct supertype is not accessible to the runtime-defined
+     *             class
+     * @throws IncompatibleClassChangeError if a direct supertype cannot legally be extended or
+     *             implemented by the runtime-defined class
+     */
+    void verifySuperAccesses(String externalName, Symbol<Name> internalName, int classModifiers, ClassLoader loader, ByteSequence pkgName, Module module,
+                    Class<?> superClass, Class<?>[] superInterfaces);
+
+    /**
+     * Returns the complete method table for an interpreter type, including constructors,
+     * class initializers, and internal dispatch methods.
+     *
+     * <p>This is a hosted-only operation used to rescan the method objects after creating a hub.
+     */
+    @Platforms(Platform.HOSTED_ONLY.class)
+    ResolvedJavaMethod[] getAllDeclaredMethods(ResolvedJavaType interpreterType);
 }

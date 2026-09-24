@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -47,7 +47,9 @@ import java.lang.annotation.Target;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.HostCompilerDirectives;
+import com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandlerConfig;
 import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.TruffleStackTraceElement;
 import com.oracle.truffle.api.bytecode.debug.BytecodeDebugListener;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameSlotTypeException;
@@ -57,6 +59,8 @@ import com.oracle.truffle.api.instrumentation.StandardTags.RootBodyTag;
 import com.oracle.truffle.api.instrumentation.StandardTags.RootTag;
 import com.oracle.truffle.api.interop.NodeLibrary;
 import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.source.Source;
 
 /**
  * Generates a bytecode interpreter using the Bytecode DSL. The Bytecode DSL automatically produces
@@ -126,15 +130,15 @@ public @interface GenerateBytecode {
     boolean enableUncachedInterpreter() default false;
 
     /**
-     * Sets the default number of times an uncached interpreter must be invoked/resumed or branch
-     * backwards before transitioning to cached.
+     * Sets the default number of invocations/resumptions or backward branches for which the
+     * interpreter executes uncached before transitioning to cached on the next such event.
      * <p>
      * The default uncached threshold expression supports a subset of Java (see the
      * {@link com.oracle.truffle.api.dsl.Cached Cached} documentation). It should evaluate to an
      * int. It should be a positive value, {@code 0}, or {@code Integer.MIN_VALUE}. A threshold of
-     * {@code 0} will cause each bytecode node to immediately transition to cached on first
-     * invocation. A threshold of {@code Integer.MIN_VALUE} forces a bytecode node to stay uncached
-     * (i.e., it will not transition to cached).
+     * {@code 0} will cause each bytecode node to immediately transition to cached on the first
+     * invocation/resume. A threshold of {@code Integer.MIN_VALUE} forces a bytecode node to stay
+     * uncached (i.e., it will not transition to cached).
      * <p>
      * The default local value expression can be a constant literal (e.g., {@code "42"}), in which
      * case the value will be validated at build time. However, the expression can also refer to
@@ -421,6 +425,22 @@ public @interface GenerateBytecode {
     boolean storeBytecodeIndexInFrame() default false;
 
     /**
+     * Whether {@link TruffleStackTraceElement stack trace elements} of the annotated root node
+     * should capture frames. This flag should be used instead of
+     * {@link RootNode#isCaptureFramesForTrace(boolean)}, which the Bytecode DSL prevents you from
+     * overriding.
+     * <p>
+     * When this flag is non-null, you can use {@link BytecodeFrame#get(TruffleStackTraceElement)}
+     * to access frame data from a stack trace element. The frame only supports read-only access.
+     * <p>
+     * Bytecode DSL interpreters <strong>must not</strong> access frames directly using
+     * {@link TruffleStackTraceElement#getFrame}.
+     *
+     * @since 25.1
+     */
+    boolean captureFramesForTrace() default false;
+
+    /**
      * Path to a file containing optimization decisions. This file is generated using tracing on a
      * representative corpus of code.
      * <p>
@@ -489,9 +509,12 @@ public @interface GenerateBytecode {
     boolean enableSpecializationIntrospection() default false;
 
     /**
-     * Sets the default value that {@link BytecodeLocal locals} return when they are read without
-     * ever being written. Unless a default local value is specified, loading from a
-     * {@link BytecodeLocal local} that was never stored into throws a
+     * Specifies the default value produced when attempting to load a cleared {@link BytecodeLocal
+     * local} (i.e., a local that has not been written to).
+     * <p>
+     * This attribute is mutually exclusive with {@link #illegalLocalException()}: the interpreter
+     * can either produce a default value or throw a user-provided exception when loading a cleared
+     * local. If neither is explicitly specified, the interpreter defaults to throwing a
      * {@link FrameSlotTypeException}.
      * <p>
      * It is recommended for the default local value expression to refer to a static and final
@@ -515,6 +538,77 @@ public @interface GenerateBytecode {
      * @since 24.2
      */
     String defaultLocalValue() default "";
+
+    /**
+     * Specifies the exception to throw when attempting to load a cleared {@link BytecodeLocal
+     * local} (i.e., a local that has not been written to).
+     * <p>
+     * This attribute is mutually exclusive with {@link #defaultLocalValue()}: the interpreter can
+     * either produce a default value or throw a user-provided exception when loading a cleared
+     * local. If neither is explicitly specified, the interpreter defaults to throwing a
+     * {@link FrameSlotTypeException}.
+     * <p>
+     * When an illegal local exception is specified, the interpreter checks if a local is cleared
+     * before each load; if the local is cleared, the interpreter creates and throws an instance of
+     * the exception using the factory method. The interpreter will attempt to
+     * {@link #enableQuickening() quicken} away the clear check when possible.
+     * <p>
+     * Below is an example:
+     *
+     * <pre>
+     * &#64;GenerateBytecode(..., illegalLocalException = MyIllegalLocalException.class)
+     * abstract class MyBytecodeRootNode extends RootNode implements BytecodeRootNode {
+     *     // ...
+     * }
+     *
+     * class MyIllegalLocalException extends AbstractTruffleException {
+     *     public static MyIllegalLocalException create(Node location, BytecodeNode bytecode, BytecodeLocation location, LocalVariable variable) {
+     *         // ...
+     *     }
+     * }
+     * </pre>
+     *
+     * The provided exception class must declare a static factory method for instantiating
+     * exceptions. By default, this method is named {@code create}, but this can be overridden using
+     * {@link #illegalLocalExceptionFactory()}.
+     * <p>
+     * The factory method should return an instance of the exception class. It may take zero or more
+     * parameters of the following types (in any order):
+     * <ul>
+     * <li>{@link Node}: the current location (equivalent to {@code @Bind("$node")})</li>
+     * <li>{@link BytecodeNode}: the current bytecode node</li>
+     * <li>{@link BytecodeLocation}: the current bytecode location</li>
+     * <li>{@link LocalVariable}: an introspection object modeling the local's metadata (name, info,
+     * etc.)</li>
+     * </ul>
+     *
+     * <p>
+     * If the provided exception class is a Truffle exception (i.e., it extends
+     * {@link com.oracle.truffle.api.exception.AbstractTruffleException}), the exception can be
+     * thrown from runtime compiled code without deoptimization; otherwise, it is considered an
+     * internal error and throwing the exception will always trigger deoptimization.
+     * <p>
+     * Note: due to current limitations of the Bytecode DSL implementation, illegal local exceptions
+     * are not yet fully supported with local accessors:
+     * <ul>
+     * <li>If an operation uses a {@link LocalAccessor} or {@link LocalRangeAccessor}, the factory
+     * method cannot declare a {@link BytecodeLocation} parameter.</li>
+     * <li>If an operation uses a {@link MaterializedLocalAccessor}, illegal local exceptions cannot
+     * be used.</li>
+     * </ul>
+     *
+     * @since 25.1
+     */
+    Class<? extends RuntimeException> illegalLocalException() default FrameSlotTypeException.class;
+
+    /**
+     * Specifies the name of the static factory method used to instantiate illegal local exceptions.
+     * This attribute is only applicable if an {@link #illegalLocalException()} class is specified.
+     *
+     * @see #illegalLocalException()
+     * @since 25.1
+     */
+    String illegalLocalExceptionFactory() default "create";
 
     /**
      * Whether the {@link BytecodeDebugListener} methods should be notified by generated code. By
@@ -568,8 +662,176 @@ public @interface GenerateBytecode {
      * no effect.
      *
      * @see HostCompilerDirectives#markThreadedSwitch(int)
-     * @since 26.0
+     * @since 25.1
      */
     boolean enableThreadedSwitch() default true;
 
+    /**
+     * Enables instruction tracing support for the generated bytecode interpreter.
+     * <p>
+     * If {@code true}, the interpreter is generated with tracing hooks so that
+     * {@link InstructionTracer InstructionTracer}s can be attached at run time (via
+     * {@link BytecodeRootNodes#addInstructionTracer BytecodeRootNodes.addInstructionTracer} or
+     * {@link BytecodeDescriptor#addInstructionTracer BytecodeDescriptor.addInstructionTracer}).
+     * Attaching a tracer causes all executed instructions to invoke the tracer before execution.
+     * <p>
+     * If {@code false}, no tracing hooks are generated and any attempt to attach a tracer will
+     * throw {@link UnsupportedOperationException}.
+     *
+     * @since 25.1
+     */
+    boolean enableInstructionTracing() default true;
+
+    /**
+     * Enables instruction rewriting support for the generated bytecode interpreter.
+     * <p>
+     * Instruction rewriting is used to implement peephole optimizations (e.g., remove redundant
+     * loads) and other bytecode optimizations.
+     *
+     * @since 25.1
+     */
+    boolean enableInstructionRewriting() default true;
+
+    /**
+     * Enables tail call handlers for the generated bytecode interpreter.
+     * <p>
+     * For more details, see the <a href=
+     * "https://github.com/oracle/graal/blob/master/truffle/docs/OneCompilationPerBytecodeHandler.md">
+     * One Compilation per Bytecode Handler documentation</a>.
+     *
+     * @see BytecodeInterpreterHandlerConfig
+     * @since 25.1
+     */
+    boolean enableTailCallHandlers() default false;
+
+    /**
+     * Specifies the name of a supplier method used to convert a {@link Source} without content into
+     * one with content (i.e., one which has {@link Source#hasCharacters characters} or
+     * {@link Source#hasBytes() bytes}). Currently, only character-based sources are supported.
+     * <p>
+     * Bytecode DSL interpreters reparse source information lazily to reduce memory footprint. By
+     * default, a root node can have either no source information or full source information:
+     *
+     * <pre>
+     * [No Source Information] --ensureSourceInformation()--> [Full Source Information]
+     * </pre>
+     *
+     * The following example demonstrates the default behavior:
+     *
+     * <pre>
+     * CharSequence content = ...;
+     * Source source = Source.newBuilder(MyLanguage.ID, content, ...).build();
+     * var nodes = MyBytecodeRootNodeGen.create(myLanguage, BytecodeConfig.DEFAULT, b -> {
+     *     b.beginSource(source);
+     *     b.beginSourceSection(0, 10);
+     *     b.beginRoot();
+     *     ...
+     *     b.endRoot();
+     *     b.endSourceSection();
+     *     b.endSource();
+     * });
+     *
+     * nodes.getNode(0).getSourceSection();                   // == null
+     * nodes.ensureSourceInformation();                       // materializes sources by reparsing
+     * nodes.getNode(0).getSourceSection();                   // == source.createSection(0, 10)
+     * nodes.getNode(0).getSourceSection().getCharacters();   // == content
+     * </pre>
+     *
+     * Some interpreters may use basic source information (e.g., line numbers) frequently, but
+     * rarely need full source content. Declaring a source content supplier allows a root node to
+     * load source information without content and later load source content only if needed:
+     *
+     * <pre>
+     * [No Source Information] ---ensureSourceInformationWithContent()---> [Full Source Information]
+     *           |                                                                    ^
+     *           | ensureSourceInformation()     ensureSourceInformationWithContent() |
+     *           v                                                                    |
+     *           +----------------> [Source Information (No Content)] ----------------+
+     * </pre>
+     *
+     * The following example demonstrates how to add a supplier method:
+     *
+     * <pre>
+     * &#64;GenerateBytecode(sourceContentSupplier = "loadSourceContent", ...)
+     * public abstract class MyBytecodeRootNode extends RootNode implements BytecodeRootNode {
+     *
+     *     public static Source loadSourceContent(MyLanguage language, Source sourceWithoutContent) {
+     *         CharSequence characters = loadCharactersFromFile(sourceWithoutContent.getURI());
+     *         return Source.newBuilder(sourceWithoutContent).content(characters).build();
+     *     }
+     * }
+     * </pre>
+     *
+     * The supplier should use the source argument's attributes (e.g., {@link Source#getURI}) to
+     * load content and then return a new source object.
+     * <p>
+     * With a source content supplier, the previous example can be modified to avoid materializing
+     * source content until it is needed:
+     *
+     * <pre>
+     * Source source = Source.newBuilder(MyLanguage.ID, "", ...)
+     *                 .content(Source.CONTENT_NONE)
+     *                 .build();
+     * var nodes = MyBytecodeRootNodeGen.create(myLanguage, BytecodeConfig.DEFAULT, b -> {
+     *     b.beginSource(source);
+     *     b.beginSourceSection(0, 10);
+     *     b.beginRoot();
+     *     ...
+     *     b.endRoot();
+     *     b.endSourceSection();
+     *     b.endSource();
+     * });
+     *
+     * nodes.getNode(0).getSourceSection();                   // == null
+     * nodes.ensureSourceInformation();                       // materializes sources without content
+     * nodes.getNode(0).getSourceSection();                   // == source.createSection(0, 10)
+     * nodes.getNode(0).getSourceSection().hasCharacters();   // == false
+     * nodes.ensureSourceInformationWithContent();            // materializes source content
+     * nodes.getNode(0).getSourceSection().getCharacters();   // == content supplied by loadSourceContent
+     * </pre>
+     *
+     * The supplier may be called multiple times for a given source, so it is recommended to cache
+     * the loaded sources on the language instance, for example using a map:
+     *
+     * <pre>
+     * class MyLanguage extends TruffleLanguage&lt;MyLanguageContext&gt; {
+     *     Map&lt;Source, Source&gt; sourceContentCache = ...;
+     * }
+     *
+     * public static Source loadSourceContent(MyLanguage language, Source sourceWithoutContent) {
+     *     return language.sourceContentCache.computeIfAbsent(sourceWithoutContent, unused -> {
+     *         CharSequence characters = loadCharactersFromFile(sourceWithoutContent.getURI());
+     *         return Source.newBuilder(sourceWithoutContent).content(characters).build();
+     *     });
+     * }
+     * </pre>
+     *
+     * The supplier method must:
+     * <ul>
+     * <li>be a {@code static} method defined on the root node.</li>
+     * <li>declare two parameters: the {@link #languageClass() language} instance and a
+     * {@link Source} instance that does not have content.</li>
+     * <li>return a {@link Source} instance with content. If loading the content can fail (e.g., a
+     * source file was deleted), the result can be a source without content (such as the original
+     * source argument), but in such a scenario the interpreter should not assume that sources will
+     * always have content after content is supplied.</li>
+     * </ul>
+     *
+     * @since 25.1
+     */
+    String sourceContentSupplier() default "";
+
+    /**
+     * Enables compression of source information tables.
+     * <p>
+     * Source information can require a large amount of memory, and so this option makes source tables rely
+     * on a compressed encoding.
+     * This significantly reduces source table footprint, at the cost of making accessing source information
+     * less efficient because of the additional decoding step.
+     * It is set to `true` as a default, as the assumption is that the language is likely to only access source
+     * information infrequently, e.g. to get debugging information.
+     *
+     * @since 25.4
+     */
+    boolean enableCompressedSources() default true;
 }

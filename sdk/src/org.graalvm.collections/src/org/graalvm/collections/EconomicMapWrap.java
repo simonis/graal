@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -61,29 +61,30 @@ public class EconomicMapWrap<K, V> implements EconomicMap<K, V> {
     /** @since 21.1 */
     @Override
     public V get(K key) {
-        V result = map.get(key);
-        return result;
+        return map.get(key);
+    }
+
+    @Override
+    public V get(K key, V defaultValue) {
+        return map.getOrDefault(key, defaultValue);
     }
 
     /** @since 21.1 */
     @Override
     public V put(K key, V value) {
-        V result = map.put(key, value);
-        return result;
+        return map.put(key, value);
     }
 
     /** @since 21.1 */
     @Override
     public V putIfAbsent(K key, V value) {
-        V result = map.putIfAbsent(key, value);
-        return result;
+        return map.putIfAbsent(key, value);
     }
 
     /** @since 21.1 */
     @Override
     public int size() {
-        int result = map.size();
-        return result;
+        return map.size();
     }
 
     /** @since 21.1 */
@@ -101,8 +102,7 @@ public class EconomicMapWrap<K, V> implements EconomicMap<K, V> {
     /** @since 21.1 */
     @Override
     public V removeKey(K key) {
-        V result = map.remove(key);
-        return result;
+        return map.remove(key);
     }
 
     /** @since 21.1 */
@@ -172,6 +172,6 @@ public class EconomicMapWrap<K, V> implements EconomicMap<K, V> {
     /** @since 23.1 */
     @Override
     public String toString() {
-        return EconomicMapImpl.toString(false, size(), getEntries());
+        return EconomicMapImpl.toString(size(), getEntries());
     }
 }

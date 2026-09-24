@@ -36,7 +36,6 @@ local devkits = graal_common.devkits;
   common_vm: graal_common.build_base + vm.vm_setup + {
     python_version: "3",
     logs+: [
-      '*/mxbuild/dists/stripped/*.map',
       '**/install.packages.R.log',
     ],
   },
@@ -73,12 +72,6 @@ local devkits = graal_common.devkits;
     },
   },
 
-  fastr_no_recommended: {
-    environment+: {
-      FASTR_NO_RECOMMENDED: 'true'
-    },
-  },
-
   vm_linux_amd64: graal_common.linux_amd64 + self.common_vm_linux + graal_common.deps.svm,
 
   vm_linux_amd64_ol9: graal_common.linux_amd64_ol9 + self.common_vm_linux + graal_common.deps.svm,
@@ -89,26 +82,14 @@ local devkits = graal_common.devkits;
 
   vm_linux_aarch64: self.common_vm_linux + graal_common.linux_aarch64,
 
+  vm_linux_aarch64_ol8: self.common_vm_linux + graal_common.linux_aarch64_ol8,
   vm_linux_aarch64_ol9: self.common_vm_linux + graal_common.linux_aarch64_ol9,
   vm_ol9_aarch64: self.vm_linux_aarch64_ol9,
 
-  vm_darwin_amd64: self.common_vm_darwin + graal_common.darwin_amd64 + {
-    capabilities+: ['ram16gb'],
-    packages+: {
-      gcc: '==4.9.2',
-    },
-    environment+: {
-      # for compatibility with macOS BigSur
-      MACOSX_DEPLOYMENT_TARGET: '11.0',
-    },
-  },
-
-  vm_darwin_amd64_jdkLatest: self.vm_darwin_amd64,
-
   vm_darwin_aarch64: self.common_vm_darwin + graal_common.darwin_aarch64 + {
     environment+: {
-      # for compatibility with macOS BigSur
-      MACOSX_DEPLOYMENT_TARGET: '11.0',
+      # for compatibility with macOS Sonoma
+      MACOSX_DEPLOYMENT_TARGET: '14.0',
     },
   },
 
@@ -131,10 +112,10 @@ local devkits = graal_common.devkits;
   // svm_common includes the dependencies for all platforms besides windows amd64
   svm_common_windows_amd64(jdk): graal_common.deps.svm + graal_common.devkits["windows-jdk" + jdk],
 
-  maven_deploy_sdk:      ['--suite', 'sdk', 'maven-deploy', '--validate', 'none', '--all-distribution-types', '--with-suite-revisions-metadata'],
+  maven_deploy_sdk:      ['--suite', 'sdk', '--', 'maven-deploy', '--validate', 'none', '--all-distribution-types', '--with-suite-revisions-metadata'],
   deploy_artifacts_sdk(os, base_dist_name=null): (if base_dist_name != null then ['--base-dist-name=' + base_dist_name] else []) + ['--suite', 'sdk', 'deploy-artifacts', '--uploader', if os == 'windows' then 'artifact_uploader.cmd' else 'artifact_uploader'],
 
-  maven_deploy_all_suites: ['maven-deploy', '--all-suites', '--validate', 'none', '--all-distribution-types', '--with-suite-revisions-metadata'],
+  maven_deploy_all_suites: ['--', 'maven-deploy', '--all-suites', '--validate', 'none', '--all-distribution-types', '--with-suite-revisions-metadata'],
   deploy_artifacts_all_suites(os): ['deploy-artifacts', '--all-suites', '--uploader', if os == 'windows' then 'artifact_uploader.cmd' else 'artifact_uploader'],
 
   # All 3 used in vm.jsonnet
@@ -158,7 +139,7 @@ local devkits = graal_common.devkits;
     $.mx_vm_complete + self.artifact_deploy_standalones_dry_run(os)
   ],
 
-  full_vm_build: graal_common.deps.svm + graal_common.deps.sulong + graal_common.deps.truffleruby + graal_common.deps.graalpy + graal_common.deps.fastr + vm.custom_vm + graal_common.deps.espresso,
+  full_vm_build: graal_common.deps.svm + graal_common.deps.sulong + graal_common.deps.graalpy + vm.custom_vm + graal_common.deps.espresso,
 
   graalvm_complete_build_deps(edition, os, arch, java_version, espresso_java_version=25, espresso_extra_java_version=[21]):
       local java_deps(edition) =
@@ -170,7 +151,7 @@ local devkits = graal_common.devkits;
         downloads+: {
           ESPRESSO_JAVA_HOME: graal_common.jdks_data['labsjdk-ee-' + espresso_java_version],
         } + (
-          if (os == 'linux' || os == 'darwin') && (arch == 'amd64') then {
+          if (os == 'linux') && (arch == 'amd64') then {
             ESPRESSO_LLVM_JAVA_HOME: graal_common.jdks_data['labsjdk-ee-' + espresso_java_version + '-llvm'],
           } else {
           }
@@ -178,7 +159,7 @@ local devkits = graal_common.devkits;
           if (std.length(espresso_extra_java_version) > 0) then ({
             EXTRA_ESPRESSO_JAVA_HOMES: {pathlist: [graal_common.jdks_data['labsjdk-ee-' + v] for v in espresso_extra_java_version]},
           } + (
-            if (os == 'linux' || os == 'darwin') && (arch == 'amd64') then {
+            if (os == 'linux') && (arch == 'amd64') then {
               EXTRA_ESPRESSO_LLVM_JAVA_HOMEs:  {pathlist: [graal_common.jdks_data['labsjdk-ee-' + v + '-llvm'] for v in espresso_extra_java_version]},
             } else {
             }
@@ -187,16 +168,12 @@ local devkits = graal_common.devkits;
         )
       };
 
-      if (os == 'windows') then
-        if (arch == 'amd64') then
-          # Windows/AMD64
+      if os == 'windows' && arch == 'amd64' then
           java_deps(edition) + (if (java_version == 'latest') then self.svm_common_windows_amd64("Latest") else self.svm_common_windows_amd64(java_version)) + self.js_windows_common + graal_common.deps.sulong
-        else
-          error 'Unknown windows arch: ' + arch
-      else if (os == 'linux' || os == 'darwin') then
-        java_deps(edition) + self.full_vm_build
+      else if (os == 'darwin' && arch == 'aarch64') || (os == 'linux') then
+          java_deps(edition) + self.full_vm_build
       else
-        error 'Unknown os: ' + os,
+        error 'Unsupported platform: ' + os + '/' + arch,
 
   # for cases where a maven package is not easily accessible
   maven_download_unix: {
@@ -256,17 +233,28 @@ local devkits = graal_common.devkits;
     language_polyglot_isolate_distributions(language_id, current_os, current_arch, current_only=false)::
       local id_upcase = std.asciiUpper(language_id);
       local base_names = [id_upcase + '_ISOLATE', id_upcase + '_ISOLATE_RESOURCES'];
-      local oss = ['linux', 'darwin', 'windows'];
-      local archs = ['amd64', 'aarch64'];
-      [base_names[0]] + [self.platform_specific_distribution_name(base_name, os, arch),
+      local platforms = [['linux', 'amd64'], ['linux', 'aarch64'], ['darwin', 'aarch64'], ['windows', 'amd64']];
+      [base_names[0]] + [self.platform_specific_distribution_name(base_name, p[0], p[1]),
         for base_name in base_names
-        for os in oss for arch in archs
-        if os != 'windows' || arch != 'aarch64'
-        if !current_only || os == current_os && arch == current_arch
+        for p in platforms
+        if !current_only || p[0] == current_os && p[1] == current_arch
       ],
 
     polyglot_isolate_distributions(language_ids, current_os, current_arch, current_only=false)::
       std.flattenArrays([self.language_polyglot_isolate_distributions(id, current_os, current_arch, current_only) for id in language_ids]),
+
+    # Returns only the two platform-specific distributions for the current OS/arch:
+    #   {LANG}_ISOLATE_{OS}_{ARCH}           — per-platform meta-POM
+    #   {LANG}_ISOLATE_RESOURCES_{OS}_{ARCH} — JAR with the native binary
+    # Excludes the aggregate {LANG}_ISOLATE POM so non-main platform jobs do not attempt to
+    # redeploy it; that distribution is deployed solely by the main platform.
+    language_polyglot_isolate_platform_distributions(language_id, current_os, current_arch)::
+      local id_upcase = std.asciiUpper(language_id);
+      local base_names = [id_upcase + '_ISOLATE', id_upcase + '_ISOLATE_RESOURCES'];
+      [self.platform_specific_distribution_name(base_name, current_os, current_arch) for base_name in base_names],
+
+    polyglot_isolate_platform_distributions(language_ids, current_os, current_arch)::
+      std.flattenArrays([self.language_polyglot_isolate_platform_distributions(id, current_os, current_arch) for id in language_ids]),
 
     # To enable polyglot isolate builds for a language:
     # 1. Add the language ID to `polyglot_isolate_languages`.
@@ -280,11 +268,13 @@ local devkits = graal_common.devkits;
     legacy_mx_args:: [],  # `['--force-bash-launcher=true', '--skip-libraries=true']` have been replaced by arguments from `vm.maven_deploy_base_functions.mx_args(os, arch)`
     mx_args(os, arch, reduced):: self.legacy_mx_args + vm.maven_deploy_base_functions.mx_args(os, arch, reduced),
     mx_cmd_base(os, arch, reduced):: ['mx'] + vm.maven_deploy_base_functions.dynamic_imports(os, arch) + self.mx_args(os, arch, reduced),
-    mx_cmd_base_only_native(os, arch, reduced):: ['mx', '--dynamicimports', '/substratevm'] + self.mx_args(os, arch, reduced) + ['--native-images=false'],  # `--native-images=false` takes precedence over `self.mx_args(os, arch)`
+    mx_cmd_base_only_native(os, arch, reduced):: ['mx', '--dynamicimports', '/substratevm'] + std.filter(function(arg) !std.startsWith(arg, '--polyglot-isolates'), self.mx_args(os, arch, reduced)) + ['--native-images=false'],  # `--native-images=false` takes precedence over `self.mx_args(os, arch)`
 
     only_native_dists:: 'TRUFFLE_NFI_NATIVE,SVM_HOSTED_NATIVE',
 
     build(os, arch, reduced, mx_args=[], build_args=[]):: [
+      self.mx_cmd_base(os, arch, reduced) + mx_args + ['graalvm-show'],
+      $.fetch_tags,
       self.mx_cmd_base(os, arch, reduced) + mx_args + ['build'] + build_args,
     ],
 
@@ -292,7 +282,11 @@ local devkits = graal_common.devkits;
 
     pd_layouts_artifact_name(platform, dry_run):: 'pd-layouts-' + (if dry_run then 'dry-run-' else '') + platform,
 
-    mvn_args: ['maven-deploy', '--tags=public', '--all-distribution-types', '--validate=full', '--version-suite=vm'],
+    isolate_bundle_artifact_name(platform, dry_run):: 'isolate-bundle-' + (if dry_run then 'dry-run-' else '') + platform,
+
+    isolate_bundle_rel_path(platform):: 'isolate-bundle-' + platform,
+
+    mvn_args: ['--', 'maven-deploy', '--tags=public', '--all-distribution-types', '--validate=full', '--version-suite=vm'],
     mvn_args_only_native: self.mvn_args + ['--all-suites', '--only', self.only_native_dists],
 
     compose_platform(os, arch):: os + '-' + arch,
@@ -332,7 +326,8 @@ local devkits = graal_common.devkits;
       local mvn_artifacts_snippet =
         # remotely deploy only the suites that are defined in the current repository, to avoid duplicated deployments
         if (vm.maven_deploy_base_functions.edition == 'ce') then
-          self.deploy_ce(os, arch, false, dry_run, [remote_mvn_repo])
+          self.deploy_ce(os, arch, false, dry_run, ['--skip', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', remote_mvn_repo])
+          + self.deploy_ce(os, arch, false, dry_run, ['--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', remote_mvn_repo])
         else
           self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--skip', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', remote_mvn_repo])
           + self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', remote_mvn_repo], extra_mx_args=polyglot_isolate_mx_args);
@@ -345,14 +340,21 @@ local devkits = graal_common.devkits;
           ['set-export', 'LOCAL_MAVEN_REPO_URL', ['mx', '--quiet', 'local-path-to-url', '${LOCAL_MAVEN_REPO_REL_PATH}']],
         ]
         + (
-          # Locally deploy all relevant suites
+          # Locally deploy all relevant suites; for polyglot isolates deploy only the current platform
+          # (current_only=true) because real native libraries for other platforms are not available here —
+          # they are brought in below from the per-platform isolate bundles.
           if (vm.maven_deploy_base_functions.edition == 'ce') then
-            self.deploy_ce(os, arch, false, dry_run, [local_repo, '${LOCAL_MAVEN_REPO_URL}'])
+            self.deploy_ce(os, arch, false, dry_run, ['--skip', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', local_repo, '${LOCAL_MAVEN_REPO_URL}'])
+            + self.deploy_ce(os, arch, false, dry_run, ['--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', local_repo, '${LOCAL_MAVEN_REPO_URL}'])
           else
             self.deploy_ce(os, arch, false, dry_run, ['--dummy-javadoc', '--skip', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', local_repo, '${LOCAL_MAVEN_REPO_URL}'])
-            + self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', local_repo, '${LOCAL_MAVEN_REPO_URL}'], extra_mx_args=polyglot_isolate_mx_args)
+            + self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)) + ',TOOLS,LANGUAGES,TOOLS_COMMUNITY,LANGUAGES_COMMUNITY', local_repo, '${LOCAL_MAVEN_REPO_URL}'], extra_mx_args=polyglot_isolate_mx_args)
             + self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', local_repo, '${LOCAL_MAVEN_REPO_URL}'])
         )
+        # Merge the real per-platform isolate JARs (built and locally published by each non-main platform
+        # job) into the local Maven repo so the bundle contains genuine native libraries for all platforms.
+        + [['mkdir', '-p', '${LOCAL_MAVEN_REPO_REL_PATH}']]
+        + [['cp', '-r', self.isolate_bundle_rel_path(platform) + '/.', '${LOCAL_MAVEN_REPO_REL_PATH}'] for platform in other_platforms]
         + (
           # Archive and deploy
           if (dry_run) then
@@ -427,22 +429,37 @@ local devkits = graal_common.devkits;
       ) else (
         (
           if (vm.maven_deploy_base_functions.edition == 'ce') then
-            self.build(os, arch, reduced=false, build_args=['--targets=' + self.only_native_dists + ',{PLATFORM_DEPENDENT_LAYOUT_DIR_DISTRIBUTIONS}']) +
-            self.deploy_only_native(os, arch, reduced=false, dry_run=dry_run, extra_args=[remote_mvn_repo])
+            self.build(os, arch, reduced=false, build_args=['--targets=' + self.only_native_dists + ',' + std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)) + ',{PLATFORM_DEPENDENT_LAYOUT_DIR_DISTRIBUTIONS}']) +
+            self.deploy_only_native(os, arch, reduced=false, dry_run=dry_run, extra_args=[remote_mvn_repo]) +
+            self.deploy_ce(os, arch, false, dry_run, ['--only', std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)), remote_mvn_repo])
+            # Also publish the real isolate JARs to a local repo so the main-platform bundle job can merge them.
+            + [['mkdir', '-p', self.isolate_bundle_rel_path(os + '-' + arch)]]
+            + [['set-export', 'LOCAL_ISOLATE_REPO_URL', ['mx', '--quiet', 'local-path-to-url', self.isolate_bundle_rel_path(os + '-' + arch)]]]
+            + self.deploy_ce(os, arch, false, false, ['--only', std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)), 'local', '${LOCAL_ISOLATE_REPO_URL}'])
           else
-            self.build(os, arch, reduced=false, build_args=['--targets=' + self.only_native_dists + ',' + std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)) + ',{PLATFORM_DEPENDENT_LAYOUT_DIR_DISTRIBUTIONS}']) +
+            self.build(os, arch, reduced=false, build_args=['--targets=' + self.only_native_dists + ',' + std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)) + ',{PLATFORM_DEPENDENT_LAYOUT_DIR_DISTRIBUTIONS}']) +
             [['echo', 'Skipping the deployment of ' + self.only_native_dists + ': It is already deployed by the ce job']] +
-            self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_distributions(polyglot_isolate_languages, os, arch, true)), remote_mvn_repo], extra_mx_args=polyglot_isolate_mx_args)
+            self.deploy_ee(os, arch, false, dry_run, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)), remote_mvn_repo], extra_mx_args=polyglot_isolate_mx_args)
+            # Also publish the real isolate JARs to a local repo so the main-platform bundle job can merge them.
+            + [['mkdir', '-p', self.isolate_bundle_rel_path(os + '-' + arch)]]
+            + [['set-export', 'LOCAL_ISOLATE_REPO_URL', ['mx', '--quiet', 'local-path-to-url', self.isolate_bundle_rel_path(os + '-' + arch)]]]
+            + self.deploy_ee(os, arch, false, false, ['--dummy-javadoc', '--only', std.join(',', self.polyglot_isolate_platform_distributions(polyglot_isolate_languages, os, arch)), 'local', '${LOCAL_ISOLATE_REPO_URL}'], extra_mx_args=polyglot_isolate_mx_args)
         )
         + [self.mx_cmd_base(os, arch, reduced=false) + ['archive-pd-layouts', self.pd_layouts_archive_name(os + '-' + arch)]]
       ),
 
-    base_object(os, arch, dry_run, remote_mvn_repo, remote_non_mvn_repo, local_repo, main_platform='linux-amd64', other_platforms=['linux-aarch64', 'darwin-amd64', 'darwin-aarch64', 'windows-amd64'],):: {
+    base_object(os, arch, dry_run, remote_mvn_repo, remote_non_mvn_repo, local_repo, main_platform='linux-amd64', other_platforms=['linux-aarch64', 'darwin-aarch64', 'windows-amd64'],):: {
       run: $.maven_deploy_base_functions.run_block(os, arch, dry_run, remote_mvn_repo, remote_non_mvn_repo, local_repo, main_platform, other_platforms),
     } + if (self.compose_platform(os, arch) == main_platform) then {
        requireArtifacts+: [
          {
            name: $.maven_deploy_base_functions.pd_layouts_artifact_name(platform, dry_run),
+           dir: vm.vm_dir,
+           autoExtract: true,
+         } for platform in other_platforms
+       ] + [
+         {
+           name: $.maven_deploy_base_functions.isolate_bundle_artifact_name(platform, dry_run),
            dir: vm.vm_dir,
            autoExtract: true,
          } for platform in other_platforms
@@ -454,6 +471,11 @@ local devkits = graal_common.devkits;
            name: $.maven_deploy_base_functions.pd_layouts_artifact_name(os + '-' + arch, dry_run),
            dir: vm.vm_dir,
            patterns: [$.maven_deploy_base_functions.pd_layouts_archive_name(os + '-' + arch)],
+        },
+        {
+           name: $.maven_deploy_base_functions.isolate_bundle_artifact_name(os + '-' + arch, dry_run),
+           dir: vm.vm_dir,
+           patterns: [$.maven_deploy_base_functions.isolate_bundle_rel_path(os + '-' + arch) + '/**'],
         },
       ],
     },
@@ -473,14 +495,17 @@ local devkits = graal_common.devkits;
     environment+: {
       PATH: '$MAVEN_HOME/bin:$JAVA_HOME/bin:$PATH:/usr/local/bin',
     },
+    capabilities: ['darwin_sonoma'],
   },
 
   record_file_sizes:: ['benchmark', 'file-size:*', '--results-file', 'sizes.json', '--', '--jvm', 'server'],
   upload_file_sizes:: ['bench-uploader.py', 'sizes.json'],
+  fetch_tags:: ['git', '-C', vm.graal_repo_root, 'fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/*:refs/tags/*'],
 
   build_base_graalvm_image: [
     $.mx_vm_common + vm.vm_profiles + ['graalvm-show'],
-    $.mx_vm_common + vm.vm_profiles + ['build'],
+    $.fetch_tags,
+    $.mx_vm_common + vm.vm_profiles + ['build', '--targets=GRAALVM'],
     ['set-export', 'GRAALVM_HOME', $.mx_vm_common + vm.vm_profiles + ['--quiet', '--no-warning', 'graalvm-home']],
   ],
 
@@ -525,13 +550,14 @@ local devkits = graal_common.devkits;
     timelimit: "1:00:00"
   },
 
-  deploy_graalvm_standalones(java_version, record_file_sizes=false): vm.check_structure + {
+  deploy_graalvm_standalones(java_version, record_file_sizes=false): vm.check_structure + graal_common.deps.graalnodejs + {
     build_deps:: '{MAVEN_TAG_DISTRIBUTIONS:standalone}',
 
     tags:: 'standalone',
 
     run: $.patch_env(self.os, self.arch, java_version) + [
       $.mx_vm_complete + ['graalvm-show'],
+      $.fetch_tags,
       $.mx_vm_complete + ['build', '--dependencies', self.build_deps],
     ]
     + $.deploy_standalones(self.os, self.tags)
@@ -554,11 +580,9 @@ local devkits = graal_common.devkits;
   # Linux/AMD64
   deploy_vm_standalones_javaLatest_linux_amd64: vm.vm_java_Latest + self.full_vm_build + self.linux_deploy + self.vm_base('linux', 'amd64', 'daily', deploy=true) + self.deploy_graalvm_standalones('latest', record_file_sizes=true) + {name: 'daily-deploy-vm-standalones-java-latest-linux-amd64', notify_groups:: ["deploy"]},
   # Linux/AARCH64
-  deploy_vm_standalones_javaLatest_linux_aarch64: vm.vm_java_Latest + self.full_vm_build + self.linux_deploy + self.vm_base('linux', 'aarch64', 'daily', deploy=true) + self.deploy_graalvm_standalones('latest') + {name: 'daily-deploy-vm-standalones-java-latest-linux-aarch64', notify_groups:: ["deploy"], capabilities+: ["!xgene3"]},
-  # Darwin/AMD64
-  deploy_vm_standalones_javaLatest_darwin_amd64: vm.vm_java_Latest + self.full_vm_build + self.darwin_deploy + self.vm_base('darwin', 'amd64', 'daily', deploy=true, jdk_hint='Latest') + self.deploy_graalvm_standalones('latest') + {name: 'daily-deploy-vm-standalones-java-latest-darwin-amd64', capabilities+: ["darwin_bigsur", "!macmini_late_2014"], notify_groups:: ["deploy"], timelimit: '3:00:00'},
+  deploy_vm_standalones_javaLatest_linux_aarch64: vm.vm_java_Latest + self.full_vm_build + self.linux_deploy + self.vm_base('linux', 'aarch64', 'daily', deploy=true, os_distro='ol8') + self.deploy_graalvm_standalones('latest') + {name: 'daily-deploy-vm-standalones-java-latest-linux-aarch64', notify_groups:: ["deploy"], capabilities+: ["!xgene3"]},
   # Darwin/AARCH64
-  deploy_vm_standalones_javaLatest_darwin_aarch64: vm.vm_java_Latest + self.full_vm_build + self.darwin_deploy + self.vm_base('darwin', 'aarch64', 'daily', deploy=true) + self.deploy_graalvm_standalones('latest') + {name: 'daily-deploy-vm-standalones-java-latest-darwin-aarch64', capabilities+: ["darwin_bigsur"], notify_groups:: ["deploy"], notify_emails+: ["bernhard.urban-forster@oracle.com"], timelimit: '3:00:00'},
+  deploy_vm_standalones_javaLatest_darwin_aarch64: vm.vm_java_Latest + self.full_vm_build + self.darwin_deploy + self.vm_base('darwin', 'aarch64', 'daily', deploy=true) + self.deploy_graalvm_standalones('latest') + {name: 'daily-deploy-vm-standalones-java-latest-darwin-aarch64', notify_groups:: ["deploy"], notify_emails+: ["bernhard.urban-forster@oracle.com"], timelimit: '3:00:00'},
   # Windows/AMD64
   deploy_vm_standalones_javaLatest_windows_amd64: vm.vm_java_Latest + self.svm_common_windows_amd64('Latest') + self.js_windows_common + graal_common.deps.sulong + self.vm_base('windows', 'amd64', 'daily', deploy=true, jdk_hint='Latest') + self.deploy_graalvm_standalones('latest') + self.deploy_build + {name: 'daily-deploy-vm-standalones-java-latest-windows-amd64', timelimit: '2:30:00', notify_groups:: ["deploy"]},
 
@@ -583,7 +607,7 @@ local devkits = graal_common.devkits;
   {
     local name = "graalvm-jdklatest-" + vm + "-" + os + "-" + arch,
     local env = vm,
-    local mx = ["mx", "--strip-jars", "--env", env],
+    local mx = ["mx", "--env", env],
     name: "build-" + name,
     run+: [
       ["cd", repo_config.vm.suite_dir],
@@ -598,9 +622,6 @@ local devkits = graal_common.devkits;
         dir: "../artifacts",
         patterns: ["*"],
       },
-    ],
-    logs+: [
-      "*/mxbuild/dists/stripped/*.map",
     ],
     targets: ["ondemand"],
     timelimit: "0:30:00",
@@ -623,7 +644,7 @@ local devkits = graal_common.devkits;
     #
     # Gates
     #
-    vm.vm_java_Latest + graal_common.deps.eclipse + graal_common.deps.jdt + graal_common.deps.spotbugs + self.vm_base('linux', 'amd64', 'tier1') + galahad.exclude + {
+    vm.vm_java_Latest + graal_common.deps.jdt + graal_common.deps.spotbugs + self.vm_base('linux', 'amd64', 'tier1') + galahad.exclude + {
      run: [
        ['mx', 'gate', '-B=--force-deprecation-as-warning', '--tags', 'style,fullbuild'],
      ],

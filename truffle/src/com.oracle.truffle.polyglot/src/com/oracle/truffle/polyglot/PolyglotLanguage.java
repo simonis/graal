@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -46,6 +46,7 @@ import static com.oracle.truffle.polyglot.EngineAccessor.NODES;
 
 import java.util.Set;
 
+import com.oracle.truffle.api.impl.TruffleVersions;
 import org.graalvm.home.Version;
 import org.graalvm.options.OptionDescriptors;
 import org.graalvm.polyglot.SandboxPolicy;
@@ -93,6 +94,10 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
 
     boolean isFirstInstance() {
         return firstInstance;
+    }
+
+    boolean isInstantiated() {
+        return !firstInstance;
     }
 
     void initializeContextClass(Object contextImpl) {
@@ -218,7 +223,7 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
                     try {
                         this.options = LANGUAGE.describeOptions(instance.spi, cache.getId());
                         this.sourceOptions = LANGUAGE.describeSourceOptions(instance.spi, cache.getId());
-                        this.emptySourceOptions = new OptionValuesImpl(sourceOptions, SandboxPolicy.TRUSTED, false, false);
+                        this.emptySourceOptions = new OptionValuesImpl(sourceOptions, SandboxPolicy.TRUSTED, false);
                     } catch (Exception e) {
                         throw new IllegalStateException(String.format("Error initializing language '%s' using class '%s'.", cache.getId(), cache.getClassName()), e);
                     }
@@ -232,7 +237,7 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
         if (optionValues == null) {
             synchronized (engine.lock) {
                 if (optionValues == null) {
-                    optionValues = new OptionValuesImpl(getOptionsInternal(), engine.sandboxPolicy, false, false);
+                    optionValues = new OptionValuesImpl(getOptionsInternal(), engine.sandboxPolicy, false);
                 }
             }
         }
@@ -270,7 +275,11 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
     public String getVersion() {
         final String version = cache.getVersion();
         if (version.equals("inherit")) {
-            return engine.getVersion();
+            try {
+                return TruffleVersions.readTruffleAPIVersion().toString();
+            } catch (Throwable t) {
+                throw PolyglotImpl.guestToHostException(engine, t);
+            }
         } else {
             return version;
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,7 +40,7 @@
  */
 package com.oracle.truffle.regex.tregex.test.generated;
 
-import static com.oracle.truffle.regex.tregex.string.Encodings.UTF_16;
+import static com.oracle.truffle.regex.tregex.string.Encoding.UTF_16;
 import static com.oracle.truffle.regex.tregex.test.generated.TestCase.match;
 import static com.oracle.truffle.regex.tregex.test.generated.TestCase.noMatch;
 import static com.oracle.truffle.regex.tregex.test.generated.TestCase.syntaxError;
@@ -156,6 +156,9 @@ public class JavaGeneratedTests {
         testCase("(?:^\\1|$){10,11}bc", "", UTF_16, noMatch("aaaaaabc", 0)),
         testCase("a(?:|[0-9]+?a|[0-9a]){11,13}?[ab]", "", UTF_16, match("a372a466a109585878b", 0, 0, 19)),
         testCase("\\Z", "", UTF_16, match("\r\n", 0, 0, 0)),
+        testCase("[a-\\", "", UTF_16, syntaxError(ErrorCode.InvalidCharacterClass)),
+        testCase("[a-\\D", "", UTF_16, syntaxError(ErrorCode.InvalidCharacterClass)),
+        testCase("[\\D-a", "", UTF_16, syntaxError(ErrorCode.UnmatchedBracket)),
 
         /* GENERATED CODE END - KEEP THIS MARKER FOR AUTOMATIC UPDATES */
         // @formatter:on

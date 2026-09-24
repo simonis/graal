@@ -24,24 +24,25 @@
  */
 package com.oracle.svm.core.identityhashcode;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.util.SplittableRandom;
 
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.SignedWord;
+import org.graalvm.word.impl.ObjectAccess;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalObject;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalObject;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.nodes.NamedLocationIdentity;
@@ -49,8 +50,6 @@ import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.util.Providers;
 import jdk.graal.compiler.replacements.IdentityHashCodeSnippets;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
 import jdk.internal.misc.Unsafe;
 
 public final class IdentityHashCodeSupport {
@@ -80,7 +79,7 @@ public final class IdentityHashCodeSupport {
     @SubstrateForeignCallTarget(stubCallingConvention = false)
     @Uninterruptible(reason = "Prevent a GC interfering with the object's identity hash state.")
     public static int computeAbsentIdentityHashCode(Object obj) {
-        assert ConfigurationValues.getObjectLayout().isIdentityHashFieldOptional();
+        assert ObjectLayout.singleton().isIdentityHashFieldOptional();
 
         /*
          * This code must not be inlined into the snippet because it could be used in an
@@ -91,7 +90,7 @@ public final class IdentityHashCodeSupport {
          * writing the object header to the object's previous location after is has been moved).
          */
         ObjectHeader oh = Heap.getHeap().getObjectHeader();
-        Word objPtr = Word.objectToUntrackedPointer(obj);
+        Word objPtr = Word.objectToUntrackedWord(obj);
         Word header = oh.readHeaderFromPointer(objPtr);
         if (oh.hasOptionalIdentityHashField(header)) {
             /*
@@ -108,7 +107,7 @@ public final class IdentityHashCodeSupport {
 
     @Uninterruptible(reason = "Prevent a GC interfering with the object's identity hash state.")
     public static int computeHashCodeFromAddress(Object obj) {
-        Word address = Word.objectToUntrackedPointer(obj);
+        Word address = Word.objectToUntrackedWord(obj);
         long salt = Heap.getHeap().getIdentityHashSalt(obj);
         SignedWord salted = Word.signed(salt).xor(address);
         int hash = mix32(salted.rawValue()) >>> 1; // shift: ensure positive, same as on HotSpot
@@ -156,7 +155,7 @@ public final class IdentityHashCodeSupport {
     public static int readIdentityHashCodeFromField(Object obj) {
         assertHasIdentityHashField(obj);
 
-        ObjectLayout ol = ConfigurationValues.getObjectLayout();
+        ObjectLayout ol = ObjectLayout.singleton();
         int numBits = ol.getIdentityHashCodeNumBits();
         int shift = ol.getIdentityHashCodeShift();
         int offset = LayoutEncoding.getIdentityHashOffset(obj);
@@ -176,7 +175,7 @@ public final class IdentityHashCodeSupport {
         /* The guarantee makes the code a bit smaller as obj is non-null afterward. */
         VMError.guarantee(obj != null);
 
-        ObjectLayout ol = ConfigurationValues.getObjectLayout();
+        ObjectLayout ol = ObjectLayout.singleton();
         assert !ol.isIdentityHashFieldOptional();
 
         int numBits = ol.getIdentityHashCodeNumBits();
@@ -221,7 +220,7 @@ public final class IdentityHashCodeSupport {
 
     /** This method may only be called after the hub pointer was already written. */
     public static void writeIdentityHashCodeToImageHeap(Pointer hashCodePtr, int value) {
-        ObjectLayout ol = ConfigurationValues.getObjectLayout();
+        ObjectLayout ol = ObjectLayout.singleton();
         int numBits = ol.getIdentityHashCodeNumBits();
         int shift = ol.getIdentityHashCodeShift();
         long mask = ol.getIdentityHashCodeMask();
@@ -285,7 +284,7 @@ public final class IdentityHashCodeSupport {
      */
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static boolean hasIdentityHashField(Object obj) {
-        ObjectLayout ol = ConfigurationValues.getObjectLayout();
+        ObjectLayout ol = ObjectLayout.singleton();
         ObjectHeader oh = Heap.getHeap().getObjectHeader();
         return !ol.isIdentityHashFieldOptional() || oh.hasOptionalIdentityHashField(oh.readHeaderFromObject(obj));
     }

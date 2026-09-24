@@ -28,8 +28,8 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.core.graal.isolated.ClientHandle;
@@ -39,14 +39,33 @@ import com.oracle.svm.core.graal.isolated.IsolatedCompileContext;
 import com.oracle.svm.core.meta.DirectSubstrateObjectConstant;
 import com.oracle.svm.core.meta.ObjectConstantEquality;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.vm.ci.meta.Constant;
 
+@AutomaticallyRegisteredFeature
+final class IsolateAwareObjectConstantEqualityFeature implements InternalFeature {
+    @Override
+    public boolean isInConfiguration(IsInConfigurationAccess access) {
+        return SubstrateOptions.SupportCompileInIsolates.getValue();
+    }
+
+    @Override
+    public void afterRegistration(AfterRegistrationAccess access) {
+        if (RuntimeCompilation.isEnabled()) {
+            ImageSingletons.add(ObjectConstantEquality.class, new IsolateAwareObjectConstantEquality());
+        }
+    }
+}
+
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 final class IsolateAwareObjectConstantEquality implements ObjectConstantEquality {
     @Override
     public boolean test(SubstrateObjectConstant x, SubstrateObjectConstant y) {
-        if (x == y) {
+        if (x.identicalTo(y)) {
             return true;
         } else if (x instanceof DirectSubstrateObjectConstant && y instanceof DirectSubstrateObjectConstant) {
             return ((DirectSubstrateObjectConstant) x).getObject() == ((DirectSubstrateObjectConstant) y).getObject();
@@ -80,20 +99,5 @@ final class IsolateAwareObjectConstantEquality implements ObjectConstantEquality
     @CEntryPointOptions(callerEpilogue = IsolatedCompileClient.ExceptionRethrowCallerEpilogue.class)
     private static boolean isolatedHandleTargetEqualImageObject(@SuppressWarnings("unused") ClientIsolateThread client, ClientHandle<?> x, ImageHeapRef<?> y) {
         return IsolatedCompileClient.get().unhand(x) == ImageHeapObjects.deref(y);
-    }
-}
-
-@AutomaticallyRegisteredFeature
-final class IsolateAwareObjectConstantEqualityFeature implements InternalFeature {
-    @Override
-    public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return SubstrateOptions.supportCompileInIsolates();
-    }
-
-    @Override
-    public void afterRegistration(AfterRegistrationAccess access) {
-        if (RuntimeCompilation.isEnabled()) {
-            ImageSingletons.add(ObjectConstantEquality.class, new IsolateAwareObjectConstantEquality());
-        }
     }
 }

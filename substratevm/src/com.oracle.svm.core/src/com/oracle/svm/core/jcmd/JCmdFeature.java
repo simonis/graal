@@ -35,7 +35,7 @@ import com.oracle.svm.core.attach.AttachApiSupport;
 import com.oracle.svm.core.attach.AttachListenerThread;
 import com.oracle.svm.core.dcmd.DCmd;
 import com.oracle.svm.core.dcmd.DCmdFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 
 /**

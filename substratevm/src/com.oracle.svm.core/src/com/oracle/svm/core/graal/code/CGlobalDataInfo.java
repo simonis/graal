@@ -30,11 +30,11 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platform.HOSTED_ONLY;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.BuildPhaseProvider.AfterHeapLayout;
-import com.oracle.svm.core.BuildPhaseProvider.AfterHostedUniverse;
-import com.oracle.svm.core.c.CGlobalDataImpl;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.BuildPhaseProvider.AfterHeapLayout;
+import com.oracle.svm.shared.BuildPhaseProvider.AfterHostedUniverse;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.guest.staging.c.CGlobalDataImpl;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * Stores build-specific information about a CGlobal. Static information is stored in
@@ -61,7 +61,7 @@ public final class CGlobalDataInfo {
     /** Cache until writing the image in case the {@link Supplier} is costly or has side-effects. */
     @Platforms(HOSTED_ONLY.class) private byte[] bytes;
 
-    @SuppressWarnings("unused") private final int layerNum;
+    private final int layerNum;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public CGlobalDataInfo(CGlobalDataImpl<?> data, boolean definedAsGlobalInPriorLayer, int layerNum) {
@@ -95,7 +95,7 @@ public final class CGlobalDataInfo {
     @SuppressWarnings("hiding")
     public void assignBytes(byte[] bytes) {
         assert this.bytes == null : "already initialized";
-        assert size == -1 || size == bytes.length;
+        VMError.guarantee(size == -1 || size == bytes.length);
         this.bytes = bytes;
     }
 
@@ -107,6 +107,10 @@ public final class CGlobalDataInfo {
     public int getSize() {
         VMError.guarantee(size >= 0, "size has not been initialized");
         return size;
+    }
+
+    public int getLayerNumber() {
+        return layerNum;
     }
 
     public void makeGlobalSymbol() {

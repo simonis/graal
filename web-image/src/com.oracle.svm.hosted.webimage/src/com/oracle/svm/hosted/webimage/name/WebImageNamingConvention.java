@@ -27,8 +27,8 @@ package com.oracle.svm.hosted.webimage.name;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
+import com.oracle.svm.shared.option.HostedOptionValues;
 import com.oracle.svm.webimage.JSNameGenerator;
 import com.oracle.svm.webimage.NamingConvention;
 
@@ -65,7 +65,7 @@ public final class WebImageNamingConvention implements NamingConvention {
 
     public static void initialize() {
         GraalError.guarantee(singletonInstance == null, "A naming convention instance has already been created");
-        singletonInstance = new WebImageNamingConvention(WebImageOptions.NamingConvention.getValue(HostedOptionValues.singleton()));
+        singletonInstance = new WebImageNamingConvention(WebImageOptions.NamingConvention.getValue(HostedOptionValues.singleton().get()));
     }
 
     public static WebImageNamingConvention getInstance() {
@@ -156,7 +156,7 @@ public final class WebImageNamingConvention implements NamingConvention {
 
         @Override
         public String identForType(ResolvedJavaType t) {
-            String name = t.getName();
+            String name = t.toClassName();
             /*
              * We prefix the reduced name with an underscore so that it can't conflict with one of
              * JavaScript's built-in objects.

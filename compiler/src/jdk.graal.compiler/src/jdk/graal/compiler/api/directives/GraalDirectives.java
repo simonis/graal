@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -113,6 +113,17 @@ public final class GraalDirectives {
 
     /**
      * Directive for the compiler to fall back to the bytecode interpreter at this point.
+     *
+     * This is equivalent to calling
+     * {@link #deoptimize(DeoptimizationAction, DeoptimizationReason, boolean)} with
+     * {@link DeoptimizationAction#InvalidateRecompile},
+     * {@link DeoptimizationReason#TransferToInterpreter} and {@code false} as arguments.
+     */
+    public static void deoptimizeAndRecompile() {
+    }
+
+    /**
+     * Directive for the compiler to fall back to the bytecode interpreter at this point.
      * <p/>
      *
      * This is similar to calling {@link #deoptimize()}, but the deoptimization will use a precise
@@ -158,6 +169,13 @@ public final class GraalDirectives {
     }
 
     /**
+     * Like {@link #controlFlowAnchor()} except this node can be optimized away if its
+     * {@code  condition} argument becomes constant {@code 0}.
+     */
+    public static void controlFlowAnchor(@SuppressWarnings("unused") long condition) {
+    }
+
+    /**
      * A call to this method will disable strip mining of the enclosing loop in the compiler.
      */
     public static void neverStripMine() {
@@ -191,6 +209,16 @@ public final class GraalDirectives {
      */
     public static <P> P trustedBox(P o) {
         return o;
+    }
+
+    /**
+     * Casts a non-null value without a run-time null or type check. The caller must guarantee that
+     * {@code value} is non-null and assignable to {@code type}. The {@code type} argument must be a
+     * compile-time constant.
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> T uncheckedCast(Object value, @SuppressWarnings("unused") Class<T> type) {
+        return (T) value;
     }
 
     /**
@@ -271,6 +299,34 @@ public final class GraalDirectives {
     public static boolean injectIterationCount(double iterations, boolean condition) {
         // the plugin handles the semantics
         return condition;
+    }
+
+    /** Combines two boolean values with a short circuit OR in the compiler graph. */
+    public static boolean shortCircuitOr(boolean x, boolean y) {
+        return x || y;
+    }
+
+    /**
+     * Combines two boolean values with a short circuit OR in the compiler graph. The probability
+     * describes how often the second operand is not evaluated because the first operand is true.
+     */
+    public static boolean shortCircuitOr(double shortCircuitProbability, boolean x, boolean y) {
+        assert shortCircuitProbability >= 0.0 && shortCircuitProbability <= 1.0 : "Probability must be between [0D;1D] but is " + shortCircuitProbability;
+        return x || y;
+    }
+
+    /** Combines two boolean values with a short circuit AND in the compiler graph. */
+    public static boolean shortCircuitAnd(boolean x, boolean y) {
+        return x && y;
+    }
+
+    /**
+     * Combines two boolean values with a short circuit AND in the compiler graph. The probability
+     * describes how often the second operand is not evaluated because the first operand is false.
+     */
+    public static boolean shortCircuitAnd(double shortCircuitProbability, boolean x, boolean y) {
+        assert shortCircuitProbability >= 0.0 && shortCircuitProbability <= 1.0 : "Probability must be between [0D;1D] but is " + shortCircuitProbability;
+        return x && y;
     }
 
     /**

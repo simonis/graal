@@ -75,6 +75,11 @@ public final class NotNode extends UnaryArithmeticNode<Not> implements Arithmeti
         if (x instanceof NotNode) {
             return ((NotNode) x).getValue();
         }
+        if (x instanceof NegateNode negateNode) {
+            // ~(-x) == x - 1
+            ValueNode one = BinaryArithmeticNode.createIntegerConstant(x.stamp(NodeView.DEFAULT), 1);
+            return SubNode.create(negateNode.getValue(), one, NodeView.DEFAULT);
+        }
         if (x instanceof AddNode addNode && addNode.getY().isJavaConstant() && addNode.getY().asJavaConstant().asLong() == -1) {
             // ~(x - 1) -> -x
             return NegateNode.create(addNode.getX(), NodeView.DEFAULT);

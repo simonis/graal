@@ -31,21 +31,33 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.SubstrateTargetDescription;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.SubstrateTarget;
+import com.oracle.svm.core.jdk.VectorAPISupport.LayeredCallbacks;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.asm.amd64.AMD64BaseAssembler;
 import jdk.graal.compiler.asm.amd64.AVXKind;
 import jdk.vm.ci.aarch64.AArch64;
 import jdk.vm.ci.aarch64.AArch64Kind;
 import jdk.vm.ci.amd64.AMD64;
+import jdk.vm.ci.code.Architecture;
 import jdk.vm.ci.code.CPUFeatureName;
 
 /**
  * Provides access to a computation of the maximum Vector API vector size for the target platform.
  */
 @AutomaticallyRegisteredImageSingleton
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = LayeredCallbacks.class, layeredInstallationKind = Duplicable.class)
 public final class VectorAPISupport {
 
     /**
@@ -56,11 +68,11 @@ public final class VectorAPISupport {
 
     @Platforms(Platform.HOSTED_ONLY.class) //
     protected VectorAPISupport() {
-        SubstrateTargetDescription targetDescription = ImageSingletons.lookup(SubstrateTargetDescription.class);
+        Architecture arch = SubstrateTarget.getArchitecture();
         EnumSet<? extends CPUFeatureName> features = null;
-        if (targetDescription.arch instanceof AMD64 amd64) {
+        if (arch instanceof AMD64 amd64) {
             features = amd64.getFeatures();
-        } else if (targetDescription.arch instanceof AArch64 aarch64) {
+        } else if (arch instanceof AArch64 aarch64) {
             features = aarch64.getFeatures();
         }
         this.maxVectorBytes = computeMaxVectorBytes(features);
@@ -126,5 +138,29 @@ public final class VectorAPISupport {
             throw VMError.shouldNotReachHereUnexpectedInput(etype);
         }
         return maxVectorBits / (elementBytes * Byte.SIZE);
+    }
+
+    static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+        private static final String MAX_VECTOR_BYTES = "maxVectorBytes";
+
+        @Override
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            var action = new SingletonLayeredCallbacks<VectorAPISupport>() {
+                @Override
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, VectorAPISupport singleton) {
+                    writer.writeInt(MAX_VECTOR_BYTES, singleton.maxVectorBytes);
+                    return LayeredPersistFlags.CALLBACK_ON_REGISTRATION;
+                }
+
+                @Override
+                public void onSingletonRegistration(ImageSingletonLoader loader, VectorAPISupport singleton) {
+                    int previousLayerMaxVectorBytes = loader.readInt(MAX_VECTOR_BYTES);
+                    VMError.guarantee(previousLayerMaxVectorBytes == singleton.maxVectorBytes,
+                                    "The maximum Vector API vector size should be the same across layers, but the previous layer size is %d and the current is %d",
+                                    previousLayerMaxVectorBytes, singleton.maxVectorBytes);
+                }
+            };
+            return new LayeredCallbacksSingletonTrait(action);
+        }
     }
 }

@@ -22,13 +22,18 @@
  */
 package com.oracle.truffle.espresso.libs.libnio.impl;
 
+import static java.nio.channels.SelectionKey.OP_CONNECT;
+import static java.nio.channels.SelectionKey.OP_READ;
+import static java.nio.channels.SelectionKey.OP_WRITE;
+
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.SocketOption;
-import java.net.StandardSocketOptions;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.espresso.io.FDAccess;
@@ -39,6 +44,7 @@ import com.oracle.truffle.espresso.libs.LibsMeta;
 import com.oracle.truffle.espresso.libs.LibsState;
 import com.oracle.truffle.espresso.libs.libnio.LibNio;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
+import com.oracle.truffle.espresso.runtime.EspressoException;
 import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.substitutions.EspressoSubstitutions;
 import com.oracle.truffle.espresso.substitutions.Inject;
@@ -63,8 +69,14 @@ public final class Target_sun_nio_ch_Net {
     }
 
     @Substitution
-    public static boolean isIPv6Available0(@Inject InformationLeak iL, @Inject LibsState libsState) {
-        libsState.net.checkNetworkEnabled();
+    public static boolean isIPv6Available0(@Inject InformationLeak iL, @Inject EspressoContext context) {
+        /*
+         * This method is called in the static class initializer so we should not throw a
+         * SecurityException if SocketIO is not allowed.
+         */
+        if (!context.getEnv().isSocketIOAllowed()) {
+            return false;
+        }
         return iL.isIPv6Available();
     }
 
@@ -99,23 +111,38 @@ public final class Target_sun_nio_ch_Net {
     }
 
     @Substitution
-    public static int isExclusiveBindAvailable(@Inject InformationLeak iL, @Inject LibsState libsState) {
-        libsState.net.checkNetworkEnabled();
+    public static int isExclusiveBindAvailable(@Inject InformationLeak iL, @Inject EspressoContext context) {
+        /*
+         * This method is called in the static class initializer so we should not throw a
+         * SecurityException if SocketIO is not allowed.
+         */
+        if (!context.getEnv().isSocketIOAllowed()) {
+            return -1;
+        }
         return iL.isExclusiveBindAvailable();
     }
 
     @Substitution
-    public static boolean isReusePortAvailable0(@Inject InformationLeak iL, @Inject LibsState libsState) {
-        libsState.net.checkNetworkEnabled();
+    public static boolean isReusePortAvailable0(@Inject InformationLeak iL, @Inject EspressoContext context) {
+        /*
+         * This method is called in the static class initializer so we should not throw a
+         * SecurityException if SocketIO is not allowed.
+         */
+        if (!context.getEnv().isSocketIOAllowed()) {
+            return false;
+        }
         return iL.isReusePortAvailable0();
     }
 
     @Substitution
     public static int socket0(boolean preferIPv6, boolean stream, boolean reuse,
                     @SuppressWarnings("unused") boolean fastLoopback,
-                    @Inject TruffleIO io) {
-        // reuse also determines whether we are opening a server channel
-        // according to sun.nio.ch.Net.socket(java.net.ProtocolFamily,boolean)
+                    @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
+        /*
+         * reuse also determines whether we are opening a server channel according to
+         * sun.nio.ch.Net.socket(java.net.ProtocolFamily,boolean)
+         */
         return io.openSocket(preferIPv6, stream, reuse, reuse);
     }
 
@@ -124,6 +151,7 @@ public final class Target_sun_nio_ch_Net {
     @TruffleBoundary
     public static int accept(@JavaType(FileDescriptor.class) StaticObject fd, @JavaType(FileDescriptor.class) StaticObject newfd, @JavaType(InetSocketAddress[].class) StaticObject isaa,
                     @Inject TruffleIO io, @Inject LibsState libsState, @Inject LibsMeta lMeta, @Inject EspressoContext ctx) {
+        libsState.net.checkNetworkEnabled();
         // accept connection & populate fd.
         SocketAddress[] clientSaArr = new SocketAddress[1];
         int retCode = io.accept(fd, FDAccess.forFileDescriptor(), newfd, clientSaArr);
@@ -161,6 +189,7 @@ public final class Target_sun_nio_ch_Net {
     public static int connect0(boolean preferIPv6, @JavaType(FileDescriptor.class) StaticObject fd,
                     @JavaType(InetAddress.class) StaticObject remote,
                     int remotePort, @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         InetAddress remoteAddress = libsState.net.fromGuestInetAddress(remote, preferIPv6);
         SocketAddress remoteSocket = new InetSocketAddress(remoteAddress, remotePort);
         return io.connect(fd, FDAccess.forFileDescriptor(), remoteSocket) ? 1 : io.ioStatusSync.UNAVAILABLE;
@@ -170,13 +199,15 @@ public final class Target_sun_nio_ch_Net {
     @Throws(IOException.class)
     @TruffleBoundary
     public static void shutdown(@JavaType(FileDescriptor.class) StaticObject fd, int how,
-                    @Inject TruffleIO io) {
+                    @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         io.shutdownSocketChannel(fd, FDAccess.forFileDescriptor(), how == io.netShutFlagsSync.SHUT_RDWR || how == io.netShutFlagsSync.SHUT_RD,
                         how == io.netShutFlagsSync.SHUT_WR || how == io.netShutFlagsSync.SHUT_RDWR);
     }
 
     @Substitution(languageFilter = VersionFilter.Java25OrLater.class)
     public static boolean shouldShutdownWriteBeforeClose0() {
+        // todo (GR-71965)
         // returns false on linux.
         return false;
     }
@@ -197,25 +228,29 @@ public final class Target_sun_nio_ch_Net {
          * useExclBind must be true. For any other host OS useExclBind will always be false and we
          * will propagate this to the guest by the aforementioned isExclusiveBindAvailable method.
          */
+        libsState.net.checkNetworkEnabled();
         io.bind(fd, FDAccess.forFileDescriptor(), preferIPv6, addr, port, libsState);
     }
 
     @Substitution
     @Throws(IOException.class)
     public static void listen(@JavaType(FileDescriptor.class) StaticObject fd, int backlog,
-                    @Inject TruffleIO io) {
+                    @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         io.listen(fd, FDAccess.forFileDescriptor(), backlog);
     }
 
     @Substitution
     @Throws(IOException.class)
-    public static @JavaType(InetAddress.class) StaticObject localInetAddress(@JavaType(FileDescriptor.class) StaticObject fd, @Inject TruffleIO io) {
+    public static @JavaType(InetAddress.class) StaticObject localInetAddress(@JavaType(FileDescriptor.class) StaticObject fd, @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         return io.getLocalAddress(fd, FDAccess.forFileDescriptor());
     }
 
     @Substitution
     @Throws(IOException.class)
-    public static int localPort(@JavaType(FileDescriptor.class) StaticObject fd, @Inject TruffleIO io) {
+    public static int localPort(@JavaType(FileDescriptor.class) StaticObject fd, @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         return io.getPort(fd, FDAccess.forFileDescriptor());
     }
 
@@ -224,13 +259,13 @@ public final class Target_sun_nio_ch_Net {
     @SuppressWarnings("unchecked")
     @TruffleBoundary
     public static void setIntOption0(@JavaType(FileDescriptor.class) StaticObject fd, @SuppressWarnings("unused") boolean mayNeedConversion,
-                    int level, int opt, int arg, @SuppressWarnings("unused") boolean isIPv6,
-                    @Inject EspressoContext ctx, @Inject TruffleIO io) {
+                    int level, @SuppressWarnings("unused") int opt, int arg, @SuppressWarnings("unused") boolean isIPv6, @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         // We set the option over the public NetworkChannel API, thus the low-level platform
         // specific arguments like mayNeedConversion and isIpv6 aren't needed
 
         // recover SocketOption and do Type-Conversion
-        SocketOption<?> socketOption = getSocketOption(level, opt, ctx);
+        SocketOption<?> socketOption = getSocketOption(level);
         Class<?> type = socketOption.type();
         if (type == Integer.class) {
             SocketOption<Integer> intSocketOption = (SocketOption<Integer>) socketOption;
@@ -249,13 +284,13 @@ public final class Target_sun_nio_ch_Net {
     @SuppressWarnings("unchecked")
     @TruffleBoundary
     public static int getIntOption0(@JavaType(FileDescriptor.class) StaticObject fd, @SuppressWarnings("unused") boolean mayNeedConversion,
-                    int level, int opt,
-                    @Inject EspressoContext ctx, @Inject TruffleIO io) {
+                    int level, @SuppressWarnings("unused") int opt, @Inject TruffleIO io, @Inject LibsState libsState) {
+        libsState.net.checkNetworkEnabled();
         // We get the option over the public NetworkChannel API, thus the low-level platform
         // mayNeedConversion and isIpv6 aren't needed
 
         // recover SocketOption and do Type-Conversion
-        SocketOption<?> socketOption = getSocketOption(level, opt, ctx);
+        SocketOption<?> socketOption = getSocketOption(level);
         Class<?> type = socketOption.type();
         if (type == Integer.class) {
             SocketOption<Integer> intSocketOption = (SocketOption<Integer>) socketOption;
@@ -271,67 +306,76 @@ public final class Target_sun_nio_ch_Net {
 
     @Substitution
     @Throws(IOException.class)
+    public static boolean pollConnect(@JavaType(FileDescriptor.class) StaticObject fd, long timeout, @Inject TruffleIO io, @Inject EspressoContext ctx) {
+        int op = poll(fd, POLLCONN, timeout, io, ctx);
+        if (op == POLLCONN) {
+            return io.finishConnect(fd, FDAccess.forFileDescriptor());
+        }
+        return false;
+    }
+
+    @Substitution
+    @Throws(IOException.class)
+    @TruffleBoundary
+    public static int poll(@JavaType(FileDescriptor.class) StaticObject fd, int nativeOps, long timeout, @Inject TruffleIO io, @Inject EspressoContext ctx) {
+        try (Selector selector = Selector.open()) {
+            int ops = nativeToSelectorOps(nativeOps, ctx);
+            SelectionKey key = io.register(fd, FDAccess.forFileDescriptor(), selector, ops);
+            ctx.getLibsState().doSelect(selector, timeout);
+            return selectorToNativeOps(key.readyOps(), ctx);
+        } catch (IOException | EspressoException e) {
+            return io.ioStatusSync.THROWN;
+        }
+
+    }
+
+    @Substitution
+    @Throws(IOException.class)
     public static int available(@JavaType(FileDescriptor.class) StaticObject fd, @Inject TruffleIO io) {
         return io.available(fd, FDAccess.forFileDescriptor());
     }
 
-    private static SocketOption<?> getSocketOption(int level, int opt, EspressoContext ctx) {
-        // GR-70147 todo: synchronize between host and guest
-        switch (level) {
-            case 0:
-                switch (opt) {
-                    case 1:
-                        return StandardSocketOptions.IP_TOS;
-                    case 32:
-                        return StandardSocketOptions.IP_MULTICAST_IF;
-                    case 33:
-                        return StandardSocketOptions.IP_MULTICAST_TTL;
-                    case 34:
-                        return StandardSocketOptions.IP_MULTICAST_LOOP;
-                }
-                break;
-            case 1:
-                switch (opt) {
-                    case 2:
-                        return StandardSocketOptions.SO_REUSEADDR;
-                    case 6:
-                        return StandardSocketOptions.SO_BROADCAST;
-                    case 7:
-                        return StandardSocketOptions.SO_SNDBUF;
-                    case 8:
-                        return StandardSocketOptions.SO_RCVBUF;
-                    case 9:
-                        return StandardSocketOptions.SO_KEEPALIVE;
-                    case 10:
-                        /*
-                         * Would be a ExtendedSocketOption.SO_OOBINLINE, however ExtendedOption are
-                         * package private so we cannot easily access them. For set and getOption of
-                         * Net, extended options aren't accessed over the native world anyway thus
-                         * we shouldn't reach here
-                         */
-                        throw JavaSubstitution.unimplemented();
-                    case 13:
-                        return StandardSocketOptions.SO_LINGER;
-                    case 15:
-                        return StandardSocketOptions.SO_REUSEPORT;
-                }
-                break;
-            case 41:
-                switch (opt) {
-                    case 17:
-                        return StandardSocketOptions.IP_MULTICAST_IF;
-                    case 18:
-                        return StandardSocketOptions.IP_MULTICAST_TTL;
-                    case 19:
-                        return StandardSocketOptions.IP_MULTICAST_LOOP;
-                    case 67:
-                        return StandardSocketOptions.IP_TOS;
-                }
-                break;
+    private static int selectorToNativeOps(int selectorOps, EspressoContext ctx) {
+        int res = 0;
+        if ((selectorOps & OP_READ) != 0) {
+            res |= POLLIN;
         }
-        if (level == 6 && opt == 1) {
-            return StandardSocketOptions.TCP_NODELAY;
+        if ((selectorOps & OP_WRITE) != 0) {
+            res |= POLLOUT;
         }
-        throw Throw.throwUnsupported("Unsupported SocketOption: level = " + level + ", opt = " + opt, ctx);
+        if ((selectorOps & OP_CONNECT) != 0) {
+            res |= POLLCONN;
+        }
+        if (res == 0 && selectorOps != 0) {
+            throw Throw.throwUnsupported("The following selector operation is not supported:" + selectorOps, ctx);
+        }
+        return res;
+    }
+
+    private static int nativeToSelectorOps(int nativeOps, EspressoContext ctx) {
+        int ops = 0;
+        if ((nativeOps & POLLIN) != 0) {
+            ops |= OP_READ;
+        }
+        if ((nativeOps & POLLOUT) != 0) {
+            ops |= OP_WRITE;
+        }
+        if ((nativeOps & POLLERR) != 0) {
+            throw Throw.throwUnsupported("currently we dont support polling POLLERR", ctx);
+        }
+        if ((nativeOps & POLLHUP) != 0) {
+            throw Throw.throwUnsupported("currently we dont support polling POLLHUP", ctx);
+        }
+        if ((nativeOps & POLLNVAL) != 0) {
+            throw Throw.throwUnsupported("currently we dont support polling POLLNVAL", ctx);
+        }
+        if ((nativeOps & POLLCONN) != 0) {
+            ops |= OP_CONNECT;
+        }
+        return ops;
+    }
+
+    private static SocketOption<?> getSocketOption(int level) {
+        return LibsState.SocketOptionSync.getOption(level);
     }
 }

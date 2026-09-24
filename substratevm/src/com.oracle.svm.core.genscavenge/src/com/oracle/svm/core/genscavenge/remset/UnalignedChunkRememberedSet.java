@@ -24,22 +24,23 @@
  */
 package com.oracle.svm.core.genscavenge.remset;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CORE_GC_CODE;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.SubstrateTarget;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
 import com.oracle.svm.core.genscavenge.UnalignedHeapChunk;
 import com.oracle.svm.core.genscavenge.UnalignedHeapChunk.UnalignedHeader;
 import com.oracle.svm.core.heap.ObjectHeader;
-import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
 import com.oracle.svm.core.heap.UninterruptibleObjectReferenceVisitor;
@@ -47,18 +48,18 @@ import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.HubType;
 import com.oracle.svm.core.hub.InteriorObjRefWalker;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
 import com.oracle.svm.core.thread.ContinuationSupport;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.HostedByteBufferPointer;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.guest.staging.util.HostedByteBufferPointer;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
 import jdk.graal.compiler.replacements.nodes.AssertionNode;
-import jdk.graal.compiler.word.Word;
 
 final class UnalignedChunkRememberedSet {
 
@@ -70,7 +71,7 @@ final class UnalignedChunkRememberedSet {
         UnsignedWord headerSize = getCardTableLimitOffset(objectSize);
         headerSize = headerSize.add(sizeOfObjectStartOffsetField());
 
-        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ObjectLayout.singleton().getAlignment());
         return UnsignedUtils.roundUp(headerSize, alignment);
     }
 
@@ -87,11 +88,12 @@ final class UnalignedChunkRememberedSet {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static UnsignedWord getObjectStartOffset(UnalignedHeader chunk) {
-        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ObjectLayout.singleton().getAlignment());
         UnsignedWord headerSize = getCardTableStartOffset();
         UnsignedWord objectStartOffsetSize = Word.unsigned(sizeOfObjectStartOffsetField());
         UnsignedWord alignedObjectStartOffsetSize = UnsignedUtils.roundUp(objectStartOffsetSize, alignment);
-        UnsignedWord ctAndObjSize = chunk.getEndOffset().subtract(headerSize).subtract(alignedObjectStartOffsetSize);
+        UnsignedWord topOffset = chunk.getTopOffset(HeapChunk.CHUNK_HEADER_TOP_IDENTITY);
+        UnsignedWord ctAndObjSize = topOffset.subtract(headerSize).subtract(alignedObjectStartOffsetSize);
 
         /*
          * The combined card table and object size is roundUp(objSize / BYTES_COVERED_BY_ENTRY,
@@ -101,7 +103,7 @@ final class UnalignedChunkRememberedSet {
         UnsignedWord objSizeWithCtAlignment = ctAndObjSize.multiply(CardTable.BYTES_COVERED_BY_ENTRY).unsignedDivide(CardTable.BYTES_COVERED_BY_ENTRY + 1);
         UnsignedWord objSize = UnsignedUtils.roundDown(objSizeWithCtAlignment, alignment);
 
-        UnsignedWord objectStartOffset = HeapChunk.getEndOffset(chunk).subtract(objSize);
+        UnsignedWord objectStartOffset = topOffset.subtract(objSize);
 
         assert objectStartOffset.equal(getOffsetForObject(HeapChunk.asPointer(chunk).add(objectStartOffset)));
 
@@ -171,7 +173,7 @@ final class UnalignedChunkRememberedSet {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static void dirtyAllReferencesOf(Object obj) {
-        DynamicHub hub = KnownIntrinsics.readHub(obj);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
         int hubType = hub.getHubType();
 
         Pointer objPtr = Word.objectToUntrackedPointer(obj);
@@ -198,7 +200,7 @@ final class UnalignedChunkRememberedSet {
 
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE)
     public static void walkDirtyObjects(UnalignedHeader chunk, UninterruptibleObjectReferenceVisitor refVisitor, boolean clean) {
         UnsignedWord objStartOffset = getObjectStartOffset(chunk);
         Object obj = HeapChunk.asPointer(chunk).add(objStartOffset).toObjectNonNull();
@@ -226,7 +228,7 @@ final class UnalignedChunkRememberedSet {
         }
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE)
     private static void walkStoredContinuationImprecise(StoredContinuation s, Pointer cardTableStart, UninterruptibleObjectReferenceVisitor refVisitor, boolean clean) {
         if (!ContinuationSupport.isSupported()) {
             throw VMError.shouldNotReachHere("Stored continuation objects cannot be in the heap if the continuation support is disabled.");
@@ -244,10 +246,9 @@ final class UnalignedChunkRememberedSet {
         }
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE)
     private static void walkObjectArrayPrecise(Object obj, Pointer cardTableStart, UnsignedWord cardTableLimitIdx, UninterruptibleObjectReferenceVisitor refVisitor, boolean clean) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
-        boolean isCompressed = ReferenceAccess.singleton().haveCompressedReferences();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
 
         DynamicHub objHub = ObjectHeader.readDynamicHubFromObject(obj);
         int length = ArrayLengthNode.arrayLength(obj);
@@ -279,13 +280,13 @@ final class UnalignedChunkRememberedSet {
 
             Pointer refPtr = Word.objectToUntrackedPointer(obj).add(startOffset);
             UnsignedWord nReferences = (endOffset.subtract(startOffset)).unsignedDivide(referenceSize);
-            refVisitor.visitObjectReferences(refPtr, isCompressed, referenceSize, obj, UnsignedUtils.safeToInt(nReferences));
+            refVisitor.visitObjectReferences(refPtr, true, referenceSize, obj, UnsignedUtils.safeToInt(nReferences));
 
             iOffset = dirtyEndOffset;
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+16/src/hotspot/share/gc/g1/g1RemSet.cpp#L562-L586")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+16/src/hotspot/share/gc/g1/g1RemSet.cpp#L562-L586")
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static UnsignedWord findFirstDirtyCard(Pointer ctAdr, UnsignedWord startIdx, UnsignedWord endIdx) {
         assert UnsignedUtils.isAMultiple(endIdx, Word.unsigned(wordSize()));
@@ -317,7 +318,7 @@ final class UnalignedChunkRememberedSet {
         return endIdx;
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+16/src/hotspot/share/gc/g1/g1RemSet.cpp#L588-L612")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+16/src/hotspot/share/gc/g1/g1RemSet.cpp#L588-L612")
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static UnsignedWord findFirstCleanCard(Pointer ctAdr, UnsignedWord startIdx, UnsignedWord endIdx, boolean clean) {
         assert UnsignedUtils.isAMultiple(endIdx, Word.unsigned(wordSize()));
@@ -366,14 +367,14 @@ final class UnalignedChunkRememberedSet {
     @Fold
     static UnsignedWord getCardTableStartOffset() {
         UnsignedWord headerSize = Word.unsigned(SizeOf.get(UnalignedHeader.class));
-        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ObjectLayout.singleton().getAlignment());
         return UnsignedUtils.roundUp(headerSize, alignment);
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static UnsignedWord getCardTableSize(UnsignedWord objectSize) {
         UnsignedWord requiredSize = CardTable.tableSizeForMemorySize(objectSize);
-        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ObjectLayout.singleton().getAlignment());
         return UnsignedUtils.roundUp(requiredSize, alignment);
     }
 
@@ -392,7 +393,7 @@ final class UnalignedChunkRememberedSet {
         UnsignedWord tableStart = getCardTableStartOffset();
         UnsignedWord tableSize = getCardTableSize(objectSize);
         UnsignedWord tableLimit = tableStart.add(tableSize);
-        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ObjectLayout.singleton().getAlignment());
         return UnsignedUtils.roundUp(tableLimit, alignment);
     }
 
@@ -413,7 +414,7 @@ final class UnalignedChunkRememberedSet {
 
     @Fold
     static int wordSize() {
-        return ConfigurationValues.getTarget().wordSize;
+        return SubstrateTarget.getWordSize();
     }
 
     @Fold

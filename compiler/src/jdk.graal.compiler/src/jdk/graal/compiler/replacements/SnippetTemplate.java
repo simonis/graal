@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,7 @@ import static java.util.FormattableFlags.ALTERNATE;
 import static jdk.graal.compiler.core.common.NativeImageSupport.inRuntimeCode;
 import static jdk.graal.compiler.debug.DebugContext.applyFormattingFlagsAndWidth;
 import static jdk.graal.compiler.debug.DebugOptions.DumpOnError;
+import static jdk.graal.compiler.debug.DebugOptions.OptimizationLog;
 import static jdk.graal.compiler.graph.iterators.NodePredicates.isNotA;
 import static jdk.graal.compiler.nodeinfo.NodeCycles.CYCLES_IGNORED;
 import static jdk.graal.compiler.nodeinfo.NodeSize.SIZE_IGNORED;
@@ -46,7 +47,6 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Predicate;
 
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.EconomicSet;
@@ -56,6 +56,7 @@ import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.WordBase;
 
+import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.api.replacements.Snippet.ConstantParameter;
@@ -74,7 +75,6 @@ import jdk.graal.compiler.debug.Assertions;
 import jdk.graal.compiler.debug.CounterKey;
 import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.DebugContext;
-import jdk.graal.compiler.debug.DebugOptions;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.debug.TimerKey;
 import jdk.graal.compiler.graph.Graph.Mark;
@@ -191,7 +191,6 @@ import jdk.graal.compiler.replacements.nodes.FallbackInvokeWithExceptionNode;
 import jdk.graal.compiler.replacements.nodes.LateLoweredNode;
 import jdk.graal.compiler.replacements.nodes.LoadSnippetVarargParameterNode;
 import jdk.graal.compiler.replacements.nodes.MacroWithExceptionNode;
-import jdk.graal.compiler.util.CollectionsUtil;
 import jdk.graal.compiler.virtual.phases.ea.PartialEscapePhase;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
@@ -952,8 +951,9 @@ public class SnippetTemplate {
                                     CompilationAlarm alarm = CompilationAlarm.disable()) {
                         SnippetTemplates.increment(outer);
                         args.info.creationCounter.increment(outer);
-                        OptionValues snippetOptions = new OptionValues(options, GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options),
-                                        DebugOptions.OptimizationLog, null);
+
+                        OptionValues snippetOptions = options.derive(GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options)).derive(OptimizationLog, null);
+
                         template = new SnippetTemplate(snippetOptions,
                                         debug,
                                         context,
@@ -1513,7 +1513,8 @@ public class SnippetTemplate {
         for (MethodCallTargetNode target : snippetCopy.getNodes(MethodCallTargetNode.TYPE)) {
             ResolvedJavaMethod targetMethod = target.targetMethod();
             if (targetMethod != null) {
-                assert targetMethod.getAnnotation(Fold.class) == null && targetMethod.getAnnotation(NodeIntrinsic.class) == null : "plugin should have been processed";
+                assert AnnotationValueSupport.getAnnotationValue(targetMethod, Fold.class) == null &&
+                                AnnotationValueSupport.getAnnotationValue(targetMethod, NodeIntrinsic.class) == null : "plugin should have been processed";
             }
         }
         return true;
@@ -1533,7 +1534,7 @@ public class SnippetTemplate {
                     Loop loop = providers.getLoopsDataProvider().getLoopsData(snippetCopy).loop(loopBegin);
                     Mark mark = snippetCopy.getMark();
                     try {
-                        LoopTransformations.fullUnroll(loop, providers, canonicalizer);
+                        LoopTransformations.fullUnroll(loop, providers, canonicalizer, false);
                     } catch (RetryableBailoutException e) {
                         // This is a hard error in this context
                         throw new GraalError(e, snippetCopy.toString());
@@ -2043,7 +2044,7 @@ public class SnippetTemplate {
                         MemoryKill replacement = map.getLastLocationAccess(location);
                         if (replacement == null) {
                             assert mayRemoveLocation || LocationIdentity.any().equals(location) ||
-                                            CollectionsUtil.anyMatch(info.privateLocations, Predicate.isEqual(location)) : "Snippet " + info.method.format("%h.%n") +
+                                            info.isPrivateLocation(location) : "Snippet " + info.method.format("%h.%n") +
                                                             " contains access to the non-private location " +
                                                             location + ", but replacee doesn't access this location." + map.getLocations();
                         } else {
@@ -2480,60 +2481,6 @@ public class SnippetTemplate {
         }
     }
 
-    /**
-     * Replaces a given floating node with this specialized snippet.
-     *
-     * This snippet must be pure data-flow
-     *
-     * @param metaAccess
-     * @param replacee the node that will be replaced
-     * @param replacer object that replaces the usages of {@code replacee}
-     * @param args the arguments to be bound to the flattened positional parameters of the snippet
-     */
-    @SuppressWarnings("try")
-    public void instantiate(MetaAccessProvider metaAccess, FloatingNode replacee, UsageReplacer replacer, Arguments args) {
-        DebugContext debug = replacee.getDebug();
-        try (DebugCloseable a = args.info.instantiationTimer.start(debug);
-                        DebugCloseable b = totalInstantiationTimer.start(debug);
-                        DebugContext.Scope s = debug.withContext(snippet)) {
-            assert assertSnippetKills(replacee);
-
-            args.info.instantiationCounter.increment(debug);
-            totalInstantiationCounter.increment(debug);
-
-            // Inline the snippet nodes, replacing parameters with the given args in the process
-            StartNode entryPointNode = snippet.start();
-            assert entryPointNode.next() == (memoryAnchor == null ? returnNode : memoryAnchor) : entryPointNode.next();
-            StructuredGraph replaceeGraph = replacee.graph();
-            EconomicMap<Node, Node> replacements = bind(replaceeGraph, metaAccess, args);
-            MemoryAnchorNode anchorDuplicate = null;
-            if (memoryAnchor != null) {
-                anchorDuplicate = replaceeGraph.add(new MemoryAnchorNode(info.privateLocations));
-                replacements.put(memoryAnchor, anchorDuplicate);
-            }
-            UnmodifiableEconomicMap<Node, Node> duplicates = inlineSnippet(replacee, debug, replaceeGraph, replacements);
-
-            // floating nodes are not state-splits not need to re-wire frame states
-            assert !(replacee instanceof StateSplit) : Assertions.errorMessageContext("replacee", replacee);
-            updateStamps(replacee, duplicates);
-
-            rewireMemoryGraph(replacee, duplicates);
-            assert anchorDuplicate == null || anchorDuplicate.isDeleted();
-
-            // Replace all usages of the replacee with the value returned by the snippet
-            ValueNode returnValue = (ValueNode) duplicates.get(returnNode.result());
-            replacer.replace(replacee, returnValue);
-            Node returnNodeDuplicate = duplicates.get(returnNode);
-            if (returnNodeDuplicate.isAlive()) {
-                returnNodeDuplicate.safeDelete();
-            }
-
-            debug.dump(DebugContext.DETAILED_LEVEL, replaceeGraph, "After lowering %s with %s", replacee, this);
-        } catch (Throwable e) {
-            throw debug.handle(e);
-        }
-    }
-
     protected void rewireFrameStates(ValueNode replacee, UnmodifiableEconomicMap<Node, Node> duplicates, FixedNode replaceeGraphCFGPredecessor) {
         if (replacee.graph().getGuardsStage().areFrameStatesAtSideEffects() && requiresFrameStateProcessingBeforeFSA(replacee)) {
             rewireFrameStatesBeforeFSA(replacee, duplicates, replaceeGraphCFGPredecessor);
@@ -2554,7 +2501,7 @@ public class SnippetTemplate {
     }
 
     private boolean requiresFrameStateProcessingBeforeFSA(ValueNode replacee) {
-        return replacee instanceof StateSplit || frameStateAssignment != null;
+        return replacee instanceof WithExceptionNode || replacee instanceof StateSplit || frameStateAssignment != null;
     }
 
     private void rewireFrameStatesBeforeFSA(ValueNode replacee, UnmodifiableEconomicMap<Node, Node> duplicates, FixedNode replaceeGraphCFGPredecessor) {

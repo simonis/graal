@@ -58,6 +58,12 @@ import jdk.vm.ci.meta.JavaKind;
  */
 public abstract class VectorArchitecture {
 
+    /** Distinguishes between vector compress and expand operation support. */
+    public enum CompressExpandOp {
+        COMPRESS,
+        EXPAND
+    }
+
     /**
      * The stride (in bytes) for vectors of ordinary object pointers in memory. That is, this is the
      * compressed reference size if compressed references are enabled.
@@ -234,6 +240,20 @@ public abstract class VectorArchitecture {
     public abstract int getSupportedVectorArithmeticLength(Stamp stamp, int maxLength, ArithmeticOpTable.Op op);
 
     /**
+     * Checks whether this architecture supports a multiply-add operation that combines adjacent
+     * input lanes into one wider result lane. Each result lane is the sum of two products from
+     * adjacent input lanes.
+     *
+     * @param inputElementStamp the stamp of the narrower input elements
+     * @param resultElementStamp the stamp of the widened result elements
+     * @param resultLength the vector length of the widened result
+     * @param resultOp the arithmetic operation represented by the result graph
+     */
+    public boolean supportsPairwiseMultiplyAdd(Stamp inputElementStamp, Stamp resultElementStamp, int resultLength, ArithmeticOpTable.Op resultOp) {
+        return false;
+    }
+
+    /**
      * Get a natively supported vector length for a shift with scalar count.
      *
      * @param stamp the stamp of the individual vector elements
@@ -242,6 +262,20 @@ public abstract class VectorArchitecture {
      * @return a supported vector size, but at most {@code maxLength}
      */
     public abstract int getSupportedVectorShiftWithScalarCount(Stamp stamp, int maxLength, ArithmeticOpTable.Op op);
+
+    /**
+     * Get a natively supported vector length for a rotate operation.
+     *
+     * Platforms without dedicated rotate support can return {@code 1} and rely on shift/or
+     * expansion in higher-level vector API code.
+     *
+     * @param stamp the stamp of the individual vector elements
+     * @param maxLength the maximum length that should be returned
+     * @return a supported vector size, but at most {@code maxLength}
+     */
+    public int getSupportedVectorRotateLength(Stamp stamp, int maxLength) {
+        return 1;
+    }
 
     /**
      * Returns whether the given vectorized operation may be rewritten to a narrower one.
@@ -365,11 +399,12 @@ public abstract class VectorArchitecture {
     /**
      * Get the maximum supported vector length for a vector compress/expand based on a mask.
      *
-     * @param elementStamp the stamp of the elements to be blended
+     * @param elementStamp the stamp of the elements to be compressed/expanded
      * @param maxLength the maximum length to return
+     * @param op the operation (compress or expand)
      * @return the number of elements that can be compressed/expanded by a single instruction
      */
-    public abstract int getSupportedVectorCompressExpandLength(Stamp elementStamp, int maxLength);
+    public abstract int getSupportedVectorCompressExpandLength(Stamp elementStamp, int maxLength, CompressExpandOp op);
 
     /**
      * Determine the minimum alignment in bytes that is guaranteed for objects.
@@ -416,6 +451,21 @@ public abstract class VectorArchitecture {
      * @return {@code true} iff the concatenation is supported
      */
     public boolean supportsVectorConcat(int inputSizeInBytes) {
+        return false;
+    }
+
+    /**
+     * Returns true if the code generator can insert a SIMD value with stamp {@code valueStamp} into
+     * a SIMD value with stamp {@code vectorStamp} at {@code offset}.
+     *
+     * Scalar inserts are assumed to be supported and are not covered by this query.
+     *
+     * @param vectorStamp the destination SIMD value stamp
+     * @param valueStamp the inserted SIMD value stamp
+     * @param offset the insertion offset, in lanes of {@code vectorStamp}
+     * @return {@code true} iff the vector insert is supported
+     */
+    public boolean supportsVectorInsert(SimdStamp vectorStamp, SimdStamp valueStamp, int offset) {
         return false;
     }
 

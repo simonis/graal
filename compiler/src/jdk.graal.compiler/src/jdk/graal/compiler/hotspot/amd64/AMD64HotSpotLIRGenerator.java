@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
  */
 package jdk.graal.compiler.hotspot.amd64;
 
+import static jdk.graal.compiler.lir.amd64.AMD64ComplexVectorOp.supports;
 import static jdk.vm.ci.amd64.AMD64.rbp;
 import static jdk.vm.ci.code.ValueUtil.asRegister;
 import static jdk.vm.ci.code.ValueUtil.isRegister;
@@ -145,15 +146,16 @@ public class AMD64HotSpotLIRGenerator extends AMD64LIRGenerator implements HotSp
         return (HotSpotProviders) super.getProviders();
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public AVXSize getMaxVectorSize(EnumSet<?> runtimeCheckedCPUFeatures) {
         int maxVectorSize = config.maxVectorSize;
-        if (supports(runtimeCheckedCPUFeatures, CPUFeature.AVX512VL)) {
+        if (supports(target(), (EnumSet<CPUFeature>) runtimeCheckedCPUFeatures, CPUFeature.AVX512VL)) {
             if (maxVectorSize < 0 || maxVectorSize >= 64) {
                 return AVXSize.ZMM;
             }
         }
-        if (supports(runtimeCheckedCPUFeatures, CPUFeature.AVX2)) {
+        if (supports(target(), (EnumSet<CPUFeature>) runtimeCheckedCPUFeatures, CPUFeature.AVX2)) {
             if (maxVectorSize < 0 || maxVectorSize >= 32) {
                 return AVXSize.YMM;
             }
@@ -285,7 +287,8 @@ public class AMD64HotSpotLIRGenerator extends AMD64LIRGenerator implements HotSp
     private Register pollOnReturnScratchRegister;
 
     @Override
-    public void emitReturn(JavaKind kind, Value input) {
+    public void emitReturn(JavaKind kind, Value input, AllocatableValue tailCallTarget, AllocatableValue[] additionalReturns) {
+        GraalError.guarantee(Value.ILLEGAL.equals(tailCallTarget), "Returning to a custom return address is unsupported on HotSpot");
         AllocatableValue operand = Value.ILLEGAL;
         if (input != null) {
             operand = resultOperandFor(kind, input.getValueKind());
@@ -299,7 +302,8 @@ public class AMD64HotSpotLIRGenerator extends AMD64LIRGenerator implements HotSp
             append(new AMD64RestoreRegistersOp(saveOnEntry.getSlots(), saveOnEntry));
         }
         Register thread = getProviders().getRegisters().getThreadRegister();
-        append(new AMD64HotSpotReturnOp(operand, getStub() != null, thread, pollOnReturnScratchRegister, config, getResult().requiresReservedStackAccessCheck()));
+        append(new AMD64HotSpotReturnOp(operand, additionalReturns, getStub() != null, thread,
+                        pollOnReturnScratchRegister, config, getResult().requiresReservedStackAccessCheck()));
     }
 
     @Override
@@ -311,7 +315,7 @@ public class AMD64HotSpotLIRGenerator extends AMD64LIRGenerator implements HotSp
     private LIRFrameState currentRuntimeCallInfo;
 
     @Override
-    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value targetAddress, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
+    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
         currentRuntimeCallInfo = info;
         HotSpotForeignCallLinkage hsLinkage = (HotSpotForeignCallLinkage) linkage;
         AMD64 arch = (AMD64) target().arch;
@@ -327,7 +331,7 @@ public class AMD64HotSpotLIRGenerator extends AMD64LIRGenerator implements HotSp
              */
             append(new AMD64VZeroUpper(arguments, getRegisterConfig()));
         }
-        super.emitForeignCallOp(linkage, targetAddress, result, arguments, temps, info);
+        super.emitForeignCallOp(linkage, result, arguments, temps, info);
 
         // Handle different return value locations
         Stub stub = getStub();

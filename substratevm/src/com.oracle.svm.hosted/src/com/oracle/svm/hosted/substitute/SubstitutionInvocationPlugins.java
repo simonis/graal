@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.hosted.substitute;
 
-import java.lang.reflect.Executable;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -33,17 +32,18 @@ import java.util.List;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.MapCursor;
 import org.graalvm.collections.Pair;
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ClassUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 @Platforms(Platform.HOSTED_ONLY.class)
 public class SubstitutionInvocationPlugins extends InvocationPlugins {
@@ -60,11 +60,12 @@ public class SubstitutionInvocationPlugins extends InvocationPlugins {
     protected void register(Type declaringClass, InvocationPlugin plugin, boolean allowOverwrite) {
         Type targetClass;
         if (declaringClass instanceof Class<?> annotatedClass) {
-            targetClass = annotationSubstitutionProcessor.getTargetClass(annotatedClass);
-            if (targetClass != declaringClass) {
+            ResolvedJavaType annotatedType = annotationSubstitutionProcessor.metaAccess.lookupJavaType(annotatedClass);
+            ResolvedJavaType targetType = annotationSubstitutionProcessor.getTargetType(annotatedType);
+            if (!targetType.equals(annotatedType)) {
                 /* Found a target class. Check if it is included. */
-                Executable annotatedMethod = plugin.name.equals("<init>") ? resolveConstructor(annotatedClass, plugin) : resolveMethod(annotatedClass, plugin);
-                String originalName = annotationSubstitutionProcessor.findOriginalElementName(annotatedMethod, (Class<?>) targetClass);
+                ResolvedJavaMethod annotatedMethod = resolveJavaMethod(annotatedType, plugin);
+                String originalName = AnnotationSubstitutionProcessor.findOriginalElementName(annotatedMethod, targetType);
                 if (originalName == null) {
                     /*
                      * If the name is null, the element should not be substituted. Thus, we should
@@ -77,6 +78,9 @@ public class SubstitutionInvocationPlugins extends InvocationPlugins {
                                     InvocationPlugins cannot yet deal with substitution methods that set the target name via the @TargetElement(name = ...) property.
                                     Annotated method "%s" vs target method "%s".""", plugin.name, originalName));
                 }
+                targetClass = OriginalClassProvider.getJavaClass(targetType);
+            } else {
+                targetClass = declaringClass;
             }
         } else {
             targetClass = declaringClass;
@@ -87,8 +91,8 @@ public class SubstitutionInvocationPlugins extends InvocationPlugins {
     @Override
     public void notifyNoPlugin(ResolvedJavaMethod targetMethod, OptionValues options) {
         if (Options.WarnMissingIntrinsic.getValue(options)) {
-            for (Class<?> annotationType : AnnotationAccess.getAnnotationTypes(targetMethod)) {
-                if (ClassUtil.getUnqualifiedName(annotationType).contains("IntrinsicCandidate")) {
+            for (ResolvedJavaType annotationType : GuestAnnotationAccess.getDeclaredAnnotationValues(targetMethod).keySet()) {
+                if (annotationType.toJavaName(false).contains("IntrinsicCandidate")) {
                     String method = String.format("%s.%s%s", targetMethod.getDeclaringClass().toJavaName().replace('.', '/'), targetMethod.getName(),
                                     targetMethod.getSignature().toMethodDescriptor());
                     synchronized (this) {
@@ -96,7 +100,7 @@ public class SubstitutionInvocationPlugins extends InvocationPlugins {
                             missingIntrinsicMetrics = EconomicMap.create();
                             try {
                                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                                    if (missingIntrinsicMetrics.size() > 0) {
+                                    if (!missingIntrinsicMetrics.isEmpty()) {
                                         System.out.format("[Warning] Missing intrinsics found: %d%n", missingIntrinsicMetrics.size());
                                         List<Pair<String, Integer>> data = new ArrayList<>();
                                         final MapCursor<String, Integer> cursor = missingIntrinsicMetrics.getEntries();

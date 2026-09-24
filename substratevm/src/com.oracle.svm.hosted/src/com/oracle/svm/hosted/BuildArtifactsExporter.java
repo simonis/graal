@@ -39,13 +39,12 @@ import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.util.json.JsonWriter;
 
@@ -64,16 +63,24 @@ public class BuildArtifactsExporter {
         if (buildArtifacts.isEmpty() || !SubstrateOptions.GenerateBuildArtifactsFile.getValue()) {
             return; // nothing to do
         }
-        Path buildPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
+        Path buildPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get());
         Path targetPath = buildPath.resolve(SubstrateOptions.BUILD_ARTIFACTS_FILE_NAME);
         /*
          * Create intermediate map from buildArtifactsMap for JSON conversion. note that this also
          * merges ArtifactTypes with the same JSON key.
          */
         Map<String, List<String>> jsonMap = new TreeMap<>();
+        Path absoluteBuildPath = buildPath.toAbsolutePath().normalize();
         buildArtifacts.forEach((artifactType, paths) -> {
             String key = artifactType.getJsonKey();
-            List<String> value = paths.stream().map(p -> buildPath.relativize(p.toAbsolutePath()).toString()).toList();
+            List<String> value = paths.stream().map(p -> {
+                Path absoluteArtifactPath = p.toAbsolutePath().normalize();
+                if (absoluteArtifactPath.startsWith(absoluteArtifactPath)) {
+                    return absoluteBuildPath.relativize(absoluteArtifactPath).toString();
+                } else {
+                    return absoluteArtifactPath.toString();
+                }
+            }).toList();
             jsonMap.computeIfAbsent(key, _ -> new ArrayList<>()).addAll(value);
         });
 
@@ -95,7 +102,7 @@ public class BuildArtifactsExporter {
     }
 
     private static void reportDeprecatedBuildArtifacts(String imageName, BuildArtifacts buildArtifacts) {
-        Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
+        Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get());
         Consumer<PrintWriter> writerConsumer = writer -> buildArtifacts.forEach((artifactType, paths) -> {
             writer.println("[" + artifactType + "]");
             if (artifactType == BuildArtifacts.ArtifactType.JDK_LIBRARY_SHIM) {
@@ -109,7 +116,7 @@ public class BuildArtifactsExporter {
         buildArtifacts.add(ArtifactType.BUILD_INFO, ReportUtils.report("build artifacts", buildDir.resolve(imageName + ".build_artifacts.txt"), writerConsumer, false));
     }
 
-    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
     static class BuildArtifactsImpl implements BuildArtifacts {
         private final Map<ArtifactType, List<Path>> buildArtifacts = new EnumMap<>(ArtifactType.class);
 

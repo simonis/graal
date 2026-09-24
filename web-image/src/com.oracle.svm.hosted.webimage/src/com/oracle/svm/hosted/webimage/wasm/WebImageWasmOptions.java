@@ -25,46 +25,36 @@
 
 package com.oracle.svm.hosted.webimage.wasm;
 
-import org.graalvm.collections.UnmodifiableEconomicMap;
-
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions.CommentVerbosity;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
 
 import jdk.graal.compiler.options.EnumOptionKey;
 import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
 import jdk.graal.compiler.options.OptionValues;
 
 public class WebImageWasmOptions {
-
-    @Option(help = "Size of the WASM shadow stack (in 64KiB pages).") //
-    public static final HostedOptionKey<Integer> StackSize = new HostedOptionKey<>(16);
-
     @Option(help = "Determine the level of verbosity for comments in the WASM text format." +
                     "Has no effect on code size, the binary format does not have comments.")//
     public static final EnumOptionKey<CommentVerbosity> WasmComments = new EnumOptionKey<>(CommentVerbosity.NORMAL);
+
+    @Option(help = "Enable the legacy exception proposal using try-catch instead of try_table") //
+    public static final HostedOptionKey<Boolean> LegacyExceptions = new HostedOptionKey<>(false);
 
     @Option(help = "Assemble the Wasm binary file with debug names.")//
     public static final HostedOptionKey<Boolean> DebugNames = new HostedOptionKey<>(false) {
 
         @Override
         public Boolean getValue(OptionValues values) {
-            assert checkDescriptorExists();
-            return getValueOrDefault(values.getMap());
-        }
-
-        @Override
-        public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-            if (values.containsKey(this)) {
-                return (Boolean) values.get(this);
+            if (hasBeenSet(values)) {
+                return super.getValue(values);
             }
 
-            return SubstrateOptions.GenerateDebugInfo.getValueOrDefault(values) > 0;
+            return SubstrateOptions.GenerateDebugInfo.getValue(values) > 0;
         }
     };
 
@@ -77,17 +67,12 @@ public class WebImageWasmOptions {
 
         @Override
         public Boolean getValue(OptionValues values) {
-            assert checkDescriptorExists();
-            return getValueOrDefault(values.getMap());
-        }
 
-        @Override
-        public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
-            if (values.containsKey(this)) {
-                return (Boolean) values.get(this);
+            if (hasBeenSet(values)) {
+                return super.getValue(values);
             }
 
-            return SubstrateOptions.GenerateDebugInfo.getValueOrDefault(values) > 0;
+            return SubstrateOptions.GenerateDebugInfo.getValue(values) > 0;
         }
     };
 
@@ -110,7 +95,7 @@ public class WebImageWasmOptions {
      * Returns true if wasm comments should be emitted.
      */
     public static boolean genComments(CommentVerbosity verbosity) {
-        return WasmComments.getValue(HostedOptionValues.singleton()).isEnabled(verbosity);
+        return WasmComments.getValue(HostedOptionValues.singleton().get()).isEnabled(verbosity);
     }
 
     public static boolean genComments() {

@@ -27,22 +27,22 @@ package com.oracle.svm.core.c;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.JavaMemoryUtil;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.jdk.UninterruptibleUtils;
+import com.oracle.svm.guest.staging.core.jdk.UninterruptibleUtils;
 import com.oracle.svm.core.memory.NullableNativeMemory;
 import com.oracle.svm.core.nmt.NmtCategory;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Support for allocating and accessing primitive element arrays created in unmanaged memory. They
@@ -101,7 +101,7 @@ public final class UnmanagedPrimitiveArrays {
 
     @Uninterruptible(reason = "Destination array must not move.")
     public static <T> T copyToHeap(UnmanagedPrimitiveArray<?> src, int srcPos, T dest, int destPos, int length) {
-        DynamicHub destHub = KnownIntrinsics.readHub(dest);
+        DynamicHub destHub = DynamicHubIntrinsics.readHub(dest);
         VMError.guarantee(LayoutEncoding.isPrimitiveArray(destHub.getLayoutEncoding()), "Copying is only supported for primitive arrays");
         VMError.guarantee(srcPos >= 0 && destPos >= 0 && length >= 0 && destPos + length <= ArrayLengthNode.arrayLength(dest));
         Pointer destAddressAtPos = Word.objectToUntrackedPointer(dest).add(LayoutEncoding.getArrayElementOffset(destHub.getLayoutEncoding(), destPos));
@@ -112,7 +112,7 @@ public final class UnmanagedPrimitiveArrays {
 
     @Uninterruptible(reason = "Destination array must not move.")
     public static <T> T compareOrCopyToHeap(UnmanagedPrimitiveArray<?> src, int srcPos, T dest, int destPos, int length) {
-        DynamicHub destHub = KnownIntrinsics.readHub(dest);
+        DynamicHub destHub = DynamicHubIntrinsics.readHub(dest);
         VMError.guarantee(LayoutEncoding.isPrimitiveArray(destHub.getLayoutEncoding()), "Copying is only supported for primitive arrays");
         VMError.guarantee(srcPos >= 0 && destPos >= 0 && length >= 0 && destPos + length <= ArrayLengthNode.arrayLength(dest));
         Pointer destAddressAtPos = Word.objectToUntrackedPointer(dest).add(LayoutEncoding.getArrayElementOffset(destHub.getLayoutEncoding(), destPos));
@@ -134,7 +134,7 @@ public final class UnmanagedPrimitiveArrays {
     @SuppressWarnings("unchecked")
     @Uninterruptible(reason = "Destination array must not move.")
     public static <T> UnmanagedPrimitiveArray<?> copyFromHeap(T src, int srcPos, UnmanagedPrimitiveArray<?> dest, int destPos, int length) {
-        DynamicHub srcHub = KnownIntrinsics.readHub(src);
+        DynamicHub srcHub = DynamicHubIntrinsics.readHub(src);
         VMError.guarantee(LayoutEncoding.isPrimitiveArray(srcHub.getLayoutEncoding()), "Copying is only supported for primitive arrays");
         VMError.guarantee(srcPos >= 0 && destPos >= 0 && length >= 0 && srcPos + length <= ArrayLengthNode.arrayLength(src));
         Pointer srcAddressAtPos = Word.objectToUntrackedPointer(src).add(LayoutEncoding.getArrayElementOffset(srcHub.getLayoutEncoding(), srcPos));

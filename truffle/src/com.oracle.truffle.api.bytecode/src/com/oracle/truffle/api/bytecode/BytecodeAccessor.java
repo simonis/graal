@@ -40,16 +40,45 @@
  */
 package com.oracle.truffle.api.bytecode;
 
+import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+
 import com.oracle.truffle.api.impl.Accessor;
 
 final class BytecodeAccessor extends Accessor {
 
     static final BytecodeAccessor ACCESSOR = new BytecodeAccessor();
 
+    static final EngineSupport ENGINE = ACCESSOR.engineSupport();
     static final MemorySupport MEMORY = ACCESSOR.memorySupport();
     static final RuntimeSupport RUNTIME = ACCESSOR.runtimeSupport();
+    static final LanguageSupport LANGUAGE = ACCESSOR.languageSupport();
+    static final NodeSupport NODES = ACCESSOR.nodeSupport();
 
     private BytecodeAccessor() {
+    }
+
+    static class BytecodeSupportImpl extends BytecodeSupport {
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public void registerInstructionTracerFactory(Object hostLanguage, Function<? extends Object, ? extends Object> tracerFactory) {
+            BytecodeEngineData.get(hostLanguage).addEngineTracerFactory((Function<BytecodeDescriptor<?, ?, ?>, InstructionTracer>) tracerFactory);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public <T> List<T> getEngineInstructionTracers(Object hostLanguage, Function<? extends Object, T> tracerFactory) {
+            return (List<T>) BytecodeEngineData.get(hostLanguage).getEngineInstructionTracers((Function<BytecodeDescriptor<?, ?, ?>, InstructionTracer>) tracerFactory);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public void registerTransitionLogger(Object sharingLayer, BiConsumer<? extends Object, ? extends Object> logger) {
+            BytecodeEngineData.get(sharingLayer).setTransitionLogger((BiConsumer<BytecodeRootNode, BytecodeTransition>) logger);
+        }
+
     }
 
 }

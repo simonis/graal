@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,39 +29,39 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.Pair;
+import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.nativeimage.c.type.CShortPointer;
 
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.core.JavaMainWrapper;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.ReplacingLocatableMultiOptionValue;
 import com.oracle.svm.core.util.ExitStatus;
 import com.oracle.svm.hosted.ImageClassLoader;
+import com.oracle.svm.hosted.MainEntryPoint;
 import com.oracle.svm.hosted.NativeImageGenerator;
 import com.oracle.svm.hosted.NativeImageGeneratorRunner;
 import com.oracle.svm.hosted.ProgressReporter;
 import com.oracle.svm.hosted.c.CAnnotationProcessorCache;
-import com.oracle.svm.hosted.code.CEntryPointData;
 import com.oracle.svm.hosted.image.AbstractImage;
-import com.oracle.svm.hosted.jdk.localization.LocalizationFeature;
 import com.oracle.svm.hosted.option.HostedOptionParser;
+import com.oracle.svm.hosted.sboutlining.SBOutliningFeature;
 import com.oracle.svm.hosted.webimage.logging.visualization.VisualizationSupport;
 import com.oracle.svm.hosted.webimage.name.WebImageNamingConvention;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions.CompilerBackend;
 import com.oracle.svm.hosted.webimage.util.BenchmarkLogger;
 import com.oracle.svm.hosted.webimage.wasm.WebImageWasmLMJavaMainSupport;
-import com.oracle.svm.hosted.webimage.wasm.codegen.BinaryenCompat;
 import com.oracle.svm.hosted.webimage.wasmgc.WebImageWasmGCJavaMainSupport;
-import com.oracle.svm.webimage.WebImageJSJavaMainSupport;
+import com.oracle.svm.shared.option.ReplacingLocatableMultiOptionValue;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.WebImageJavaMainSupport;
 
-import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.options.OptionDescriptor;
 import jdk.graal.compiler.options.OptionValues;
+import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
  * Main entry point called from the driver for Web Image (despite the name) and the Native Image
@@ -83,7 +83,7 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
      * {@code svm-wasm} tool macro contains all option names.
      */
     private static void dumpProvidedHostedOptions(HostedOptionParser optionParser) {
-        EconomicMap<String, OptionDescriptor> allHostedOptions = optionParser.getAllHostedOptions();
+        UnmodifiableEconomicMap<String, OptionDescriptor> allHostedOptions = optionParser.getAllHostedOptions();
 
         List<String> names = new ArrayList<>();
 
@@ -126,28 +126,18 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
             return ExitStatus.OK.getValue();
         }
 
-        // Turn off fallback images, Web Image cannot be built as a fallback image.
-        optionProvider.getHostedValues().put(SubstrateOptions.FallbackThreshold, SubstrateOptions.NoFallback);
-
         // We do not need to compile a GC because the JavaScript environment provides one.
         optionProvider.getHostedValues().put(SubstrateOptions.SupportedGCs, ReplacingLocatableMultiOptionValue.DelimitedString.buildWithCommaDelimiter());
+        optionProvider.getHostedValues().put(SubstrateGCOptions.UseTLAB, false);
 
         // Forcibly turn off CAnnotation processor cache
         optionProvider.getHostedValues().put(CAnnotationProcessorCache.Options.UseCAPCache, false);
 
+        // Web Image does not support StringBuilder or StringBuffer outlining.
+        optionProvider.getHostedValues().put(SBOutliningFeature.Options.OutlineStringBuilderAppends, false);
+        optionProvider.getHostedValues().put(SBOutliningFeature.Options.OutlineStringBufferAppends, false);
+
         optionProvider.getHostedValues().put(SubstrateOptions.CompilerBackend, "webImage");
-        /**
-         * SVM provides two approaches of localization support:
-         *
-         * {@link com.oracle.svm.core.jdk.localization.OptimizedLocalizationSupport} and
-         * {@link com.oracle.svm.core.jdk.localization.BundleContentSubstitutedLocalizationSupport}
-         *
-         * The latter depends on GZIPInputStream, which is not supported by Web Image Therefore, we
-         * always use the first one.
-         *
-         * @see LocalizationFeature
-         */
-        optionProvider.getHostedValues().put(LocalizationFeature.Options.LocalizationOptimizedMode, true);
 
         // reduce image size
         optionProvider.getHostedValues().put(SubstrateOptions.IncludeMethodData, false);
@@ -158,19 +148,16 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
             optionProvider.getHostedValues().put(SubstrateOptions.ParseRuntimeOptions, false);
         }
 
-        // force closed-world
+        // GR-71032 support open type world hub layout
+        // force closed type world and hub layout
         optionProvider.getHostedValues().put(SubstrateOptions.ClosedTypeWorld, true);
+        optionProvider.getHostedValues().put(SubstrateOptions.ClosedTypeWorldHubLayout, true);
 
         CompilerBackend backend = WebImageOptions.getBackend(classLoader);
 
         if (backend == CompilerBackend.WASM || backend == CompilerBackend.WASMGC) {
             // For the Wasm backends, turn off closure compiler
             optionProvider.getHostedValues().put(WebImageOptions.ClosureCompiler, false);
-
-            if (backend == CompilerBackend.WASMGC && !optionProvider.getHostedValues().containsKey(BinaryenCompat.Options.UseBinaryen)) {
-                // For WasmGC backend, use binaryen by default
-                optionProvider.getHostedValues().put(BinaryenCompat.Options.UseBinaryen, true);
-            }
 
             if (!optionProvider.getHostedValues().containsKey(WebImageOptions.NamingConvention)) {
                 // The naming convention does not affect the binary image (unless debug information
@@ -196,46 +183,39 @@ public class NativeImageWasmGeneratorRunner extends NativeImageGeneratorRunner {
     }
 
     @Override
-    protected NativeImageGenerator createImageGenerator(ImageClassLoader classLoader, HostedOptionParser optionParser, Pair<Method, CEntryPointData> mainEntryPointData, ProgressReporter reporter) {
-        return new WebImageGenerator(classLoader, optionParser, mainEntryPointData, reporter);
+    protected NativeImageGenerator createImageGenerator(ImageClassLoader classLoader, HostedOptionParser optionParser, MainEntryPoint mainEntryPoint,
+                    ProgressReporter reporter) {
+        return new WebImageGenerator(classLoader, optionParser, mainEntryPoint, reporter);
     }
 
     @Override
-    protected Pair<Method, CEntryPointData> createMainEntryPointData(AbstractImage.NativeImageKind imageKind, Method mainEntryPoint) {
-        return Pair.createLeft(mainEntryPoint);
+    protected MainEntryPoint createMainEntryPoint(AbstractImage.NativeImageKind imageKind, ResolvedJavaMethod mainEntryMethod) {
+        return new MainEntryPoint(mainEntryMethod, null);
     }
 
+    /**
+     * Returns the backend-specific Web Image entry point that wraps application Java main invocation.
+     */
     @Override
-    protected Method getMainEntryMethod(ImageClassLoader classLoader) throws NoSuchMethodException {
-        return switch (WebImageOptions.getBackend(classLoader)) {
+    protected ResolvedJavaMethod getMainEntryMethod(ImageClassLoader classLoader) throws NoSuchMethodException {
+        Method mainEntryMethod = switch (WebImageOptions.getBackend(classLoader)) {
             case JS -> WebImageJavaMainSupport.class.getDeclaredMethod("run", String[].class);
             case WASM -> WebImageWasmLMJavaMainSupport.class.getDeclaredMethod("run", int.class, CIntPointer.class, CShortPointer.class);
             case WASMGC -> WebImageWasmGCJavaMainSupport.class.getDeclaredMethod("run", String[].class);
         };
+        return GuestAccess.get().lookupMethod(mainEntryMethod);
     }
 
-    protected static Method getLibraryEntyPointMethod(ImageClassLoader classLoader) {
-        try {
-            return switch (WebImageOptions.getBackend(classLoader)) {
-                case JS -> WebImageJavaMainSupport.class.getDeclaredMethod("initializeLibrary", String[].class);
-                case WASM -> WebImageWasmLMJavaMainSupport.class.getDeclaredMethod("initializeLibrary", int.class, CIntPointer.class, CShortPointer.class);
-                case WASMGC -> WebImageWasmGCJavaMainSupport.class.getDeclaredMethod("initializeLibrary", String[].class);
-            };
-        } catch (NoSuchMethodException e) {
-            throw GraalError.shouldNotReachHere(e, "Could not reflectively lookup internal library entry point.");
-        }
-    }
-
-    @Override
-    protected JavaMainWrapper.JavaMainSupport createJavaMainSupport(Method javaMainMethod, ImageClassLoader classLoader) throws IllegalAccessException {
+    protected static ResolvedJavaMethod getLibraryEntyPointMethod(ImageClassLoader classLoader) {
+        MetaAccessProvider meta = GuestAccess.get().getProviders().getMetaAccess();
         return switch (WebImageOptions.getBackend(classLoader)) {
-            case JS -> new WebImageJSJavaMainSupport(javaMainMethod);
-            case WASM -> new WebImageWasmLMJavaMainSupport(javaMainMethod);
-            case WASMGC -> new WebImageWasmGCJavaMainSupport(javaMainMethod);
+            case JS -> JVMCIReflectionUtil.getUniqueDeclaredMethod(meta, WebImageJavaMainSupport.class, "initializeLibrary", String[].class);
+            case WASM -> JVMCIReflectionUtil.getUniqueDeclaredMethod(meta, WebImageWasmLMJavaMainSupport.class, "initializeLibrary", int.class, CIntPointer.class, CShortPointer.class);
+            case WASMGC -> JVMCIReflectionUtil.getUniqueDeclaredMethod(meta, WebImageWasmGCJavaMainSupport.class, "initializeLibrary", String[].class);
         };
     }
 
     @Override
-    protected void verifyMainEntryPoint(Method mainEntryPoint) {
+    protected void verifyMainEntryPoint(ResolvedJavaMethod mainEntryPoint) {
     }
 }

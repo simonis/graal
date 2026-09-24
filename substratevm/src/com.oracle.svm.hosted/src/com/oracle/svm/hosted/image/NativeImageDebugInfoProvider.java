@@ -25,6 +25,8 @@
  */
 package com.oracle.svm.hosted.image;
 
+import com.oracle.svm.hosted.RawPointerToGuestValue;
+import com.oracle.svm.hosted.CPointerToGuestValue;
 import static com.oracle.svm.hosted.c.info.AccessorInfo.AccessorKind.ADDRESS;
 import static com.oracle.svm.hosted.c.info.AccessorInfo.AccessorKind.GETTER;
 import static com.oracle.svm.hosted.c.info.AccessorInfo.AccessorKind.SETTER;
@@ -40,10 +42,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.graalvm.collections.Pair;
-import org.graalvm.nativeimage.c.struct.CPointerTo;
-import org.graalvm.nativeimage.c.struct.RawPointerTo;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaMethod;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaType;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
@@ -64,8 +63,8 @@ import com.oracle.objectfile.debugentry.StructureTypeEntry;
 import com.oracle.objectfile.debugentry.TypeEntry;
 import com.oracle.svm.core.StaticFieldsSupport;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.UniqueShortNameProvider;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.debug.BFDNameProvider;
 import com.oracle.svm.core.debug.SharedDebugInfoProvider;
 import com.oracle.svm.core.debug.SubstrateDebugTypeEntrySupport;
@@ -75,7 +74,7 @@ import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.SVMHost;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.c.info.AccessorInfo;
 import com.oracle.svm.hosted.c.info.ElementInfo;
@@ -98,7 +97,9 @@ import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.substitute.InjectedFieldsType;
 import com.oracle.svm.hosted.substitute.SubstitutionMethod;
 import com.oracle.svm.hosted.substitute.SubstitutionType;
-import com.oracle.svm.util.ClassUtil;
+import com.oracle.svm.shared.util.ClassUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.debug.DebugContext;
@@ -389,7 +390,7 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
      */
     @Override
     protected Stream<Object> dataInfo() {
-        return heap.getObjects().stream().map(obj -> obj);
+        return heap.streamObjects().map(obj -> obj);
     }
 
     @Override
@@ -658,7 +659,7 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
         LoaderEntry loaderEntry = lookupLoaderEntry(hostedType);
         String loaderName = loaderEntry.loaderId();
         long typeSignature = getTypeSignature(typeName + loaderName);
-        long compressedTypeSignature = useHeapBase ? getTypeSignature(INDIRECT_PREFIX + typeName + loaderName) : typeSignature;
+        long compressedTypeSignature = getTypeSignature(INDIRECT_PREFIX + typeName + loaderName);
 
         if (hostedType.isPrimitive()) {
             JavaKind kind = hostedType.getStorageKind();
@@ -702,6 +703,9 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
                      * image singleton.
                      */
                     TypeEntry foreignTypeEntry = SubstrateDebugTypeEntrySupport.singleton().getTypeEntry(typeSignature);
+                    if (foreignTypeEntry == null) {
+                        throw VMError.shouldNotReachHere("Missing TypeEntry for '" + typeName + "' from loader '" + loaderName + "' in SubstrateDebugTypeEntrySupport");
+                    }
 
                     // update class offset if the class object is in the heap
                     foreignTypeEntry.setClassOffset(classOffset);
@@ -754,7 +758,8 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
         int size = elementSize(elementInfo);
         // We need the loader name here to match the type signature generated later for looking up
         // type entries.
-        String loaderName = UniqueShortNameProvider.singleton().uniqueShortLoaderName(type.getJavaClass().getClassLoader());
+        var runtimeLoader = ((SVMHost) type.getUniverse().hostVM()).dynamicHub(type).getClassLoader();
+        String loaderName = UniqueShortNameProvider.singleton().uniqueShortLoaderName(runtimeLoader);
         long typeSignature = getTypeSignature(typeName + loaderName);
 
         // Reuse already created type entries.
@@ -776,13 +781,13 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
                      * RawPointerTo annotation
                      */
                     AnalysisType pointerTo = null;
-                    CPointerTo cPointerTo = type.getAnnotation(CPointerTo.class);
+                    CPointerToGuestValue cPointerTo = CPointerToGuestValue.get(type);
                     if (cPointerTo != null) {
-                        pointerTo = metaAccess.lookupJavaType(cPointerTo.value());
+                        pointerTo = metaAccess.getUniverse().lookup(cPointerTo.value());
                     }
-                    RawPointerTo rawPointerTo = type.getAnnotation(RawPointerTo.class);
+                    RawPointerToGuestValue rawPointerTo = RawPointerToGuestValue.get(type);
                     if (rawPointerTo != null) {
-                        pointerTo = metaAccess.lookupJavaType(rawPointerTo.value());
+                        pointerTo = metaAccess.getUniverse().lookup(rawPointerTo.value());
                     }
 
                     pointerToEntry = processElementInfo(nativeLibs, metaAccess, pointerTo);
@@ -834,16 +839,16 @@ class NativeImageDebugInfoProvider extends SharedDebugInfoProvider {
                  * EnumInfo should not reach here because it is no word base type. Create a pointer
                  * to a generic word type or void.
                  */
-                size = ConfigurationValues.getTarget().wordSize;
+                int wordSize = SubstrateTarget.getWordSize();
+                size = wordSize;
                 TypeEntry pointerToEntry = null;
 
                 // create a generic word type as base type or a void* if it is a pointer type
                 if (!nativeLibs.isPointerBase(type)) {
-                    int genericWordSize = ConfigurationValues.getTarget().wordSize;
-                    int genericWordBits = genericWordSize * 8;
-                    String genericWordName = "uint" + genericWordBits + "_t";
+                    int wordBits = wordSize * 8;
+                    String genericWordName = "uint" + wordBits + "_t";
                     long genericWordTypeSignature = getTypeSignature(genericWordName);
-                    pointerToEntry = new PrimitiveTypeEntry(genericWordName, genericWordSize, -1, genericWordTypeSignature, genericWordBits, true, false, true);
+                    pointerToEntry = new PrimitiveTypeEntry(genericWordName, wordSize, -1, genericWordTypeSignature, wordBits, true, false, true);
                     SubstrateDebugTypeEntrySupport.singleton().addTypeEntry(pointerToEntry);
                 }
 

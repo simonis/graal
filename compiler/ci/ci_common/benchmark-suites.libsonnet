@@ -1,5 +1,6 @@
 {
   local c = (import '../../../ci/ci_common/common.jsonnet'),
+  local utils = (import '../../../ci/ci_common/common-utils.libsonnet'),
   local bc = (import '../../../ci/ci_common/bench-common.libsonnet'),
   local config = (import '../../../ci/repo-configuration.libsonnet'),
   local cc = (import 'compiler-common.libsonnet'),
@@ -13,28 +14,35 @@
     spec_suites:: unique_suites([$.specjvm2008, $.specjbb2015]),
     jmh_micros_suites:: unique_suites([$.micros_graal_dist]),
     graal_internals_suites:: unique_suites([$.micros_graal_whitebox]),
-    microservice_suites:: unique_suites([$.microservice_benchmarks]),
 
     main_suites:: unique_suites([$.specjvm2008] + self.open_suites),
-    all_suites:: unique_suites(self.main_suites + self.spec_suites + self.jmh_micros_suites + self.microservice_suites),
+    all_suites:: unique_suites(self.main_suites + self.spec_suites + self.jmh_micros_suites),
 
-    weekly_forks_suites:: self.main_suites + self.microservice_suites,
+    weekly_forks_suites:: self.main_suites,
     all_but_main_suites:: std.setDiff(self.all_suites, self.main_suites, keyF=_suite_key),
   },
 
   // suite definitions
   // *****************
-  awfy: cc.compiler_benchmark + c.heap.small + bc.bench_max_threads + {
+  awfy_template(capture_crema_libjvm_size=false):: cc.compiler_benchmark + c.heap.small + bc.bench_max_threads + {
+    local is_interpreter_only = std.objectHasAll(self.environment, "JVM_CONFIG") &&
+                    (utils.contains(self.environment["JVM_CONFIG"], "xint") || utils.contains(self.environment["JVM_CONFIG"], "no-profiling")),
+    // Required for Havlak in interpreter mode to avoid a stack overflow.
+    local awfy_vm_args = self.extra_vm_args + (if is_interpreter_only then ["-Xss16m"] else []),
+    local awfy_run_args = if is_interpreter_only then ["--", "-i", "5"] else [],
+    local crema_libjvm_file_size_run = if capture_crema_libjvm_size then [self.crema_libjvm_file_size_cmd] else [],
     suite:: "awfy",
     run+: [
-      self.benchmark_cmd + [self.suite + ":*", "--"] + self.extra_vm_args
-    ],
-    timelimit: "30:00",
+      self.benchmark_cmd + [self.suite + ":*", "--"] + awfy_vm_args + awfy_run_args
+    ] + crema_libjvm_file_size_run,
+    timelimit: "1:00:00",
     forks_batches:: null,
     forks_timelimit:: null,
     min_jdk_version:: 8,
     max_jdk_version:: null
   },
+
+  awfy: self.awfy_template(),
 
   dacapo: cc.compiler_benchmark + c.heap.default + bc.bench_max_threads + {
     suite:: "dacapo",
@@ -91,15 +99,16 @@
 
   barista_template(suite_version=null, suite_name="barista", max_jdk_version=null, cmd_app_prefix=["hwloc-bind --cpubind node:0.core:0-3.pu:0 --membind node:0"], non_prefix_barista_args=[]):: cc.compiler_benchmark + {
     suite:: suite_name,
-    local barista_version = "v0.5.0",
+    local barista_version = "0.8.1",
+    local barista_archive_version = "0.8.0",
     local suite_version_args = if suite_version != null then ["--bench-suite-version=" + suite_version] else [],
     local prefix_barista_arg = if std.length(cmd_app_prefix) > 0 then [std.format("--cmd-app-prefix=%s", std.join(" ", cmd_app_prefix))] else [],
     local all_barista_args = prefix_barista_arg + non_prefix_barista_args,
     local barista_args_with_separator = if std.length(all_barista_args) > 0 then ["--"] + all_barista_args else [],
     downloads+: {
       "WRK": { "name": "wrk", "version": "a211dd5", platformspecific: true},
-      "WRK2": { "name": "wrk2", "version": "2.1", platformspecific: true},
-      "BARISTA_BENCHMARKS": { "name": "barista", "version": "0.5.0"}
+      "WRK2": { "name": "wrk2", "version": "2.2", platformspecific: true},
+      "BARISTA_BENCHMARKS": { "name": "barista", "version": barista_archive_version}
     },
     packages+: {
       maven: "==3.8.6",
@@ -117,15 +126,16 @@
     notify_emails+: ["andrija.kolic@oracle.com"],
     timelimit: "2:00:00",
     should_use_hwloc: false, // hwloc-bind is passed to barista with '--cmd-app-prefix'
-    environment+: {
-      BARISTA_HOME: "$BUILD_DIR/barista-suite",
+    environment+: self.ci_resources.repository_environment.maven_wrapper
+                + self.ci_resources.repository_environment.gradle + {
+      BARISTA_HOME: "$BUILD_DIR/barista",
       XMX: "500m"
     },
     min_jdk_version:: 8,
     max_jdk_version:: max_jdk_version,
     forks_batches:: 3,
     bench_forks_per_batch:: 4,
-    forks_timelimit:: "4:30:00"
+    forks_timelimit:: "5:30:00"
   },
 
   barista: self.barista_template(),
@@ -158,51 +168,6 @@
     bench_forks_per_batch:: 1,
     forks_timelimit:: "1:15:00",
     min_jdk_version:: 8,
-    max_jdk_version:: null
-  },
-
-  // Microservice benchmarks
-  microservice_benchmarks: cc.compiler_benchmark + bc.bench_no_thread_cap + {  # no thread cap here since hwloc is handled at the mx level for microservices
-    suite:: "microservices",
-    packages+: {
-      "pip:psutil": "==5.8.0"
-    },
-    local bench_upload = ["bench-uploader.py", "bench-results.json"],
-    local hwlocBind_1C_1T = ["--hwloc-bind=--cpubind node:0.core:0.pu:0 --membind node:0"],
-    local hwlocBind_2C_2T = ["--hwloc-bind=--cpubind node:0.core:0-1.pu:0 --membind node:0"],
-    local hwlocBind_4C_4T = ["--hwloc-bind=--cpubind node:0.core:0-3.pu:0 --membind node:0"],
-    local hwlocBind_16C_16T = ["--hwloc-bind=--cpubind node:0.core:0-15.pu:0 --membind node:0"],
-    local hwlocBind_16C_32T = ["--hwloc-bind=--cpubind node:0.core:0-15.pu:0-1 --membind node:0"],
-    run+: [
-      # shopcart-wrk
-      self.benchmark_cmd + ["shopcart-wrk:mixed-large"]                  + hwlocBind_16C_16T + ["--"] + self.extra_vm_args + ["-Xms512m",  "-Xmx3072m", "-XX:ActiveProcessorCount=16", "-XX:MaxDirectMemorySize=4096m"],
-      bench_upload,
-
-      # tika-wrk odt
-      self.benchmark_cmd + ["tika-wrk:odt-medium"]                       + hwlocBind_4C_4T   + ["--"] + self.extra_vm_args + ["-Xms128m",  "-Xmx600m",  "-XX:ActiveProcessorCount=4"],
-      bench_upload,
-
-      # tika-wrk pdf
-      self.benchmark_cmd + ["tika-wrk:pdf-medium"]                       + hwlocBind_4C_4T   + ["--"] + self.extra_vm_args + ["-Xms80m",   "-Xmx500m",  "-XX:ActiveProcessorCount=4"],
-      bench_upload,
-
-      # petclinic-wrk
-      self.benchmark_cmd + ["petclinic-wrk:mixed-large"]                 + hwlocBind_16C_16T + ["--"] + self.extra_vm_args + ["-Xms128m",  "-Xmx512m", "-XX:ActiveProcessorCount=16"],
-      bench_upload,
-
-      # helloworld-wrk
-      self.benchmark_cmd + ["micronaut-helloworld-wrk:helloworld"]       + hwlocBind_1C_1T   + ["--"] + self.extra_vm_args + ["-Xms8m",    "-Xmx64m",   "-XX:ActiveProcessorCount=1", "-XX:MaxDirectMemorySize=256m"],
-      bench_upload,
-      self.benchmark_cmd + ["quarkus-helloworld-wrk:helloworld"]         + hwlocBind_1C_1T   + ["--"] + self.extra_vm_args + ["-Xms8m",    "-Xmx64m",   "-XX:ActiveProcessorCount=1", "-XX:MaxDirectMemorySize=256m"],
-      bench_upload,
-      self.benchmark_cmd + ["spring-helloworld-wrk:helloworld"]          + hwlocBind_1C_1T   + ["--"] + self.extra_vm_args + ["-Xms8m",    "-Xmx64m",   "-XX:ActiveProcessorCount=1", "-XX:MaxDirectMemorySize=256m"],
-      bench_upload
-    ],
-    timelimit: "2:00:00",
-    forks_batches:: 3,
-    bench_forks_per_batch:: 1,
-    forks_timelimit:: "2:00:00",
-    min_jdk_version:: 11,
     max_jdk_version:: null
   },
 

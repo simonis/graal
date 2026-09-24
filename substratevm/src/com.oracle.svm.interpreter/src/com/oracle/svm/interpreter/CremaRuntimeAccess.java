@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,10 +27,11 @@ package com.oracle.svm.interpreter;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;
 
+import org.graalvm.nativeimage.impl.ClassLoading;
+
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.espresso.classfile.JavaVersion;
 import com.oracle.svm.espresso.classfile.descriptors.NameSymbols;
 import com.oracle.svm.espresso.classfile.descriptors.SignatureSymbols;
@@ -46,6 +47,8 @@ import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedObjectType;
 import com.oracle.svm.interpreter.metadata.MetadataUtil;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.util.VMError;
 
 public final class CremaRuntimeAccess implements RuntimeAccess<InterpreterResolvedJavaType, InterpreterResolvedJavaMethod, InterpreterResolvedJavaField> {
 
@@ -79,9 +82,31 @@ public final class CremaRuntimeAccess implements RuntimeAccess<InterpreterResolv
         return JavaVersion.HOST_VERSION;
     }
 
+    @NeverInline("Exception construction")
+    @Override
+    public RuntimeException throwError(ErrorType errorType, String messageFormat, Object arg0) {
+        throw throwErrorWithMessage(errorType, MetadataUtil.fmt(messageFormat, arg0));
+    }
+
+    @NeverInline("Exception construction")
+    @Override
+    public RuntimeException throwError(ErrorType errorType, String messageFormat, Object arg0, Object arg1) {
+        throw throwErrorWithMessage(errorType, MetadataUtil.fmt(messageFormat, arg0, arg1));
+    }
+
+    @NeverInline("Exception construction")
+    @Override
+    public RuntimeException throwError(ErrorType errorType, String messageFormat, Object arg0, Object arg1, Object arg2) {
+        throw throwErrorWithMessage(errorType, MetadataUtil.fmt(messageFormat, arg0, arg1, arg2));
+    }
+
+    @NeverInline("Exception construction")
     @Override
     public RuntimeException throwError(ErrorType errorType, String messageFormat, Object... args) {
-        String message = MetadataUtil.fmt(messageFormat, args);
+        throw throwErrorWithMessage(errorType, MetadataUtil.fmt(messageFormat, args));
+    }
+
+    private RuntimeException throwErrorWithMessage(ErrorType errorType, String message) {
         switch (errorType) {
             case IllegalAccessError -> throw new IllegalAccessError(message);
             case NoSuchFieldError -> throw new NoSuchFieldError(message);
@@ -94,9 +119,11 @@ public final class CremaRuntimeAccess implements RuntimeAccess<InterpreterResolv
 
     @Override
     public InterpreterResolvedObjectType lookupOrLoadType(Symbol<Type> type, InterpreterResolvedJavaType accessingClass) {
-        Class<?> result = CremaSupport.singleton().resolveOrThrow(type, accessingClass);
-        assert !result.isPrimitive();
-        return (InterpreterResolvedObjectType) DynamicHub.fromClass(result).getInterpreterType();
+        try (var _ = ClassLoading.allowArbitraryClassLoading()) {
+            Class<?> result = CremaSupport.singleton().resolveOrThrow(type, accessingClass);
+            assert !result.isPrimitive();
+            return (InterpreterResolvedObjectType) DynamicHub.fromClass(result).getInterpreterType();
+        }
     }
 
     @Override

@@ -35,7 +35,6 @@ import jdk.graal.compiler.nodes.java.NewArrayNode;
 import jdk.graal.compiler.nodes.java.StoreFieldNode;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.graal.compiler.nodes.util.GraphUtil;
-
 import jdk.graal.compiler.util.CollectionsUtil;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -53,6 +52,11 @@ public class VerifySharedConstantEmptyArray extends VerifyStringFormatterUsage {
     private static final Set<String> NAMES = CollectionsUtil.setOf(
                     "EMPTY_ARRAY",
                     "EMPTY_PATTERNS",
+                    /*
+                     * ECJ uses this synthetic backing field name for empty enum value arrays, such
+                     * as for RecordedOperationPersistence.EnumSetSerializer.UnknownEnum.
+                     */
+                    "ENUM$VALUES",
                     "NO_NODES");
 
     @Override

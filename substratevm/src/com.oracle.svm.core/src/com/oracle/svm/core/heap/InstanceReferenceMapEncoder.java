@@ -28,15 +28,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.heap.InstanceReferenceMapDecoder.InstanceReferenceMap;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.core.common.util.UnsafeArrayTypeWriter;
@@ -114,7 +114,7 @@ public class InstanceReferenceMapEncoder extends ReferenceMapEncoder {
         int offset = 0;
 
         if (offsets.hasNext()) {
-            int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+            int referenceSize = ObjectLayout.singleton().getReferenceSize();
             boolean compressed = offsets.isNextCompressed();
             int nextAdjacentOffset = 0;
             do {

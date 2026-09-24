@@ -29,6 +29,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.graal.pointsto.ClassInclusionPolicy.SharedLayerImageInclusionPolicy;
@@ -46,7 +47,10 @@ import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.CompletionExecutor;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.common.meta.MultiMethod;
+import com.oracle.svm.core.annotate.TargetClass;
+import com.oracle.svm.common.meta.MethodVariant;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.debug.DebugContext;
@@ -131,7 +135,9 @@ public abstract class AbstractAnalysisEngine implements BigBang {
         this.snippetReflectionProvider = snippetReflectionProvider;
         this.constantReflectionProvider = constantReflectionProvider;
         this.wordTypes = wordTypes;
-        classInclusionPolicy.setBigBang(this);
+        if (classInclusionPolicy != null) {
+            classInclusionPolicy.setBigBang(this);
+        }
         this.classInclusionPolicy = classInclusionPolicy;
     }
 
@@ -309,7 +315,7 @@ public abstract class AbstractAnalysisEngine implements BigBang {
     }
 
     @Override
-    public final HostedProviders getProviders(MultiMethod.MultiMethodKey key) {
+    public final HostedProviders getProviders(MethodVariant.MethodVariantKey key) {
         return getHostVM().getProviders(key);
     }
 
@@ -408,6 +414,34 @@ public abstract class AbstractAnalysisEngine implements BigBang {
     public void tryRegisterFieldForBaseImage(AnalysisField field) {
         if (classInclusionPolicy.isAnalysisFieldIncluded(field)) {
             classInclusionPolicy.includeField(field);
+        }
+    }
+
+    @Override
+    public void tryRegisterNativeMethodsForBaseImage(ResolvedJavaType type) {
+        /*
+         * Some modules contain native methods that should not be included in the image because they
+         * are hosted only, or because they are currently unsupported.
+         */
+        EconomicSet<Module> forbiddenModules = hostVM.getSharedLayerForbiddenModules();
+        if (forbiddenModules.contains(OriginalClassProvider.getJavaClass(type).getModule())) {
+            return;
+        }
+        /*
+         * Some methods in target classes can be marked as native because the substitution only
+         * injects an annotation, or provides an alias, without changing the implementation. Those
+         * methods should not be included in the image.
+         */
+        if (GuestAnnotationAccess.isAnnotationPresent(type, TargetClass.class)) {
+            return;
+        }
+        ResolvedJavaMethod[] methods = tryApply(type, t -> t.getDeclaredMethods(false), NO_METHODS);
+        for (ResolvedJavaMethod method : methods) {
+            if (method.isNative()) {
+                if (classInclusionPolicy.isOriginalNativeMethodIncluded(method)) {
+                    classInclusionPolicy.includeMethod(method);
+                }
+            }
         }
     }
 

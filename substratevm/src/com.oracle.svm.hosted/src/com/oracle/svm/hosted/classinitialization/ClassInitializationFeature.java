@@ -36,6 +36,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.impl.clinit.ClassInitializationTracking;
 
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
@@ -46,19 +47,22 @@ import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedSnippets;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.FeatureImpl.AfterAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
 
 import jdk.graal.compiler.graph.Node;
 import jdk.graal.compiler.java.LambdaUtils;
@@ -66,7 +70,13 @@ import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.util.Providers;
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class ClassInitializationFeature implements InternalFeature {
+    @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(ClassInitializationFeature.class, this);
+    }
+
     private static final String NATIVE_IMAGE_CLASS_REASON = "Native Image classes are always initialized at build time";
 
     private ClassInitializationSupport classInitializationSupport;
@@ -172,7 +182,7 @@ public class ClassInitializationFeature implements InternalFeature {
                               and that they do not contain any sensitive data that should not become part of the image.
 
                             """
-                            .replaceAll("\n", System.lineSeparator()).formatted(
+                            .replace("\n", System.lineSeparator()).formatted(
                                             typeName,
                                             classInitializationSupport.reasonForClass(obj.getClass()),
                                             typeName,
@@ -197,7 +207,7 @@ public class ClassInitializationFeature implements InternalFeature {
                             If you are seeing this message after upgrading to a new GraalVM release, this means that some objects ended up in the image heap without their type being marked with --initialize-at-build-time.
                             To fix this, include %s in your configuration. If the classes do not originate from your code, it is advised to update all library or framework dependencies to the latest version before addressing this error.
                             """
-                            .replaceAll("\n", System.lineSeparator())
+                            .replace("\n", System.lineSeparator())
                             .formatted(SubstrateOptionsParser.commandArgument(ClassInitializationOptions.ClassInitialization, proxyOrLambda ? proxyLambdaInterfaceCSV : typeName,
                                             "initialize-at-build-time", true, false));
 
@@ -254,18 +264,39 @@ public class ClassInitializationFeature implements InternalFeature {
                  * which JDK classes are safe for initialization at image build time.
                  */
                 List<String> unspecifiedClasses = classInitializationSupport.classesWithKind(RUN_TIME).stream()
-                                .filter(c -> c.getClassLoader() != null && c.getClassLoader() != ClassLoader.getPlatformClassLoader())
+                                .filter(ClassInitializationFeature::shouldCheckInitializationPolicy)
                                 .filter(c -> classInitializationSupport.specifiedInitKindFor(c) == null)
                                 .map(Class::getTypeName)
                                 .filter(name -> !name.contains(LambdaUtils.LAMBDA_CLASS_NAME_SUBSTRING))
                                 .collect(Collectors.toList());
                 if (!unspecifiedClasses.isEmpty()) {
-                    System.err.println("The following classes have unspecified initialization policy:" + System.lineSeparator() + String.join(System.lineSeparator(), unspecifiedClasses));
+                    System.out.println("The following classes have unspecified initialization policy:" + System.lineSeparator() + String.join(System.lineSeparator(), unspecifiedClasses));
                     UserError.abort("To fix the error either specify the initialization policy for given classes or set %s",
                                     SubstrateOptionsParser.commandArgument(ClassInitializationOptions.AssertInitializationSpecifiedForAllClasses, "-"));
                 }
             }
         }
+    }
+
+    private static boolean shouldCheckInitializationPolicy(Class<?> clazz) {
+        ClassLoader classLoader = clazz.getClassLoader();
+        if (classLoader == null || classLoader == ClassLoader.getPlatformClassLoader()) {
+            return false;
+        }
+
+        /*
+         * Some JDK tool modules, for example jdk.compiler and jdk.jpackage, are defined to the
+         * application class loader. Exclude them by module name so the assertion remains limited to
+         * application classes.
+         */
+        Module module = clazz.getModule();
+        if (module.isNamed()) {
+            String moduleName = module.getName();
+            if (moduleName.startsWith("java.") || moduleName.startsWith("jdk.")) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -46,6 +46,7 @@ import org.graalvm.polyglot.io.MessageTransport;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.function.Predicate;
 
 /**
  * The sandbox policy presets and validates configurations of a {@link Context context} or
@@ -142,7 +143,8 @@ public enum SandboxPolicy {
      * <li>Only a subset of options that are safe with the sandbox policy can be used.</li>
      * <li>If {@link HostAccess} is not specified, the {@link HostAccess#CONSTRAINED} is used.</li>
      * Otherwise, the specified {@link HostAccess} must not allow
-     * {@link HostAccess.Builder#allowPublicAccess(boolean) public access},
+     * {@link HostAccess.Builder#allowPublicAccess(boolean) unrestricted public access},
+     * {@link HostAccess.Builder#allowPublicAccess(Predicate) predicate-selected public access},
      * {@link HostAccess.Builder#allowAccessInheritance(boolean) access inheritance},
      * {@link HostAccess.Builder#allowAllClassImplementations(boolean) all class implementations},
      * {@link HostAccess.Builder#allowAllImplementations(boolean) all interface implementations} and
@@ -251,10 +253,12 @@ public enum SandboxPolicy {
      * <li>The {@code engine.UntrustedCodeMitigation} option is preset to {@code software} if it has
      * not been explicitly set.</li>
      * <li>The {@code sandbox.MaxCPUTime}, {@code sandbox.MaxHeapMemory},
-     * {@code sandbox.MaxASTDepth}, {@code sandbox.MaxStackFrames}, {@code sandbox.MaxThreads},
-     * {@code sandbox.MaxOutputStreamSize}, {@code sandbox.MaxErrorStreamSize} limits options must
-     * be set. Use {@code sandbox.TraceLimits} to estimate an application's optimal sandbox
-     * parameters.</li>
+     * {@code sandbox.MaxASTDepth}, {@code sandbox.MaxThreads}, {@code sandbox.MaxOutputStreamSize},
+     * {@code sandbox.MaxErrorStreamSize} limits options must be set. Use
+     * {@code sandbox.TraceLimits} to estimate an application's optimal sandbox parameters.</li>
+     * <li>The {@code sandbox.MaxStackFrames} limit option may be set to restrict the number of
+     * guest stack frames. If the option is not set, no explicit guest stack frame limit is
+     * enforced.</li>
      * </ul>
      * </p>
      * <p>
@@ -271,7 +275,6 @@ public enum SandboxPolicy {
      *                 .option("sandbox.MaxHeapMemory", "800MB") //
      *                 .option("sandbox.MaxCPUTime", "10s") //
      *                 .option("sandbox.MaxASTDepth", "100") //
-     *                 .option("sandbox.MaxStackFrames", "10") //
      *                 .option("sandbox.MaxThreads", "1") //
      *                 .option("sandbox.MaxOutputStreamSize", "1MB") //
      *                 .option("sandbox.MaxErrorStreamSize", "1MB") //

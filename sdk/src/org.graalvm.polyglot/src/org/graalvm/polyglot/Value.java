@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -49,6 +49,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.zone.ZoneRules;
@@ -1008,6 +1010,55 @@ public final class Value extends AbstractValue {
         }
     }
 
+    /**
+     * Returns {@code true} if this value is a {@linkplain #isMetaObject() meta object} that
+     * provides a {@linkplain #getStaticScope() static scope}. A static scope represents the static
+     * or class level members associated with the type described by this meta object, such as static
+     * fields or methods.
+     *
+     * @throws IllegalStateException if the context is already {@linkplain Context#close() closed}
+     * @throws PolyglotException if a guest language error occurs during execution
+     * @see #isMetaObject()
+     * @see #getStaticScope()
+     * @since 25.1
+     */
+    public boolean hasStaticScope() {
+        return dispatch.hasStaticScope(this.context, receiver);
+    }
+
+    /**
+     * Returns the static scope associated with this value. This value must be a
+     * {@linkplain #isMetaObject() meta-object}. A static scope is an object that exposes static
+     * members, members whose values or behavior are independent of any particular instance.
+     * <p>
+     * The returned static scope can be used to access static members using
+     * {@link #getMember(String)}, {@link #getMemberKeys()}, or
+     * {@link #invokeMember(String, Object...)}.
+     * <p>
+     * The returned static scope is always expected to provide {@link #hasMembers() members},
+     * representing the static context.
+     * <p>
+     * <b>Examples:</b>
+     * </p>
+     * <ul>
+     * <li>In Java, the static scope exposes static fields and methods of a class.</li>
+     * <li>In Python, the static scope exposes class-level attributes and methods, effectively
+     * corresponding to the members provided by the Python metaobject.</li>
+     * </ul>
+     *
+     * @throws UnsupportedOperationException if and only if this value does not
+     *             {@linkplain #hasStaticScope() have a static scope}
+     * @throws IllegalStateException if the context is already {@linkplain Context#close() closed}
+     * @throws PolyglotException if a guest language error occurs during execution
+     * @see #hasStaticScope()
+     * @see #isMetaObject()
+     * @see #hasMembers()
+     * @since 25.1
+     */
+    public Value getStaticScope() {
+        return (Value) dispatch.getStaticScope(this.context, receiver);
+    }
+
     // executable
 
     /**
@@ -1554,7 +1605,7 @@ public final class Value extends AbstractValue {
     /**
      * Returns the value of the pointer as <code>long</code> value.
      *
-     * @throws UnsupportedOperationException if the value is not a pointer.
+     * @throws ClassCastException if the value is not a pointer.
      * @throws PolyglotException if a guest language error occurred during execution.
      * @throws IllegalStateException if the underlying context was closed.
      * @since 19.0
@@ -1586,7 +1637,9 @@ public final class Value extends AbstractValue {
     /**
      * Returns the original Java host language object.
      *
-     * @throws UnsupportedOperationException if {@link #isHostObject()} is <code>false</code>.
+     * @throws ClassCastException if {@link #isHostObject()} is <code>false</code>
+     * @throws UnsupportedOperationException if Java host language object is allocated in a foreign
+     *             heap.
      * @throws PolyglotException if a guest language error occurred during execution.
      * @throws IllegalStateException if the underlying context was closed.
      * @since 19.0
@@ -1620,7 +1673,7 @@ public final class Value extends AbstractValue {
      * Returns the unboxed instance of the {@link Proxy}. Proxies are not automatically boxed to
      * {@link #isHostObject() host objects} on host language call boundaries (Java methods).
      *
-     * @throws UnsupportedOperationException if a value is not a proxy object.
+     * @throws ClassCastException if a value is not a proxy object.
      * @throws PolyglotException if a guest language error occurred during execution.
      * @throws IllegalStateException if the underlying context was closed.
      * @since 19.0
@@ -1671,8 +1724,11 @@ public final class Value extends AbstractValue {
      * date} and {@link #isTime() time}.</li>
      * <li><code>{@link Instant}.class</code> is supported if the value is an {@link #isInstant()
      * instant}.</li>
-     * <li><code>{@link ZonedDateTime}.class</code> is supported if the value is a {@link #isDate()
-     * date}, {@link #isTime() time} and {@link #isTimeZone() timezone}.</li>
+     * <li><code>{@link ZonedDateTime}.class</code> and <code>{@link OffsetDateTime}.class</code> are
+     * supported if the value is a {@link #isDate() date}, {@link #isTime() time} and
+     * {@link #isTimeZone() timezone}.</li>
+     * <li><code>{@link OffsetTime}.class</code> is supported if the value is a {@link #isTime()
+     * time} and {@link #isTimeZone() timezone}.</li>
      * <li><code>{@link ZoneId}.class</code> is supported if the value is a {@link #isTimeZone()
      * timezone}.</li>
      * <li><code>{@link Duration}.class</code> is supported if the value is a {@link #isDuration()
@@ -1696,7 +1752,7 @@ public final class Value extends AbstractValue {
      * {@link Long}. It is recommended to use {@link #as(TypeLiteral) type literals} to specify the
      * expected collection component types. With type literals the value type can be restricted, for
      * example to <code>Map&lt;String, String&gt;</code>. If the raw <code>{@link Map}.class</code>
-     * or an Object component type is used, then the return types of the the list are subject to
+     * or an Object component type is used, then the return types of the list are subject to
      * Object target type mapping rules recursively.
      * <li><code>{@link List}.class</code> is supported if
      * {@link HostAccess.MutableTargetMapping#ARRAY_TO_JAVA_LIST} is
@@ -1708,7 +1764,7 @@ public final class Value extends AbstractValue {
      * literals} to specify the expected component type. With type literals the value type can be
      * restricted to any supported target type, for example to <code>List&lt;Integer&gt;</code>. If
      * the raw <code>{@link List}.class</code> or an Object component type is used, then the return
-     * types of the the list are recursively subject to Object target type mapping rules.
+     * types of the list are recursively subject to Object target type mapping rules.
      * <li><code>{@link ByteSequence}.class</code> is supported if the value has
      * {@link #hasBufferElements() buffer elements} and it has a {@link Value#getBufferSize() buffer
      * size} that is smaller or equal to {@link Integer#MAX_VALUE}.
@@ -1737,7 +1793,7 @@ public final class Value extends AbstractValue {
      * {@link #as(TypeLiteral) type literals} to specify the expected component type. With type
      * literals the value type can be restricted to any supported target type, for example to
      * <code>Iterator&lt;Integer&gt;</code>. If the raw <code>{@link Iterator}.class</code> or an
-     * Object component type is used, then the return types of the the iterator are recursively
+     * Object component type is used, then the return types of the iterator are recursively
      * subject to Object target type mapping rules. The returned iterator's {@link Iterator#next()
      * next} method may throw a {@link ConcurrentModificationException} when an underlying iterable
      * has changed or {@link UnsupportedOperationException} when the iterator's current element is

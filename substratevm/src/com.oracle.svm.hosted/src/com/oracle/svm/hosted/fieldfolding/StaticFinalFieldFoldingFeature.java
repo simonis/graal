@@ -26,15 +26,14 @@ package com.oracle.svm.hosted.fieldfolding;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.BigBang;
@@ -42,19 +41,11 @@ import com.oracle.graal.pointsto.flow.AnalysisParsedGraph.Stage;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.svm.core.ParsingReason;
+import com.oracle.svm.core.AssertionsSupport;
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.FeatureSingleton;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.ameta.FieldValueInterceptionSupport;
@@ -64,7 +55,21 @@ import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader.JavaConstantSupplier;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerSingletonLoader;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerWriter;
+import com.oracle.svm.hosted.imagelayer.SVMImageSingletonWriter;
 import com.oracle.svm.hosted.meta.HostedField;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.graph.Node;
 import jdk.graal.compiler.nodes.StructuredGraph;
@@ -124,7 +129,8 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
  * parsing requests may be processed by different threads and could then depend on each other.
  */
 @AutomaticallyRegisteredFeature
-public final class StaticFinalFieldFoldingFeature implements InternalFeature, FeatureSingleton {
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+public final class StaticFinalFieldFoldingFeature implements InternalFeature {
 
     public static class Options {
         @Option(help = "Optimize static final fields that get a constant assigned in the class initializer.")//
@@ -146,6 +152,11 @@ public final class StaticFinalFieldFoldingFeature implements InternalFeature, Fe
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
         return Options.OptStaticFinalFieldFolding.getValue();
+    }
+
+    @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(StaticFinalFieldFoldingFeature.class, this);
     }
 
     @Override
@@ -246,7 +257,7 @@ public final class StaticFinalFieldFoldingFeature implements InternalFeature, Fe
             if (singleton.baseLayerFieldFoldingInfos.containsKey(key.getId())) {
                 boolean priorLayerStatus = singleton.baseLayerFieldFoldingInfos.get(key.getId()).initializationStatus();
                 boolean currentLayerStatus = singleton.fieldInitializationStatus[entry.getValue()];
-                assert priorLayerStatus == currentLayerStatus : "Field %s initialization status was %s in the base layer, but is %s in the application"
+                assert priorLayerStatus == currentLayerStatus : "Field %s initialization status was %s in the base layer, but is %s in the application" //
                                 .formatted(key, priorLayerStatus, currentLayerStatus);
             }
         }
@@ -278,7 +289,7 @@ public final class StaticFinalFieldFoldingFeature implements InternalFeature, Fe
         StaticFinalFieldFoldingSingleton singleton = StaticFinalFieldFoldingSingleton.singleton();
         boolean isClassInitializer = method.isClassInitializer();
         Map<AnalysisField, JavaConstant> optimizableFields = isClassInitializer ? new HashMap<>() : null;
-        Set<AnalysisField> ineligibleFields = isClassInitializer ? new HashSet<>() : null;
+        EconomicSet<AnalysisField> ineligibleFields = isClassInitializer ? EconomicSet.create() : null;
 
         for (Node n : graph.getNodes()) {
             if (n instanceof StoreFieldNode node) {
@@ -340,8 +351,8 @@ public final class StaticFinalFieldFoldingFeature implements InternalFeature, Fe
      * Store of a static final field in the class initializer of its declaring class. This is the
      * normal way how static final fields are initialized.
      */
-    private static void analyzeStoreInClassInitializer(StoreFieldNode node, AnalysisField field, Map<AnalysisField, JavaConstant> optimizableFields, Set<AnalysisField> ineligibleFields) {
-        if (field.isSynthetic() && field.getName().startsWith("$assertionsDisabled")) {
+    private static void analyzeStoreInClassInitializer(StoreFieldNode node, AnalysisField field, Map<AnalysisField, JavaConstant> optimizableFields, EconomicSet<AnalysisField> ineligibleFields) {
+        if (field.isSynthetic() && field.getName().startsWith(AssertionsSupport.SYNTHETIC_ASSERTIONS_DISABLED_FIELD_NAME)) {
             /*
              * Loads of assertion status fields are constant folded using a different mechanism, so
              * no need to handle them here.
@@ -420,7 +431,8 @@ public final class StaticFinalFieldFoldingFeature implements InternalFeature, Fe
     }
 }
 
-class StaticFinalFieldFoldingSingleton implements LayeredImageSingleton {
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = StaticFinalFieldFoldingSingleton.LayeredCallbacks.class)
+class StaticFinalFieldFoldingSingleton {
 
     /**
      * Folded field values after stage {@link Stage#BYTECODE_PARSED}.
@@ -483,62 +495,72 @@ class StaticFinalFieldFoldingSingleton implements LayeredImageSingleton {
         return fieldCheckIndexMap.get(field);
     }
 
-    @Override
-    public EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
-        return LayeredImageSingletonBuilderFlags.BUILDTIME_ACCESS_ONLY;
-    }
+    static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+        @Override
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<StaticFinalFieldFoldingSingleton>() {
+                @Override
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, StaticFinalFieldFoldingSingleton singleton) {
+                    var snapshotWriter = ((SVMImageSingletonWriter) writer).getSnapshotWriter();
+                    SVMImageLayerWriter imageLayerWriter = HostedImageLayerBuildingSupport.singleton().getWriter();
 
-    @Override
-    public PersistFlags preparePersist(ImageSingletonWriter writer) {
-        var snapshotWriter = ((SVMImageLayerWriter.ImageSingletonWriterImpl) writer).getSnapshotBuilder();
-        SVMImageLayerWriter imageLayerWriter = HostedImageLayerBuildingSupport.singleton().getWriter();
+                    List<Integer> fields = new ArrayList<>();
+                    List<Integer> fieldCheckIndexes = new ArrayList<>();
+                    List<Boolean> fieldInitializationStatusList = new ArrayList<>();
+                    List<JavaConstant> bytecodeParsedFoldedFieldValuesList = new ArrayList<>();
+                    List<JavaConstant> afterParsingHooksDoneFoldedFieldValuesList = new ArrayList<>();
+                    for (var entry : singleton.fieldCheckIndexMap.entrySet()) {
+                        fields.add(entry.getKey().getId());
+                        fieldCheckIndexes.add(entry.getValue());
+                        fieldInitializationStatusList.add(singleton.fieldInitializationStatus[entry.getValue()]);
+                        bytecodeParsedFoldedFieldValuesList.add(singleton.bytecodeParsedFoldedFieldValues.get(entry.getKey()));
+                        afterParsingHooksDoneFoldedFieldValuesList.add(singleton.afterParsingHooksDoneFoldedFieldValues.get(entry.getKey()));
+                    }
 
-        List<Integer> fields = new ArrayList<>();
-        List<Integer> fieldCheckIndexes = new ArrayList<>();
-        List<Boolean> fieldInitializationStatusList = new ArrayList<>();
-        List<JavaConstant> bytecodeParsedFoldedFieldValuesList = new ArrayList<>();
-        List<JavaConstant> afterParsingHooksDoneFoldedFieldValuesList = new ArrayList<>();
-        for (var entry : fieldCheckIndexMap.entrySet()) {
-            fields.add(entry.getKey().getId());
-            fieldCheckIndexes.add(entry.getValue());
-            fieldInitializationStatusList.add(fieldInitializationStatus[entry.getValue()]);
-            bytecodeParsedFoldedFieldValuesList.add(bytecodeParsedFoldedFieldValues.get(entry.getKey()));
-            afterParsingHooksDoneFoldedFieldValuesList.add(afterParsingHooksDoneFoldedFieldValues.get(entry.getKey()));
+                    var staticFinalFieldFoldingSingleton = snapshotWriter.initStaticFinalFieldFoldingSingleton();
+                    var fieldsBuilder = staticFinalFieldFoldingSingleton.initFields(fields.size());
+                    var fieldCheckIndexesBuilder = staticFinalFieldFoldingSingleton.initFieldCheckIndexes(fieldCheckIndexes.size());
+                    var fieldInitializationStatusListBuilder = staticFinalFieldFoldingSingleton.initFieldInitializationStatusList(fieldInitializationStatusList.size());
+                    var bytecodeParsedFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton.initBytecodeParsedFoldedFieldValues(bytecodeParsedFoldedFieldValuesList.size());
+                    var afterParsingHooksDoneFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton //
+                                    .initAfterParsingHooksDoneFoldedFieldValues(afterParsingHooksDoneFoldedFieldValuesList.size());
+                    for (int i = 0; i < fields.size(); ++i) {
+                        fieldsBuilder.set(i, fields.get(i));
+                        fieldCheckIndexesBuilder.set(i, fieldCheckIndexes.get(i));
+                        fieldInitializationStatusListBuilder.set(i, fieldInitializationStatusList.get(i));
+                        imageLayerWriter.writeConstant(bytecodeParsedFoldedFieldValuesList.get(i), bytecodeParsedFoldedFieldValuesListBuilder.get(i));
+                        imageLayerWriter.writeConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i), afterParsingHooksDoneFoldedFieldValuesListBuilder.get(i));
+                    }
+
+                    return LayeredPersistFlags.CREATE;
+                }
+
+                @Override
+                public Class<? extends SingletonLayeredCallbacks.LayeredSingletonInstantiator<?>> getSingletonInstantiator() {
+                    return SingletonInstantiator.class;
+                }
+            });
         }
 
-        var staticFinalFieldFoldingSingleton = snapshotWriter.initStaticFinalFieldFoldingSingleton();
-        var fieldsBuilder = staticFinalFieldFoldingSingleton.initFields(fields.size());
-        var fieldCheckIndexesBuilder = staticFinalFieldFoldingSingleton.initFieldCheckIndexes(fieldCheckIndexes.size());
-        var fieldInitializationStatusListBuilder = staticFinalFieldFoldingSingleton.initFieldInitializationStatusList(fieldInitializationStatusList.size());
-        var bytecodeParsedFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton.initBytecodeParsedFoldedFieldValues(bytecodeParsedFoldedFieldValuesList.size());
-        var afterParsingHooksDoneFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton.initAfterParsingHooksDoneFoldedFieldValues(afterParsingHooksDoneFoldedFieldValuesList.size());
-        for (int i = 0; i < fields.size(); ++i) {
-            fieldsBuilder.set(i, fields.get(i));
-            fieldCheckIndexesBuilder.set(i, fieldCheckIndexes.get(i));
-            fieldInitializationStatusListBuilder.set(i, fieldInitializationStatusList.get(i));
-            imageLayerWriter.writeConstant(bytecodeParsedFoldedFieldValuesList.get(i), bytecodeParsedFoldedFieldValuesListBuilder.get(i));
-            imageLayerWriter.writeConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i), afterParsingHooksDoneFoldedFieldValuesListBuilder.get(i));
+        static class SingletonInstantiator implements SingletonLayeredCallbacks.LayeredSingletonInstantiator<StaticFinalFieldFoldingSingleton> {
+            @Override
+            public StaticFinalFieldFoldingSingleton createFromLoader(ImageSingletonLoader loader) {
+                var snapshotLoader = ((SVMImageLayerSingletonLoader.ImageSingletonLoaderImpl) loader).getSnapshotLoader();
+
+                var staticFinalFieldFoldingSingleton = snapshotLoader.getStaticFinalFieldFoldingSingleton();
+                var fields = staticFinalFieldFoldingSingleton.getFields();
+                var fieldCheckIndexes = staticFinalFieldFoldingSingleton.getFieldCheckIndexes();
+                var fieldInitializationStatusList = staticFinalFieldFoldingSingleton.getFieldInitializationStatusList();
+                var bytecodeParsedFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getBytecodeParsedFoldedFieldValues();
+                var afterParsingHooksDoneFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getAfterParsingHooksDoneFoldedFieldValues();
+
+                Map<Integer, PriorLayerFinalFieldFoldingInfo> baseLayerFieldFoldingInfos = new HashMap<>();
+                for (int i = 0; i < fields.size(); ++i) {
+                    baseLayerFieldFoldingInfos.put(fields.get(i), new PriorLayerFinalFieldFoldingInfo(SVMImageLayerLoader.getConstant(bytecodeParsedFoldedFieldValuesList.get(i)),
+                                    SVMImageLayerLoader.getConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i)), fieldCheckIndexes.get(i), fieldInitializationStatusList.get(i)));
+                }
+                return new StaticFinalFieldFoldingSingleton(baseLayerFieldFoldingInfos);
+            }
         }
-
-        return PersistFlags.CREATE;
-    }
-
-    @SuppressWarnings("unused")
-    public static Object createFromLoader(ImageSingletonLoader loader) {
-        var snapshotReader = ((SVMImageLayerSingletonLoader.ImageSingletonLoaderImpl) loader).getSnapshotReader();
-
-        var staticFinalFieldFoldingSingleton = snapshotReader.getStaticFinalFieldFoldingSingleton();
-        var fields = staticFinalFieldFoldingSingleton.getFields();
-        var fieldCheckIndexes = staticFinalFieldFoldingSingleton.getFieldCheckIndexes();
-        var fieldInitializationStatusList = staticFinalFieldFoldingSingleton.getFieldInitializationStatusList();
-        var bytecodeParsedFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getBytecodeParsedFoldedFieldValues();
-        var afterParsingHooksDoneFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getAfterParsingHooksDoneFoldedFieldValues();
-
-        Map<Integer, PriorLayerFinalFieldFoldingInfo> baseLayerFieldFoldingInfos = new HashMap<>();
-        for (int i = 0; i < fields.size(); ++i) {
-            baseLayerFieldFoldingInfos.put(fields.get(i), new PriorLayerFinalFieldFoldingInfo(SVMImageLayerLoader.getConstant(bytecodeParsedFoldedFieldValuesList.get(i)),
-                            SVMImageLayerLoader.getConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i)), fieldCheckIndexes.get(i), fieldInitializationStatusList.get(i)));
-        }
-        return new StaticFinalFieldFoldingSingleton(baseLayerFieldFoldingInfos);
     }
 }

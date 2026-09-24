@@ -25,7 +25,7 @@
 package com.oracle.svm.core.graal.code;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.common.CompilationIdentifier;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -75,6 +75,24 @@ public abstract class SharedCompilationResult extends CompilationResult {
             result = SubstrateOptions.buildTimeCodeAlignment();
         }
         VMError.guarantee(result > 0 && NumUtil.isUnsignedPowerOf2(result), "invalid alignment %d", result);
+        return result;
+    }
+
+    /**
+     * Returns the offset where runtime code-info should treat the method entry point as starting.
+     * Most methods start at offset zero; {@link SubstrateBackend.SubstrateMarkId#PROLOGUE_START}
+     * records the non-zero start when the compiler emits bytes before the prologue.
+     */
+    public static int getEntryPointOffset(CompilationResult compilation) {
+        int result = 0;
+        boolean found = false;
+        for (CompilationResult.CodeMark mark : compilation.getMarks()) {
+            if (mark.id == SubstrateBackend.SubstrateMarkId.PROLOGUE_START) {
+                VMError.guarantee(!found, "multiple prologue start marks in compilation result");
+                result = mark.pcOffset;
+                found = true;
+            }
+        }
         return result;
     }
 

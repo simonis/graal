@@ -99,7 +99,7 @@ public final class ResourceConfiguration extends ConfigurationBase<ResourceConfi
         }
 
         @Override
-        public void addResourceBundles(UnresolvedAccessCondition condition, String baseName) {
+        public void addResourceBundles(UnresolvedAccessCondition condition, boolean preserved, String baseName) {
             configuration.addBundle(condition, baseName);
         }
 
@@ -316,7 +316,7 @@ public final class ResourceConfiguration extends ConfigurationBase<ResourceConfi
 
     private BundleConfiguration getOrCreateBundleConfig(UnresolvedAccessCondition condition, String baseName) {
         ConditionalElement<String> key = new ConditionalElement<>(condition, baseName);
-        return bundles.computeIfAbsent(key, cond -> new BundleConfiguration(condition, baseName));
+        return bundles.computeIfAbsent(key, _ -> new BundleConfiguration(condition, baseName));
     }
 
     public boolean anyResourceMatches(String s) {

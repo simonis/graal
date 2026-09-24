@@ -30,7 +30,6 @@ import static com.oracle.svm.truffle.nfi.libffi.LibFFI.ffi_closure_alloc;
 
 import java.lang.ref.WeakReference;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
@@ -43,19 +42,20 @@ import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.WordBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.c.function.CEntryPointActions;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoEpilogue;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoPrologue;
-import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.guest.staging.c.function.CEntryPointActions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoEpilogue;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoPrologue;
+import com.oracle.svm.guest.staging.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.handles.PrimitiveArrayView;
 import com.oracle.svm.core.headers.LibC;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
 import com.oracle.svm.truffle.nfi.LibFFI.ClosureData;
 import com.oracle.svm.truffle.nfi.LibFFI.NativeClosureHandle;
 import com.oracle.svm.truffle.nfi.NativeAPI.NativeTruffleEnv;
@@ -250,7 +250,7 @@ final class NativeClosure {
                 CEntryPointActions.failFatally(code, errorMessageThread.get());
             }
         } else {
-            int code = CEntryPointActions.enterAttachThread(user.isolate(), false, true);
+            int code = CEntryPointActions.enterAttachThread(user.isolate(), true);
             if (code != CEntryPointErrors.NO_ERROR) {
                 CEntryPointActions.failFatally(code, errorMessageIsolate.get());
             }
@@ -324,7 +324,7 @@ final class NativeClosure {
                 CEntryPointActions.failFatally(code, errorMessageThread.get());
             }
         } else {
-            int code = CEntryPointActions.enterAttachThread(user.isolate(), false, true);
+            int code = CEntryPointActions.enterAttachThread(user.isolate(), true);
             if (code != CEntryPointErrors.NO_ERROR) {
                 CEntryPointActions.failFatally(code, errorMessageIsolate.get());
             }
@@ -380,7 +380,7 @@ final class NativeClosure {
                 CEntryPointActions.failFatally(code, errorMessageThread.get());
             }
         } else {
-            int code = CEntryPointActions.enterAttachThread(user.isolate(), false, true);
+            int code = CEntryPointActions.enterAttachThread(user.isolate(), true);
             if (code != CEntryPointErrors.NO_ERROR) {
                 CEntryPointActions.failFatally(code, errorMessageIsolate.get());
             }
@@ -437,7 +437,7 @@ final class NativeClosure {
                 CEntryPointActions.failFatally(code, errorMessageThread.get());
             }
         } else {
-            int code = CEntryPointActions.enterAttachThread(user.isolate(), false, true);
+            int code = CEntryPointActions.enterAttachThread(user.isolate(), true);
             if (code != CEntryPointErrors.NO_ERROR) {
                 CEntryPointActions.failFatally(code, errorMessageIsolate.get());
             }

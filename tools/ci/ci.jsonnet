@@ -21,7 +21,7 @@
     }
   },
 
-  local tools_gate = gate_guard + tools_common + common.deps.eclipse + common.deps.jdt + common.deps.spotbugs + {
+  local tools_gate = gate_guard + tools_common + common.deps.jdt + common.deps.spotbugs + {
     name: 'gate-tools-oracle' + self.jdk_name + '-' + self.os + '-' + self.arch,
     run: [["mx", "--strict-compliance", "gate", "--strict-mode"]],
     targets: [if (self.jdk_name == "jdk-latest") then "tier2" else "tier3"],
@@ -59,7 +59,7 @@
     "com.oracle.truffle.tools"
   ],
 
-  local tools_coverage_weekly = tools_common + common.deps.eclipse + common.deps.jdt + {
+  local tools_coverage_weekly = tools_common + common.deps.jdt + {
     name: "weekly-tools-coverage",
     run: [
       ["mx"] + coverage_whitelisting + [
@@ -93,9 +93,6 @@
 
     common.windows_amd64 + common.oraclejdkLatest + tools_weekly + common.deps.windows_devkit,
     common.windows_amd64 + common.oraclejdk21 + tools_weekly + common.deps.windows_devkit,
-
-    common.darwin_amd64  + common.oraclejdkLatest + tools_weekly,
-    common.darwin_amd64  + common.oraclejdk21 + tools_weekly,
   ],
 
   builds: utils.add_defined_in(_builds, std.thisFile),

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,17 +26,25 @@ package com.oracle.svm.core.foreign;
 
 import static jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect.HAS_SIDE_EFFECT;
 
+import java.io.IOException;
 import java.lang.constant.DirectMethodHandleDesc;
+import java.lang.constant.DirectMethodHandleDesc.Kind;
+import java.lang.constant.MethodHandleDesc;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.MemorySegment.Scope;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;
+import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.EconomicSet;
@@ -47,51 +55,86 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.type.CIntPointer;
+import org.graalvm.nativeimage.impl.InternalPlatform.NATIVE_ONLY;
+import org.graalvm.nativeimage.impl.InternalPlatform.PLATFORM_JNI;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.ForeignSupport;
 import com.oracle.svm.core.FunctionPointerHolder;
 import com.oracle.svm.core.MissingRegistrationUtils;
 import com.oracle.svm.core.OS;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.InvokeJavaFunctionPointer;
 import com.oracle.svm.core.foreign.AbiUtils.TrampolineTemplate;
 import com.oracle.svm.core.foreign.phases.SubstrateOptimizeSharedArenaAccessPhase.OptimizeSharedArenaConfig;
+import com.oracle.svm.core.graal.code.PreparedSignature;
+import com.oracle.svm.core.graal.code.PreparedSignature.ArgumentAdaptation;
 import com.oracle.svm.core.graal.code.SubstrateBackendWithAssembler;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.headers.WindowsAPIs;
 import com.oracle.svm.core.image.DisallowedImageHeapObjects.DisallowedObjectReporter;
+import com.oracle.svm.core.interpreter.InterpreterForeignFunctionsSupport;
+import com.oracle.svm.core.interpreter.InterpreterForeignFunctionsSupport.ForeignDowncallPlan;
+import com.oracle.svm.core.methodhandles.Target_java_lang_invoke_BoundMethodHandle;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.ImageHeapMap;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.util.ImageHeapMap;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.Word;
-import jdk.internal.foreign.CABI;
+import jdk.graal.compiler.core.common.NumUtil;
+import jdk.graal.compiler.util.json.JsonPrintable;
+import jdk.graal.compiler.util.json.JsonWriter;
 import jdk.internal.foreign.MemorySessionImpl;
 import jdk.internal.foreign.abi.CapturableState;
 import jdk.internal.foreign.abi.LinkerOptions;
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = PartiallyLayerAware.class)
 public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedArenaConfig {
     @Fold
     public static ForeignFunctionsRuntime singleton() {
         return ImageSingletons.lookup(ForeignFunctionsRuntime.class);
     }
 
+    private final AbiUtils abiUtils;
     private final AbiUtils.TrampolineTemplate trampolineTemplate;
 
     private final EconomicMap<NativeEntryPointInfo, FunctionPointerHolder> downcallStubs = ImageHeapMap.create("downcallStubs");
+    private final EconomicMap<MethodType, FunctionPointerHolder> downcallStubInvokers = ImageHeapMap.create("downcallStubInvokers");
     private final EconomicMap<Pair<DirectMethodHandleDesc, JavaEntryPointInfo>, FunctionPointerHolder> directUpcallStubs = ImageHeapMap.create("directUpcallStubs");
     private final EconomicMap<JavaEntryPointInfo, FunctionPointerHolder> upcallStubs = ImageHeapMap.create("upcallStubs");
     private final EconomicSet<ResolvedJavaType> neverAccessesSharedArenaTypes = EconomicSet.create();
     private final EconomicSet<ResolvedJavaMethod> neverAccessesSharedArenaMethods = EconomicSet.create();
+
+    @Platforms(Platform.HOSTED_ONLY.class) //
+    private final Function<NativeEntryPointInfo, CFunctionPointer> ensureDowncallStubCreated;
+
+    @Platforms(Platform.HOSTED_ONLY.class) //
+    private final Function<MethodType, CFunctionPointer> ensureDowncallStubInvokerCreated;
+
+    /**
+     * A thread-safe stack of currently performed link requests (i.e. creating a downcall handle or
+     * an upcall stub). This stack is used to generate a helpful error message if the link request
+     * fails because of a missing stub. Since link requests may be created concurrently, we need to
+     * use a thread-safe collection.
+     */
+    private final Deque<LinkRequest> currentLinkRequests = new ConcurrentLinkedDeque<>();
 
     private final Map<Long, TrampolineSet> trampolines = new HashMap<>();
     private TrampolineSet currentTrampolineSet;
@@ -100,20 +143,36 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     private BiConsumer<Long, DirectMethodHandleDesc> usingSpecializedUpcallListener;
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public ForeignFunctionsRuntime(AbiUtils abiUtils) {
+    public ForeignFunctionsRuntime(AbiUtils abiUtils,
+                    Function<NativeEntryPointInfo, CFunctionPointer> ensureDowncallStubCreated,
+                    Function<MethodType, CFunctionPointer> ensureDowncallStubInvokerCreated) {
+        this.abiUtils = abiUtils;
         this.trampolineTemplate = new TrampolineTemplate(new byte[abiUtils.trampolineSize()]);
+        this.ensureDowncallStubCreated = ensureDowncallStubCreated;
+        this.ensureDowncallStubInvokerCreated = ensureDowncallStubInvokerCreated;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public void generateTrampolineTemplate(SubstrateBackendWithAssembler<?> backend) {
-        AbiUtils.singleton().generateTrampolineTemplate(backend, this.trampolineTemplate);
+        abiUtils.generateTrampolineTemplate(backend, this.trampolineTemplate);
     }
 
+    @Fold
+    public static boolean isLibcSupported() {
+        VMError.guarantee(BuildPhaseProvider.isSetupFinished());
+        return LibC.isSupported();
+    }
+
+    @Fold
+    public static boolean isWindowsApiSupported() {
+        VMError.guarantee(BuildPhaseProvider.isSetupFinished());
+        return WindowsAPIs.isSupported();
+    }
+
+    @Fold
     public static boolean areFunctionCallsSupported() {
-        return switch (CABI.current()) {
-            case CABI.SYS_V, CABI.WIN_64, CABI.MAC_OS_AARCH_64, CABI.LINUX_AARCH_64 -> true;
-            default -> false;
-        };
+        VMError.guarantee(BuildPhaseProvider.isFeatureRegistrationFinished());
+        return Platform.includedIn(PLATFORM_JNI.class) && Platform.includedIn(NATIVE_ONLY.class);
     }
 
     public static RuntimeException functionCallsUnsupported() {
@@ -128,6 +187,11 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
+    public boolean downcallStubInvokerExists(MethodType methodType) {
+        return downcallStubInvokers.containsKey(methodType);
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
     public int getDowncallStubsCount() {
         return downcallStubs.size();
     }
@@ -135,6 +199,11 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     @Platforms(Platform.HOSTED_ONLY.class)
     public boolean upcallStubExists(JavaEntryPointInfo jep) {
         return upcallStubs.containsKey(jep);
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public boolean addDowncallStubInvokerPointer(MethodType methodType, CFunctionPointer ptr) {
+        return downcallStubInvokers.putIfAbsent(methodType, new FunctionPointerHolder(ptr)) == null;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -178,24 +247,43 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
         neverAccessesSharedArenaMethods.add(method);
     }
 
-    /**
-     * We'd rather report the function descriptor than the native method type, but we don't have it
-     * available here. One could intercept this exception in
-     * {@link jdk.internal.foreign.abi.DowncallLinker#getBoundMethodHandle} and add information
-     * about the descriptor there.
-     */
-    CFunctionPointer getDowncallStubPointer(NativeEntryPointInfo nep) {
+    public CFunctionPointer getDowncallStubPointer(NativeEntryPointInfo nep) {
+        return getDowncallStubPointer(nep, true);
+    }
+
+    public CFunctionPointer getDowncallStubPointer(NativeEntryPointInfo nep, boolean reportMissingDowncalls) {
         FunctionPointerHolder holder = downcallStubs.get(nep);
+        if (holder != null) {
+            return holder.functionPointer;
+        }
+        if (reportMissingDowncalls) {
+            throw reportMissingDowncall(nep);
+        }
+        return Word.nullPointer();
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    CFunctionPointer ensureDowncallStubCreated(NativeEntryPointInfo nep) {
+        return ensureDowncallStubCreated.apply(nep);
+    }
+
+    public CFunctionPointer getDowncallStubInvokerPointer(MethodType methodType) {
+        FunctionPointerHolder holder = downcallStubInvokers.get(methodType);
         if (holder == null) {
-            throw MissingForeignRegistrationUtils.reportDowncall(nep);
+            throw reportMissingDowncall(methodType);
         }
         return holder.functionPointer;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    CFunctionPointer ensureDowncallStubInvokerCreated(MethodType methodType) {
+        return ensureDowncallStubInvokerCreated.apply(methodType);
     }
 
     CFunctionPointer getUpcallStubPointer(JavaEntryPointInfo jep) {
         FunctionPointerHolder holder = upcallStubs.get(jep);
         if (holder == null) {
-            throw MissingForeignRegistrationUtils.reportUpcall(jep);
+            throw reportMissingUpcall(jep);
         }
         return holder.functionPointer;
     }
@@ -221,12 +309,40 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     /**
      * Updates the stub address in the upcall trampoline with the address of a direct upcall stub.
      * The trampoline is identified by the given native address and the direct upcall stub is
-     * identified by the method handle descriptor.
-     *
-     * @param trampolineAddress The address of the upcall trampoline.
-     * @param desc A direct method handle descriptor used to lookup the direct upcall stub.
+     * identified by the method handle descriptor and the original native callback descriptor.
+     * <p>
+     * Further, if the method handle is a bound method handle that binds a direct method handle to
+     * an object, it will also unwrap the direct method handle.
      */
-    void patchForDirectUpcall(long trampolineAddress, DirectMethodHandleDesc desc, FunctionDescriptor functionDescriptor, LinkerOptions options) {
+    void patchForDirectUpcall(long trampolineAddress, MethodHandle target, FunctionDescriptor functionDescriptor, LinkerOptions options) {
+        /*
+         * Unwrap bound method handles with two fields where the first field is again a method
+         * handle and the second field is some object. This is commonly the result when the receiver
+         * argument of a direct method handle has been bound.
+         */
+        MethodHandle crackableCandidate = target;
+        Object boundArgument = null;
+        if (Target_java_lang_invoke_BoundMethodHandle.class.isInstance(target)) {
+            Target_java_lang_invoke_BoundMethodHandle bmh = SubstrateUtil.cast(target, Target_java_lang_invoke_BoundMethodHandle.class);
+            if (bmh.fieldCount() == 2 && bmh.arg(0) instanceof MethodHandle dmh) {
+                crackableCandidate = dmh;
+                boundArgument = bmh.arg(1);
+            }
+        }
+
+        /*
+         * If the method handle is crackable, we can likely use a direct upcall stub. In case of a
+         * bound method handle, this is only possible for instance methods because only then the
+         * direct upcall stub knows that it needs to inject the receiver (i.e. the bound argument).
+         */
+        DirectMethodHandleDesc desc;
+        Optional<MethodHandleDesc> methodHandleDesc = crackableCandidate.describeConstable();
+        if (methodHandleDesc.isPresent() && methodHandleDesc.get() instanceof DirectMethodHandleDesc dmhd && isSupportedInvocationForDirectUpcall(dmhd.kind(), boundArgument)) {
+            desc = dmhd;
+        } else {
+            return;
+        }
+
         JavaEntryPointInfo jep = AbiUtils.singleton().makeJavaEntryPoint(functionDescriptor, options);
         FunctionPointerHolder functionPointerHolder = directUpcallStubs.get(Pair.create(desc, jep));
         if (functionPointerHolder == null) {
@@ -245,7 +361,7 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
          * allocating thread until it returns from the call. Also, the trampoline cannot be free'd
          * between allocation and patching because the associated arena is still on the stack.
          */
-        trampolineSet.patchTrampolineForDirectUpcall(trampolinePointer, functionPointerHolder.functionPointer);
+        trampolineSet.prepareTrampolineForDirectUpcall(trampolinePointer, functionPointerHolder.functionPointer, boundArgument);
         /*
          * If we reach this point, everything went fine and the trampoline was patched with the
          * specialized upcall stub's address. For testing, now report that the lookup and patching
@@ -256,6 +372,18 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
         }
     }
 
+    private static boolean isSupportedInvocationForDirectUpcall(Kind kind, Object boundArgument) {
+        return switch (kind) {
+            /*
+             * Only stubs for non-static direct upcalls are able to pass a bound argument. The stub
+             * does not know that it would need to pass the argument.
+             */
+            case STATIC -> boundArgument == null;
+            case VIRTUAL, SPECIAL -> boundArgument != null;
+            default -> false;
+        };
+    }
+
     public void setUsingSpecializedUpcallListener(BiConsumer<Long, DirectMethodHandleDesc> listener) {
         usingSpecializedUpcallListener = listener;
     }
@@ -264,38 +392,113 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
         synchronized (trampolines) {
             long base = TrampolineSet.getAllocationBase(Word.pointer(addr)).rawValue();
             TrampolineSet trampolineSet = trampolines.get(base);
-            if (trampolineSet.tryFree()) {
+            if (trampolineSet.freeTrampoline(Word.pointer(addr))) {
                 trampolines.remove(base);
             }
         }
     }
 
+    /**
+     * Looks for the corresponding {@link #currentLinkRequests link request} by creating a
+     * {@link NativeEntryPointInfo} for each currently existing link request and comparing to the
+     * given one. The matching link request then contains the {@link FunctionDescriptor} and
+     * {@link LinkerOptions} that are required to produce a helpful error message for the user.
+     */
+    private MissingForeignRegistrationError reportMissingDowncall(NativeEntryPointInfo nep) {
+        LinkRequest currentLinkRequest = null;
+        for (LinkRequest linkRequest : currentLinkRequests) {
+            if (!Thread.currentThread().equals(linkRequest.requester)) {
+                continue;
+            }
+            NativeEntryPointInfo nativeEntryPointInfo = abiUtils.makeNativeEntrypoint(linkRequest.functionDescriptor, linkRequest.linkerOptions);
+            if (nep.equals(nativeEntryPointInfo)) {
+                currentLinkRequest = linkRequest;
+                break;
+            }
+        }
+        throw MissingForeignRegistrationUtils.report(false, currentLinkRequest, nep.methodType());
+    }
+
+    /**
+     * Similar to {@link #reportMissingDowncall(NativeEntryPointInfo)} but only matches the
+     * requested {@link MethodType}.
+     */
+    private MissingForeignRegistrationError reportMissingDowncall(MethodType methodType) {
+        LinkRequest currentLinkRequest = null;
+        for (LinkRequest linkRequest : currentLinkRequests) {
+            if (methodType.equals(linkRequest.functionDescriptor.toMethodType())) {
+                currentLinkRequest = linkRequest;
+                break;
+            }
+        }
+        throw MissingForeignRegistrationUtils.report(false, currentLinkRequest, methodType);
+    }
+
+    /**
+     * Similar to {@link #reportMissingDowncall} but for upcalls.
+     */
+    private MissingForeignRegistrationError reportMissingUpcall(JavaEntryPointInfo jep) {
+        LinkRequest currentLinkRequest = null;
+        for (LinkRequest linkRequest : currentLinkRequests) {
+            JavaEntryPointInfo javaEntryPointInfo = abiUtils.makeJavaEntryPoint(linkRequest.functionDescriptor, linkRequest.linkerOptions);
+            if (jep.equals(javaEntryPointInfo)) {
+                currentLinkRequest = linkRequest;
+                break;
+            }
+        }
+        throw MissingForeignRegistrationUtils.report(true, currentLinkRequest, jep.handleType());
+    }
+
     public static class MissingForeignRegistrationUtils extends MissingRegistrationUtils {
-        public static MissingForeignRegistrationError reportDowncall(NativeEntryPointInfo nep) {
-            MissingForeignRegistrationError mfre = new MissingForeignRegistrationError(foreignRegistrationMessage("downcall", nep.methodType()));
-            report(mfre);
-            return mfre;
-        }
-
-        public static MissingForeignRegistrationError reportUpcall(JavaEntryPointInfo jep) {
-            MissingForeignRegistrationError mfre = new MissingForeignRegistrationError(foreignRegistrationMessage("upcall", jep.cMethodType()));
-            report(mfre);
-            return mfre;
-        }
-
-        private static String foreignRegistrationMessage(String failedAction, MethodType methodType) {
-            return registrationMessage("perform " + failedAction + " with leaf type", methodType.toString(), "", "", "foreign", "foreign");
-        }
-
         private static void report(MissingForeignRegistrationError exception) {
             StackTraceElement responsibleClass = getResponsibleClass(exception, foreignEntryPoints);
             MissingRegistrationUtils.report(exception, responsibleClass);
+        }
+
+        private static MissingForeignRegistrationError report(boolean upcall, LinkRequest linkRequest, MethodType methodType) {
+            String json = linkRequest != null ? elementToJSON(linkRequest) : "";
+            String failedAction = upcall ? "upcall" : "downcall";
+            String message = registrationMessage("perform " + failedAction + " with leaf type", methodType.toString(), json, "", "foreign", "foreign-function-and-memory-api");
+            MissingForeignRegistrationError mfre = new MissingForeignRegistrationError(message);
+            report(mfre);
+            throw mfre;
         }
 
         private static final Map<String, Set<String>> foreignEntryPoints = Map.of(
                         "jdk.internal.foreign.abi.AbstractLinker", Set.of(
                                         "downcallHandle",
                                         "upcallStub"));
+    }
+
+    record LinkRequest(boolean upcall, FunctionDescriptor functionDescriptor, LinkerOptions linkerOptions, Thread requester) implements AutoCloseable, JsonPrintable {
+
+        static LinkRequest create(boolean upcall, FunctionDescriptor functionDescriptor, LinkerOptions linkerOptions) {
+            LinkRequest linkRequest = new LinkRequest(upcall, functionDescriptor, linkerOptions, Thread.currentThread());
+            ForeignFunctionsRuntime.singleton().currentLinkRequests.push(linkRequest);
+            return linkRequest;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            return this == obj;
+        }
+
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(this);
+        }
+
+        @Override
+        public void close() {
+            ForeignFunctionsRuntime.singleton().currentLinkRequests.remove(this);
+        }
+
+        @Override
+        public void printJson(JsonWriter writer) throws IOException {
+            writer.printValue(upcall ? "upcalls" : "downcalls").appendFieldSeparator().appendArrayStart();
+            SubstrateForeignUtil.linkRequestToJsonPrintable(this).printJson(writer);
+            writer.appendArrayEnd();
+        }
     }
 
     /**
@@ -314,9 +517,103 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     @Override
     public Object linkToNative(Object... args) throws Throwable {
         Target_jdk_internal_foreign_abi_NativeEntryPoint nep = (Target_jdk_internal_foreign_abi_NativeEntryPoint) args[args.length - 1];
-        StubPointer pointer = Word.pointer(nep.downcallStubAddress);
-        /* The nep argument will be dropped in the invoked function */
-        return pointer.invoke(args);
+        if (InterpreterForeignFunctionsSupport.isAvailable()) {
+            ForeignDowncallPlan plan = nep.interpreterDowncallPlan;
+            if (plan != null) {
+                VMError.guarantee(args.length == nep.type().parameterCount() + 1,
+                                "The trailing NativeEntryPoint argument is not part of the downcall method type");
+                return InterpreterForeignFunctionsSupport.singleton().linkToNative(plan, args, nep.captureMask);
+            }
+        }
+        StubInvokerPointer invoker = (StubInvokerPointer) nep.downcallInvokerPointer;
+        CFunctionPointer stub = nep.downcallStubPointer;
+        /* The nep argument will be dropped in the invoked downcall stub */
+        return invoker.invoke(stub, args);
+    }
+
+    ForeignDowncallPlan createInterpreterDowncallPlan(NativeEntryPointInfo nep) {
+        AbiUtils abi = abiUtils;
+        var storages = nep.parametersAssignment();
+        VMError.guarantee(storages.length == nep.methodType().parameterCount());
+        int[] preparedArgumentTypes = new int[storages.length];
+        Arrays.fill(preparedArgumentTypes, PreparedSignature.SKIPPED_ARGUMENT_TYPE);
+
+        boolean hasReturnBuffer = false;
+        boolean hasCallTarget = false;
+        boolean hasCaptureAddress = false;
+        int stackSize = abi.outgoingStackArgumentBaseOffset();
+        int i = 0;
+        while (i < storages.length) {
+            var storage = storages[i];
+            VMError.guarantee(storage != null, "Unexpected unconsumed null storage in foreign downcall ABI");
+            int argumentSource = i;
+            ArgumentAdaptation argumentAdaptation = ArgumentAdaptation.NONE;
+            JavaKind sourceKind = JavaKind.fromJavaClass(nep.methodType().parameterType(i));
+            JavaKind locationKind = sourceKind;
+
+            /*
+             * A null storage is the offset half of the Object + long segment pair. The
+             * pair becomes one address-valued argument and both arguments are consumed.
+             */
+            if (i + 1 < storages.length && storages[i + 1] == null) {
+                VMError.guarantee(nep.allowHeapAccess() && sourceKind == JavaKind.Object &&
+                                JavaKind.fromJavaClass(nep.methodType().parameterType(i + 1)) == JavaKind.Long);
+                argumentAdaptation = ArgumentAdaptation.HEAP_ADDRESS;
+                locationKind = JavaKind.Long;
+                i += 2;
+            } else {
+                i++;
+            }
+
+            int preparedType = abi.toPreparedSignatureLocation(storage, locationKind, false, argumentAdaptation);
+            if (PreparedSignature.isStubLocation(preparedType)) {
+                int stubLocation = PreparedSignature.getStubLocation(preparedType);
+                if (stubLocation == PreparedSignature.STUB_LOCATION_TARGET_ADDRESS) {
+                    VMError.guarantee(argumentAdaptation == ArgumentAdaptation.NONE && !hasCallTarget);
+                    hasCallTarget = true;
+                } else if (stubLocation == PreparedSignature.STUB_LOCATION_RETURN_BUFFER) {
+                    VMError.guarantee(argumentAdaptation == ArgumentAdaptation.NONE && !hasReturnBuffer);
+                    hasReturnBuffer = true;
+                } else if (stubLocation == PreparedSignature.STUB_LOCATION_CAPTURED_STATE_BUFFER) {
+                    VMError.guarantee(!hasCaptureAddress);
+                    VMError.guarantee(nep.allowHeapAccess() == (argumentAdaptation == ArgumentAdaptation.HEAP_ADDRESS),
+                                    "Unexpected foreign downcall captured-state buffer representation");
+                    hasCaptureAddress = true;
+                } else {
+                    throw VMError.shouldNotReachHere("Unexpected foreign downcall stub location");
+                }
+            } else if (PreparedSignature.isStackSlot(preparedType)) {
+                stackSize = Math.max(stackSize, PreparedSignature.getStackOffset(preparedType) + Long.BYTES);
+            }
+            preparedArgumentTypes[argumentSource] = preparedType;
+        }
+
+        VMError.guarantee(hasCallTarget, "Missing foreign downcall target address");
+        VMError.guarantee(nep.needsReturnBuffer() == hasReturnBuffer, "Unexpected foreign downcall return buffer");
+        VMError.guarantee(nep.capturesCallState() == hasCaptureAddress, "Unexpected foreign downcall captured-state buffer");
+
+        stackSize = NumUtil.roundUp(stackSize, SubstrateTarget.singleton().stackAlignment);
+        PreparedSignature signature = new PreparedSignature(JavaKind.fromJavaClass(nep.methodType().returnType()),
+                        preparedArgumentTypes, stackSize);
+
+        int[] preparedReturns = computePreparedReturns(abi, nep);
+        return new ForeignDowncallPlan(signature, preparedReturns, nep.skipsTransition());
+    }
+
+    private static int[] computePreparedReturns(AbiUtils abi, NativeEntryPointInfo nep) {
+        if (!nep.needsReturnBuffer()) {
+            return null;
+        }
+        var returnStorages = nep.returnsAssignment();
+        VMError.guarantee(returnStorages.length > 1);
+        int[] preparedReturns = new int[returnStorages.length];
+        for (int i = 0; i < returnStorages.length; i++) {
+            int preparedReturn = abi.toPreparedSignatureLocation(returnStorages[i], JavaKind.Void, true, ArgumentAdaptation.NONE);
+            VMError.guarantee(preparedReturn >= 0 && PreparedSignature.isRegister(preparedReturn),
+                            "A buffered return must be assigned to registers");
+            preparedReturns[i] = preparedReturn;
+        }
+        return preparedReturns;
     }
 
     @Override
@@ -332,7 +629,7 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+21/src/java.base/share/classes/java/lang/foreign/MemorySegment.java#L2708")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+21/src/java.base/share/classes/java/lang/foreign/MemorySegment.java#L2708")
     public void onScopeReachable(Object scopeObj, DisallowedObjectReporter reporter) {
         VMError.guarantee(scopeObj instanceof Scope);
 
@@ -340,7 +637,7 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
          * We never allow memory sessions with state 'OPEN' to be included in the image heap because
          * native memory may be associated with them which will be attempted to be free'd if the
          * session is closed. Non-closable or closed sessions are allowed.
-         * 
+         *
          * Note: This assumes that there is only one implementor of interface Scope which is
          * MemorySessionImpl. If JDK's class hierarchy changes, we need to adapt this as well.
          */
@@ -350,6 +647,12 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
                             "However, C memory from the image generator is no longer available at image runtime.", memorySessionImpl,
                             "Try avoiding to initialize the class that called 'Arena.ofConfined/ofShared'.");
         }
+    }
+
+    @AlwaysInline("method handle interpreter performance")
+    @Override
+    public MethodType getMethodTypeFromNativeEntryPoint(Object nativeEntryPoint) {
+        return ((Target_jdk_internal_foreign_abi_NativeEntryPoint) nativeEntryPoint).type();
     }
 
     /**
@@ -365,23 +668,30 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
         return OS.WINDOWS.isCurrent();
     }
 
+    @Override
+    @Uninterruptible(reason = ForeignSupport.CAPTURE_CALL_STATE_REASON)
+    public void captureCallStateFromInterpreter(int statesToCapture, CIntPointer captureBuffer) {
+        captureCallState(statesToCapture, captureBuffer);
+    }
+
     /**
      * Note that the states must be captured in the same order as in the JDK: GET_LAST_ERROR,
      * WSA_GET_LAST_ERROR, ERRNO.
      *
      * Violation of the assertions should have already been caught in
-     * {@link AbiUtils#checkLibrarySupport()}, which is called when registering the feature.
+     * {@link AbiUtils#checkLibrarySupport()}, which is called in
+     * {@link Target_jdk_internal_foreign_abi_NativeEntryPoint#make}.
      */
-    @Uninterruptible(reason = "Interruptions might change call state.")
+    @Uninterruptible(reason = ForeignSupport.CAPTURE_CALL_STATE_REASON)
     @SubstrateForeignCallTarget(stubCallingConvention = false, fullyUninterruptible = true)
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+22/src/hotspot/share/prims/downcallLinker.cpp")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+22/src/hotspot/share/prims/downcallLinker.cpp")
     public static void captureCallState(int statesToCapture, CIntPointer captureBuffer) {
         assert statesToCapture != 0;
         assert captureBuffer.isNonNull();
 
         int i = 0;
         if (isWindows()) {
-            assert WindowsAPIs.isSupported() : "Windows APIs should be supported on Windows OS";
+            VMError.guarantee(ForeignFunctionsRuntime.isWindowsApiSupported(), "Cannot capture call state without Windows API support");
 
             if ((statesToCapture & getMask("GetLastError")) != 0) {
                 captureBuffer.write(i, WindowsAPIs.getLastError());
@@ -393,7 +703,7 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
             ++i;
         }
 
-        assert LibC.isSupported() : "LibC should always be supported";
+        VMError.guarantee(ForeignFunctionsRuntime.isLibcSupported(), "Cannot capture call state without libc support");
         if ((statesToCapture & getMask("errno")) != 0) {
             captureBuffer.write(i, LibC.errno());
         }
@@ -416,7 +726,8 @@ public class ForeignFunctionsRuntime implements ForeignSupport, OptimizeSharedAr
     }
 }
 
-interface StubPointer extends CFunctionPointer {
+/** Invoke interface for {@code com.oracle.svm.hosted.foreign.DowncallStubInvoker}. */
+interface StubInvokerPointer extends CFunctionPointer {
     @InvokeJavaFunctionPointer
-    Object invoke(Object... args);
+    Object invoke(CFunctionPointer downcallStub, Object... args);
 }

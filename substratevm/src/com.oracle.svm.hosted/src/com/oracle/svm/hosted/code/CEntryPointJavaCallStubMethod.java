@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.hosted.code;
 
-import java.lang.reflect.AnnotatedElement;
 import java.util.List;
 
 import org.graalvm.nativeimage.c.function.CEntryPoint;
@@ -33,10 +32,10 @@ import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.svm.core.c.BoxedRelocatedPointer;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.phases.HostedGraphKit;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.graal.compiler.nodes.CallTargetNode;
 import jdk.graal.compiler.nodes.ConstantNode;
@@ -44,6 +43,7 @@ import jdk.graal.compiler.nodes.ValueNode;
 import jdk.graal.compiler.nodes.java.LoadFieldNode;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.annotation.Annotated;
 
 /**
  * Call stub for invoking {@link CEntryPoint} methods via a Java-to-native call to the method's
@@ -79,9 +79,9 @@ public class CEntryPointJavaCallStubMethod extends CCallStubMethod {
 
     @Override
     protected void emitCallerEpilogue(HostedGraphKit kit) {
-        CEntryPointOptions options = getOriginal().getAnnotation(CEntryPointOptions.class);
-        if (options != null && options.callerEpilogue() != null && options.callerEpilogue() != CEntryPointOptions.NoCallerEpilogue.class) {
-            AnalysisType epilogue = kit.getMetaAccess().lookupJavaType(options.callerEpilogue());
+        CEntryPointOptionsGuestValue options = CEntryPointOptionsGuestValue.get(getOriginal());
+        if (options != null && !options.callerEpilogue().equals(GuestAccess.elements().CEntryPointOptions_NoCallerEpilogue)) {
+            AnalysisType epilogue = kit.getMetaAccess().getUniverse().lookup(options.callerEpilogue());
             AnalysisMethod[] epilogueMethods = epilogue.getDeclaredMethods(false);
             UserError.guarantee(epilogueMethods.length == 1 && epilogueMethods[0].isStatic() && epilogueMethods[0].getSignature().getParameterCount(false) == 0,
                             "Caller epilogue class must declare exactly one static method without parameters: %s -> %s", getOriginal(), epilogue);
@@ -102,7 +102,7 @@ public class CEntryPointJavaCallStubMethod extends CCallStubMethod {
     }
 
     @Override
-    public AnnotatedElement getAnnotationRoot() {
+    public Annotated getWrappedAnnotated() {
         return null;
     }
 }

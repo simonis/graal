@@ -24,14 +24,17 @@
  */
 package com.oracle.svm.core.hub;
 
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
 import java.util.function.IntConsumer;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.heap.InstanceReferenceMapDecoder;
 import com.oracle.svm.core.heap.InstanceReferenceMapDecoder.InstanceReferenceMap;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
@@ -40,12 +43,10 @@ import com.oracle.svm.core.heap.PodReferenceMapDecoder;
 import com.oracle.svm.core.heap.ReferenceInternals;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.thread.ContinuationSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.Word;
 
 public class InteriorObjRefWalker {
     /**
@@ -67,7 +68,7 @@ public class InteriorObjRefWalker {
     @AlwaysInline("GC performance")
     @Uninterruptible(reason = "Forced inlining (StoredContinuation objects must not move).", callerMustBe = true)
     public static void walkObjectInline(Object obj, ObjectReferenceVisitor visitor) {
-        DynamicHub objHub = KnownIntrinsics.readHub(obj);
+        DynamicHub objHub = DynamicHubIntrinsics.readHub(obj);
 
         int hubType = objHub.getHubType();
         if (HubType.isInstance(hubType)) {
@@ -90,12 +91,23 @@ public class InteriorObjRefWalker {
                 walkStoredContinuationInline(obj, visitor);
                 return;
             case HubType.OBJECT_ARRAY:
-                walkObjectArrayInline(obj, visitor, objHub);
+                int length = ArrayLengthNode.arrayLength(obj);
+                walkObjectArrayRangeInline(obj, objHub, 0, length, visitor);
                 return;
             case HubType.OTHER:
             default:
                 throw VMError.shouldNotReachHere("Object with invalid hub type.");
         }
+    }
+
+    @AlwaysInline("De-virtualize calls to ObjectReferenceVisitor")
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static void walkObjectArrayRangeInline(Object obj, int firstIndex, int count, ObjectReferenceVisitor visitor) {
+        DynamicHub objHub = DynamicHubIntrinsics.readHub(obj);
+        assert objHub.getHubType() == HubType.OBJECT_ARRAY;
+        assert firstIndex >= 0 && count >= 0 && firstIndex + count >= 0;
+        assert firstIndex + count <= ArrayLengthNode.arrayLength(obj);
+        walkObjectArrayRangeInline(obj, objHub, firstIndex, count, visitor);
     }
 
     public static void walkInstanceReferenceOffsets(DynamicHub objHub, IntConsumer offsetConsumer) {
@@ -166,17 +178,16 @@ public class InteriorObjRefWalker {
 
     @AlwaysInline("GC performance")
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    private static void walkObjectArrayInline(Object obj, ObjectReferenceVisitor visitor, DynamicHub objHub) {
+    private static void walkObjectArrayRangeInline(Object obj, DynamicHub objHub, int firstIndex, int count, ObjectReferenceVisitor visitor) {
         Pointer objPointer = Word.objectToUntrackedPointer(obj);
-        int length = ArrayLengthNode.arrayLength(obj);
-        Pointer firstObjRef = objPointer.add(LayoutEncoding.getArrayBaseOffset(objHub.getLayoutEncoding()));
-        callVisitorInline(obj, visitor, firstObjRef, length);
+        Pointer firstObjRef = objPointer.add(LayoutEncoding.getArrayElementOffset(objHub.getLayoutEncoding(), firstIndex));
+        callVisitorInline(obj, visitor, firstObjRef, count);
     }
 
     @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
     private static void callVisitorInline(Object obj, ObjectReferenceVisitor visitor, Pointer firstObjRef, int count) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
         visitor.visitObjectReferences(firstObjRef, true, referenceSize, obj, count);
     }
 }

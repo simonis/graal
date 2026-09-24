@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.gc.shenandoah;
 
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
 
 /**
  * There are two types of image heap regions, which differ in the kind of references that are

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,14 @@
 package jdk.graal.compiler.replacements.nodes;
 
 import static jdk.graal.compiler.nodeinfo.NodeSize.SIZE_16;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.AVX;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.AVX2;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.POPCNT;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.SSE2;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.SSE3;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.SSE4_1;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.SSE4_2;
+import static jdk.vm.ci.amd64.AMD64.CPUFeature.SSSE3;
 
 import java.util.EnumSet;
 
@@ -57,7 +65,6 @@ import jdk.vm.ci.code.Architecture;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
-import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.Value;
 
 /**
@@ -111,7 +118,7 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
                     ValueNode arrayPointer, ValueNode arrayOffset, ValueNode arrayLength, ValueNode fromIndex, ValueNode... searchValues) {
-        this(TYPE, stride, variant, null, LocationIdentity.any(), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
+        this(stride, variant, null, LocationIdentity.any(), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
     }
 
     public ArrayIndexOfNode(
@@ -119,7 +126,7 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
                     @ConstantNodeParameter EnumSet<?> runtimeCheckedCPUFeatures,
                     ValueNode arrayPointer, ValueNode arrayOffset, ValueNode arrayLength, ValueNode fromIndex, ValueNode... searchValues) {
-        this(TYPE, stride, variant, runtimeCheckedCPUFeatures, LocationIdentity.any(), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
+        this(stride, variant, runtimeCheckedCPUFeatures, LocationIdentity.any(), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
     }
 
     public ArrayIndexOfNode(
@@ -127,30 +134,22 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
                     ValueNode arrayPointer, ValueNode arrayOffset, ValueNode arrayLength, ValueNode fromIndex, ValueNode... searchValues) {
-        this(TYPE, stride, variant, null, NamedLocationIdentity.getArrayLocation(arrayKind), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
-    }
-
-    public ArrayIndexOfNode(
-                    Stride stride,
-                    ArrayIndexOfVariant variant,
-                    EnumSet<?> runtimeCheckedCPUFeatures,
-                    LocationIdentity locationIdentity,
-                    ValueNode arrayPointer, ValueNode arrayOffset, ValueNode arrayLength, ValueNode fromIndex, ValueNode... searchValues) {
-        this(TYPE, stride, variant, runtimeCheckedCPUFeatures, locationIdentity, arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
+        this(stride, variant, null, NamedLocationIdentity.getArrayLocation(arrayKind), arrayPointer, arrayOffset, arrayLength, fromIndex, searchValues);
     }
 
     @SuppressWarnings("this-escape")
     public ArrayIndexOfNode(
-                    NodeClass<? extends ArrayIndexOfNode> c,
                     Stride stride,
                     ArrayIndexOfVariant variant,
                     EnumSet<?> runtimeCheckedCPUFeatures,
                     LocationIdentity locationIdentity,
                     ValueNode arrayPointer, ValueNode arrayOffset, ValueNode arrayLength, ValueNode fromIndex, ValueNode... searchValues) {
-        super(c, StampFactory.forKind(JavaKind.Int), runtimeCheckedCPUFeatures, locationIdentity);
+        super(TYPE, StampFactory.forKind(resultKind(variant)), runtimeCheckedCPUFeatures, locationIdentity);
         GraalError.guarantee(stride.value <= 4, "unsupported stride");
+        GraalError.guarantee(!variant.isForeignEndian() || stride.value > 1, "foreign endian variants must have a stride greater than 1");
         GraalError.guarantee(variant != ArrayIndexOfVariant.MatchAny || searchValues.length > 0 && searchValues.length <= 4, "indexOfAny requires 1 - 4 search values");
-        GraalError.guarantee(variant != ArrayIndexOfVariant.MatchRange || searchValues.length == 2 || searchValues.length == 4, "indexOfRange requires exactly two or four search values");
+        GraalError.guarantee(!variant.isMatchRange() || searchValues.length == 2 || searchValues.length == 4, "indexOfRange requires exactly two or four search values");
+        GraalError.guarantee(!variant.isTable() || searchValues.length == 1, "table variants require exactly one search value");
         GraalError.guarantee(variant != ArrayIndexOfVariant.WithMask || searchValues.length == 2, "indexOf with mask requires exactly two search values");
         GraalError.guarantee(variant != ArrayIndexOfVariant.FindTwoConsecutive || searchValues.length == 2, "findTwoConsecutive without mask requires exactly two search values");
         GraalError.guarantee(variant != ArrayIndexOfVariant.FindTwoConsecutiveWithMask || searchValues.length == 4, "findTwoConsecutive with mask requires exactly four search values");
@@ -165,12 +164,16 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
 
     public static ArrayIndexOfNode createIndexOfSingle(GraphBuilderContext b, JavaKind arrayKind, Stride stride, ValueNode array, ValueNode arrayLength, ValueNode fromIndex, ValueNode searchValue) {
         ValueNode baseOffset = ConstantNode.forLong(b.getMetaAccess().getArrayBaseOffset(arrayKind), b.getGraph());
-        return new ArrayIndexOfNode(TYPE, stride, ArrayIndexOfVariant.MatchAny, null, defaultLocationIdentity(arrayKind),
+        return new ArrayIndexOfNode(stride, ArrayIndexOfVariant.MatchAny, null, defaultLocationIdentity(arrayKind),
                         array, baseOffset, arrayLength, fromIndex, searchValue);
     }
 
     private static LocationIdentity defaultLocationIdentity(JavaKind arrayKind) {
         return arrayKind == JavaKind.Void ? LocationIdentity.any() : NamedLocationIdentity.getArrayLocation(arrayKind);
+    }
+
+    private static JavaKind resultKind(ArrayIndexOfVariant variant) {
+        return variant.returnsLong() ? JavaKind.Long : JavaKind.Int;
     }
 
     public static EnumSet<AMD64.CPUFeature> minFeaturesAMD64(Stride stride, ArrayIndexOfVariant variant) {
@@ -186,8 +189,18 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                 } else {
                     return amd64FeaturesSSE41();
                 }
-            case Table:
+            case MatchRangeForeignEndian,
+                            Table,
+                            TableForeignEndian:
                 return amd64FeaturesSSE41();
+            case
+                            FindTwoConsecutiveTables,
+                            FindTwoConsecutiveTablesForeignEndian,
+                            FindThreeConsecutiveTables,
+                            FindThreeConsecutiveTablesForeignEndian,
+                            FindFourConsecutiveTables,
+                            FindFourConsecutiveTablesForeignEndian:
+                return amd64FeaturesAVX2();
             default:
                 throw GraalError.shouldNotReachHereUnexpectedValue(variant); // ExcludeFromJacocoGeneratedReport
         }
@@ -197,15 +210,15 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
         return EnumSet.of(AMD64.CPUFeature.SSE2, AMD64.CPUFeature.SSSE3, AMD64.CPUFeature.SSE4_1);
     }
 
-    public static EnumSet<AArch64.CPUFeature> aarch64FeaturesNone() {
-        return EnumSet.noneOf(AArch64.CPUFeature.class);
+    public static EnumSet<AMD64.CPUFeature> amd64FeaturesAVX2() {
+        return EnumSet.of(SSE2, SSE3, SSSE3, SSE4_1, SSE4_2, POPCNT, AVX, AVX2);
     }
 
     public static EnumSet<AArch64.CPUFeature> minFeaturesAARCH64() {
         return EnumSet.noneOf(AArch64.CPUFeature.class);
     }
 
-    static boolean isSupported(Architecture arch, Stride stride, ArrayIndexOfVariant variant) {
+    public static boolean isSupported(Architecture arch, Stride stride, ArrayIndexOfVariant variant) {
         return arch instanceof AMD64 && ((AMD64) arch).getFeatures().containsAll(minFeaturesAMD64(stride, variant)) ||
                         arch instanceof AArch64 && ((AArch64) arch).getFeatures().containsAll(minFeaturesAARCH64());
     }
@@ -273,10 +286,6 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                         searchValuesAsOperands(gen)));
     }
 
-    protected int getArrayBaseOffset(MetaAccessProvider metaAccessProvider, @SuppressWarnings("unused") ValueNode array, JavaKind kind) {
-        return metaAccessProvider.getArrayBaseOffset(kind);
-    }
-
     private Value[] searchValuesAsOperands(NodeLIRBuilderTool gen) {
         Value[] searchValueOperands = new Value[searchValues.size()];
         for (int i = 0; i < searchValues.size(); i++) {
@@ -290,7 +299,7 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
         if (tool.allUsagesAvailable() && hasNoUsages()) {
             return null;
         }
-        if (variant == ArrayIndexOfVariant.Table) {
+        if (variant.isTable()) {
             return this;
         }
         if (ConstantReflectionUtil.isStableJavaArray(arrayPointer) &&
@@ -305,7 +314,7 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
 
             // arrayOffset is given in bytes, scale it to the stride.
             long arrayBaseOffsetBytesConstant = arrayOffset.asJavaConstant().asLong();
-            arrayBaseOffsetBytesConstant -= getArrayBaseOffset(tool.getMetaAccess(), arrayPointer, constantArrayKind);
+            arrayBaseOffsetBytesConstant -= tool.getMetaAccess().getArrayBaseOffset(constantArrayKind);
             final long arrayOffsetConstantScaled = arrayBaseOffsetBytesConstant >> stride.log2;
 
             final int arrayLengthConstant = arrayLength.asJavaConstant().asInt();
@@ -342,9 +351,15 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                             }
                         }
                         break;
-                    case MatchRange:
+                    case MatchRange, MatchRangeForeignEndian:
                         for (int i = fromIndexConstant; i < arrayLengthConstant; i++) {
                             int value = ConstantReflectionUtil.readTypePunned(provider, arrayConstant, constantArrayKind, stride, arrayOffsetConstant + i);
+                            if (variant == ArrayIndexOfVariant.MatchRangeForeignEndian) {
+                                switch (stride) {
+                                    case S2 -> value = Character.reverseBytes((char) value);
+                                    case S4 -> value = Integer.reverseBytes(value);
+                                }
+                            }
                             for (int j = 0; j < valuesConstant.length; j += 2) {
                                 if (valuesConstant[j] <= value && value <= valuesConstant[j + 1]) {
                                     return ConstantNode.forInt(i);
@@ -429,14 +444,18 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
     @GenerateStub(name = "indexOf2S2", parameters = {"S2", "MatchAny"})
     @GenerateStub(name = "indexOf2S4", parameters = {"S4", "MatchAny"})
     @GenerateStub(name = "indexOfRange1S1", parameters = {"S1", "MatchRange"})
-    @GenerateStub(name = "indexOfRange1S2", parameters = {"S2", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
-    @GenerateStub(name = "indexOfRange1S4", parameters = {"S4", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
+    @GenerateStub(name = "indexOfRange1S2", parameters = {"S2", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfRange1S4", parameters = {"S4", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
     @GenerateStub(name = "indexOfWithMaskS1", parameters = {"S1", "WithMask"})
     @GenerateStub(name = "indexOfWithMaskS2", parameters = {"S2", "WithMask"})
     @GenerateStub(name = "indexOfWithMaskS4", parameters = {"S4", "WithMask"})
     @GenerateStub(name = "indexOfTwoConsecutiveS1", parameters = {"S1", "FindTwoConsecutive"})
     @GenerateStub(name = "indexOfTwoConsecutiveS2", parameters = {"S2", "FindTwoConsecutive"})
     @GenerateStub(name = "indexOfTwoConsecutiveS4", parameters = {"S4", "FindTwoConsecutive"})
+    @GenerateStub(name = "indexOfRangeForeignEndian1S2", parameters = {"S2",
+                    "MatchRangeForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfRangeForeignEndian1S4", parameters = {"S4",
+                    "MatchRangeForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
     public static native int optimizedArrayIndexOf(
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
@@ -470,11 +489,15 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
     @GenerateStub(name = "indexOf4S2", parameters = {"S2", "MatchAny"})
     @GenerateStub(name = "indexOf4S4", parameters = {"S4", "MatchAny"})
     @GenerateStub(name = "indexOfRange2S1", parameters = {"S1", "MatchRange"})
-    @GenerateStub(name = "indexOfRange2S2", parameters = {"S2", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
-    @GenerateStub(name = "indexOfRange2S4", parameters = {"S4", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
+    @GenerateStub(name = "indexOfRange2S2", parameters = {"S2", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfRange2S4", parameters = {"S4", "MatchRange"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
     @GenerateStub(name = "indexOfTwoConsecutiveWithMaskS1", parameters = {"S1", "FindTwoConsecutiveWithMask"})
     @GenerateStub(name = "indexOfTwoConsecutiveWithMaskS2", parameters = {"S2", "FindTwoConsecutiveWithMask"})
     @GenerateStub(name = "indexOfTwoConsecutiveWithMaskS4", parameters = {"S4", "FindTwoConsecutiveWithMask"})
+    @GenerateStub(name = "indexOfRangeForeignEndian2S2", parameters = {"S2",
+                    "MatchRangeForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfRangeForeignEndian2S4", parameters = {"S4",
+                    "MatchRangeForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
     public static native int optimizedArrayIndexOf(
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
@@ -488,9 +511,11 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
                     Object array, long arrayOffset, int arrayLength, int fromIndex, int v1, int v2, int v3, int v4);
 
     @NodeIntrinsic
-    @GenerateStub(name = "indexOfTableS1", parameters = {"S1", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
-    @GenerateStub(name = "indexOfTableS2", parameters = {"S2", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
-    @GenerateStub(name = "indexOfTableS4", parameters = {"S4", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41", minimumCPUFeaturesAARCH64 = "aarch64FeaturesNone")
+    @GenerateStub(name = "indexOfTableS1", parameters = {"S1", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfTableS2", parameters = {"S2", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfTableS4", parameters = {"S4", "Table"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfTableForeignEndianS2", parameters = {"S2", "TableForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
+    @GenerateStub(name = "indexOfTableForeignEndianS4", parameters = {"S4", "TableForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesSSE41")
     public static native int optimizedArrayIndexOfTable(
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
@@ -498,6 +523,34 @@ public class ArrayIndexOfNode extends PureFunctionStubIntrinsicNode implements C
 
     @NodeIntrinsic
     public static native int optimizedArrayIndexOfTable(
+                    @ConstantNodeParameter Stride stride,
+                    @ConstantNodeParameter ArrayIndexOfVariant variant,
+                    @ConstantNodeParameter EnumSet<?> runtimeCheckedCPUFeatures,
+                    Object array, long arrayOffset, int arrayLength, int fromIndex, byte[] tables);
+
+    @NodeIntrinsic
+    @GenerateStub(name = "indexOf2ConsecutiveTablesS1", parameters = {"S1", "FindTwoConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf2ConsecutiveTablesS2", parameters = {"S2", "FindTwoConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf2ConsecutiveTablesS4", parameters = {"S4", "FindTwoConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf2ConsecutiveTablesForeignEndianS2", parameters = {"S2", "FindTwoConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf2ConsecutiveTablesForeignEndianS4", parameters = {"S4", "FindTwoConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf3ConsecutiveTablesS1", parameters = {"S1", "FindThreeConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf3ConsecutiveTablesS2", parameters = {"S2", "FindThreeConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf3ConsecutiveTablesS4", parameters = {"S4", "FindThreeConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf3ConsecutiveTablesForeignEndianS2", parameters = {"S2", "FindThreeConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf3ConsecutiveTablesForeignEndianS4", parameters = {"S4", "FindThreeConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf4ConsecutiveTablesS1", parameters = {"S1", "FindFourConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf4ConsecutiveTablesS2", parameters = {"S2", "FindFourConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf4ConsecutiveTablesS4", parameters = {"S4", "FindFourConsecutiveTables"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf4ConsecutiveTablesForeignEndianS2", parameters = {"S2", "FindFourConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    @GenerateStub(name = "indexOf4ConsecutiveTablesForeignEndianS4", parameters = {"S4", "FindFourConsecutiveTablesForeignEndian"}, minimumCPUFeaturesAMD64 = "amd64FeaturesAVX2")
+    public static native long optimizedArrayIndexOfTableLong(
+                    @ConstantNodeParameter Stride stride,
+                    @ConstantNodeParameter ArrayIndexOfVariant variant,
+                    Object array, long arrayOffset, int arrayLength, int fromIndex, byte[] tables);
+
+    @NodeIntrinsic
+    public static native long optimizedArrayIndexOfTableLong(
                     @ConstantNodeParameter Stride stride,
                     @ConstantNodeParameter ArrayIndexOfVariant variant,
                     @ConstantNodeParameter EnumSet<?> runtimeCheckedCPUFeatures,

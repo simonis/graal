@@ -2402,20 +2402,21 @@ public class LanguageSPITest {
         assertEquals(0, getOptionDescriptors.get());
         assertEquals(0, iterator.get());
         assertEquals(0, get.get());
-
-        c = Context.newBuilder(ProxyLanguage.ID).option(ProxyLanguage.ID + ".option", "foobar").build();
-        assertEquals(1, getOptionDescriptors.get());
-        assertEquals(1, get.get());
         boolean assertionsEnabled = false;
         assert assertionsEnabled = true;
-        if (assertionsEnabled) {
-            // with assertions enabled we assert the options.
-            assertEquals(1, iterator.get());
-        } else {
-            // for valid options we should not need the iterator
-            assertEquals(0, iterator.get());
+        try (Engine engine = Engine.newBuilder().useSystemProperties(false).build()) {
+            c = Context.newBuilder(ProxyLanguage.ID).engine(engine).option(ProxyLanguage.ID + ".option", "foobar").build();
+            assertEquals(1, getOptionDescriptors.get());
+            assertEquals(1, get.get());
+            if (assertionsEnabled) {
+                // with assertions enabled we assert the options.
+                assertEquals(1, iterator.get());
+            } else {
+                // for valid options we should not need the iterator
+                assertEquals(0, iterator.get());
+            }
+            c.close();
         }
-        c.close();
 
         // test lazyness when using meta-data
         getOptionDescriptors.set(0);
@@ -2715,14 +2716,14 @@ public class LanguageSPITest {
 
         @ExportMessage
         @SuppressWarnings("static-method")
-        boolean hasLanguage() {
+        boolean hasLanguageId() {
             return true;
         }
 
         @ExportMessage
         @SuppressWarnings("static-method")
-        Class<? extends TruffleLanguage<?>> getLanguage() {
-            return ProxyLanguage.class;
+        String getLanguageId() {
+            return ProxyLanguage.ID;
         }
 
         @ExportMessage
@@ -3135,8 +3136,8 @@ public class LanguageSPITest {
 
             assertFails(() -> env.getLanguageInfo(InvalidLanguageClass.class), IllegalArgumentException.class);
 
-            Class<? extends TruffleLanguage<?>> hostLanguage = InteropLibrary.getUncached().getLanguage(env.asBoxedGuestValue(1));
-            assertEquals("host", env.getLanguageInfo(hostLanguage).getId());
+            String hostLanguageId = InteropLibrary.getUncached().getLanguageId(env.asBoxedGuestValue(1));
+            assertEquals("host", hostLanguageId);
         }
     }
 

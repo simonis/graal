@@ -37,18 +37,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.graalvm.word.impl.Word;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.rules.TestName;
 
-import com.oracle.svm.core.jfr.HasJfrSupport;
 import com.oracle.svm.core.jfr.JfrEvent;
 import com.oracle.svm.core.jfr.SubstrateJVM;
-import com.oracle.svm.core.util.TimeUtils;
+import com.oracle.svm.shared.util.TimeUtils;
 import com.oracle.svm.test.jfr.JfrRecordingTest;
 
-import jdk.graal.compiler.word.Word;
 import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordedFrame;
@@ -75,12 +74,6 @@ public abstract class JfrOldObjectTest extends JfrRecordingTest {
      * other thread may already be sampling (only one thread can sample at a time).
      */
     protected void testSampling(Object obj, int arrayLength, EventValidator validator) throws Throwable {
-        if (!HasJfrSupport.get()) {
-            /* Prevent that the code below is reachable on platforms that don't support JFR. */
-            Assert.fail("JFR is not supported on this platform.");
-            return;
-        }
-
         Recording recording = startRecording();
 
         boolean success;

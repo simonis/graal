@@ -27,7 +27,6 @@ package com.oracle.svm.core.jvmti;
 import static com.oracle.svm.core.jvmti.headers.JvmtiError.JVMTI_ERROR_NONE;
 import static com.oracle.svm.core.jvmti.headers.JvmtiError.JVMTI_ERROR_NOT_AVAILABLE;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.Isolate;
 import org.graalvm.nativeimage.Platform;
@@ -35,9 +34,9 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.jvmti.headers.JvmtiCapabilities;
 import com.oracle.svm.core.jvmti.headers.JvmtiError;
 import com.oracle.svm.core.jvmti.headers.JvmtiEvent;
@@ -46,6 +45,7 @@ import com.oracle.svm.core.jvmti.headers.JvmtiExternalEnv;
 import com.oracle.svm.core.jvmti.headers.JvmtiInterface;
 import com.oracle.svm.core.memory.NullableNativeMemory;
 import com.oracle.svm.core.nmt.NmtCategory;
+import com.oracle.svm.shared.Uninterruptible;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -181,17 +181,17 @@ public final class JvmtiEnvUtil {
 
     @Fold
     static int capabilitiesOffset() {
-        return NumUtil.roundUp(SizeOf.get(JvmtiEnv.class), ConfigurationValues.getTarget().wordSize);
+        return NumUtil.roundUp(SizeOf.get(JvmtiEnv.class), SubstrateTarget.getWordSize());
     }
 
     @Fold
     static int eventCallbacksOffset() {
-        return NumUtil.roundUp(capabilitiesOffset() + SizeOf.get(JvmtiCapabilities.class), ConfigurationValues.getTarget().wordSize);
+        return NumUtil.roundUp(capabilitiesOffset() + SizeOf.get(JvmtiCapabilities.class), SubstrateTarget.getWordSize());
     }
 
     @Fold
     static int externalEnvOffset() {
-        return NumUtil.roundUp(eventCallbacksOffset() + SizeOf.get(JvmtiEventCallbacks.class), ConfigurationValues.getTarget().wordSize);
+        return NumUtil.roundUp(eventCallbacksOffset() + SizeOf.get(JvmtiEventCallbacks.class), SubstrateTarget.getWordSize());
     }
 
     @Fold

@@ -26,14 +26,13 @@ package com.oracle.svm.hosted.meta;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.DynamicHubOffsets;
-import com.oracle.svm.core.layeredimagesingleton.FeatureSingleton;
 import com.oracle.svm.hosted.FeatureImpl;
 
 @AutomaticallyRegisteredFeature
-public final class DynamicHubOffsetsFeature implements InternalFeature, FeatureSingleton {
+public final class DynamicHubOffsetsFeature implements InternalFeature {
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {

@@ -24,27 +24,27 @@
  */
 package com.oracle.svm.hosted.pltgot;
 
+import com.oracle.svm.core.ExplicitCallingConventionGuestValue;
 import java.lang.reflect.Method;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.graal.code.ExplicitCallingConvention;
-import com.oracle.svm.core.graal.code.StubCallingConvention;
-import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
-import com.oracle.svm.core.jdk.InternalVMMethod;
-import com.oracle.svm.core.meta.SharedMethod;
-import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
-import org.graalvm.nativeimage.AnnotationAccess;
+import com.oracle.objectfile.ObjectFile;
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.nativeimage.c.function.CEntryPoint;
+import org.graalvm.nativeimage.c.function.CFunction;
 
 import com.oracle.objectfile.SectionName;
+import com.oracle.svm.core.graal.code.StubCallingConvention;
+import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
+import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.pltgot.PLTGOTConfiguration;
+import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterConfig;
-import org.graalvm.nativeimage.c.function.CEntryPoint;
-import org.graalvm.nativeimage.c.function.CFunction;
 
 public abstract class HostedPLTGOTConfiguration extends PLTGOTConfiguration {
     public static final SectionName SVM_GOT_SECTION = new SectionName.ProgbitsSectionName("svm_got");
@@ -52,12 +52,12 @@ public abstract class HostedPLTGOTConfiguration extends PLTGOTConfiguration {
     protected MethodAddressResolutionSupport methodAddressResolutionSupport;
     private final GOTEntryAllocator gotEntryAllocator = new GOTEntryAllocator();
 
-    private final PLTSectionSupport pltSectionSupport;
-    private HostedMetaAccess hostedMetaAccess;
+    private final PLTSupport pltSupport;
+    private HostedMethod resolverHostedMethod;
 
     @SuppressWarnings("this-escape")
     public HostedPLTGOTConfiguration() {
-        this.pltSectionSupport = new PLTSectionSupport(getArchSpecificPLTStubGenerator());
+        this.pltSupport = new PLTSupport(createArchSpecificPLTStubGenerator());
     }
 
     public static HostedPLTGOTConfiguration singleton() {
@@ -65,26 +65,26 @@ public abstract class HostedPLTGOTConfiguration extends PLTGOTConfiguration {
     }
 
     public static boolean canBeCalledViaPLTGOT(SharedMethod method) {
-        if (AnnotationAccess.isAnnotationPresent(method, CEntryPoint.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method, CEntryPoint.class)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, CFunction.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method, CFunction.class)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, StubCallingConvention.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method, StubCallingConvention.class)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, Uninterruptible.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method, GuestAccess.elements().Uninterruptible)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, SubstrateForeignCallTarget.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method, SubstrateForeignCallTarget.class)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method.getDeclaringClass(), InternalVMMethod.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(method.getDeclaringClass(), GuestAccess.elements().InternalVMMethod)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(method, ExplicitCallingConvention.class) &&
-                        AnnotationAccess.getAnnotation(method, ExplicitCallingConvention.class).value().equals(SubstrateCallingConventionKind.ForwardReturnValue)) {
+        ExplicitCallingConventionGuestValue ecc = ExplicitCallingConventionGuestValue.get(method);
+        if (ecc != null && ecc.value().equals(SubstrateCallingConventionKind.ForwardReturnValue)) {
             /*
              * Methods that use ForwardReturnValue calling convention can't be resolved with PLT/GOT
              * on AMD64 because AMD64MethodAddressResolutionDispatcher.resolveMethodAddress uses the
@@ -100,11 +100,11 @@ public abstract class HostedPLTGOTConfiguration extends PLTGOTConfiguration {
 
     public abstract Register getGOTPassingRegister(RegisterConfig registerConfig);
 
-    public abstract PLTStubGenerator getArchSpecificPLTStubGenerator();
+    public abstract PLTStubGenerator createArchSpecificPLTStubGenerator();
 
-    public void setHostedMetaAccess(HostedMetaAccess metaAccess) {
-        assert hostedMetaAccess == null : "The field hostedMetaAccess can't be set twice.";
-        this.hostedMetaAccess = metaAccess;
+    public void initializeArchSpecificResolverMethod(HostedMetaAccess metaAccess) {
+        assert resolverHostedMethod == null : "The field archSpecificResolverMethod can't be set twice.";
+        resolverHostedMethod = metaAccess.lookupJavaMethod(getArchSpecificResolverAsMethod());
     }
 
     public MethodAddressResolutionSupport initializeMethodAddressResolutionSupport(MethodAddressResolutionSupport support) {
@@ -122,20 +122,42 @@ public abstract class HostedPLTGOTConfiguration extends PLTGOTConfiguration {
         return methodAddressResolutionSupport;
     }
 
-    public PLTSectionSupport getPLTSectionSupport() {
-        return pltSectionSupport;
-    }
-
-    public void markResolverMethodPatch() {
-        pltSectionSupport.markResolverMethodPatch(getArchSpecificResolverAsHostedMethod());
+    public PLTSupport getPLTSupport() {
+        return pltSupport;
     }
 
     public HostedMethod getArchSpecificResolverAsHostedMethod() {
-        assert hostedMetaAccess != null : "Must set hostedMetaAccess before calling getArchSpecificResolverAsHostedMethod";
-        return hostedMetaAccess.lookupJavaMethod(getArchSpecificResolverAsMethod());
+        assert resolverHostedMethod != null : "Must initialize archSpecificResolverMethod before calling getArchSpecificResolverAsHostedMethod";
+        return resolverHostedMethod;
     }
 
     public GOTEntryAllocator getGOTEntryAllocator() {
         return gotEntryAllocator;
+    }
+
+    @Override
+    public boolean shouldCallViaPLTGOT(SharedMethod caller, SharedMethod callee) {
+        return methodAddressResolutionSupport.shouldCallViaPLTGOT(caller, callee);
+    }
+
+    @Override
+    public int getMethodGOTEntry(SharedMethod method) {
+        return gotEntryAllocator.getMethodGOTEntry(method);
+    }
+
+    record GOTSectionExtent(long endOffset, long bufferSize) {
+        static GOTSectionExtent forEntries(long entryCount, int wordSize, ObjectFile.Format format) {
+            long endOffset = Math.multiplyExact(entryCount, wordSize);
+            long bufferSize = endOffset;
+            if (format == ObjectFile.Format.MACH_O && endOffset == 0) {
+                assert HostedPLTGOTConfiguration.singleton().gotEntryAllocator.getGOT().length == 0 : "GOT table should be empty when padding GOT section size on Mach-O";
+                /*
+                 * Mach-O rejects symbols defined in zero-sized sections. Keep the backing buffer
+                 * non-empty without moving the section end symbol.
+                 */
+                bufferSize = wordSize;
+            }
+            return new GOTSectionExtent(endOffset, bufferSize);
+        }
     }
 }

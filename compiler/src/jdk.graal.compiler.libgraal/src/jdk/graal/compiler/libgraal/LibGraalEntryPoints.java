@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,15 +33,20 @@ import java.util.Arrays;
 import java.util.Map;
 
 import org.graalvm.collections.EconomicMap;
+import org.graalvm.jniutils.JNI;
 import org.graalvm.jniutils.JNI.JNIEnv;
+import org.graalvm.jniutils.JNICalls;
 import org.graalvm.jniutils.JNIExceptionWrapper;
 import org.graalvm.jniutils.JNIMethodScope;
+import org.graalvm.jniutils.JNIUtil;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CEntryPoint.IsolateThreadContext;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.debug.GlobalMetrics;
 import jdk.graal.compiler.debug.GraalError;
@@ -52,13 +57,13 @@ import jdk.graal.compiler.hotspot.HotSpotGraalCompiler;
 import jdk.graal.compiler.hotspot.HotSpotGraalRuntime;
 import jdk.graal.compiler.hotspot.HotSpotGraalServices;
 import jdk.graal.compiler.hotspot.ProfileReplaySupport;
+import jdk.graal.compiler.hotspot.replaycomp.HardwarePerformanceCounters;
 import jdk.graal.compiler.hotspot.replaycomp.ReplayCompilationRunner;
 import jdk.graal.compiler.options.OptionDescriptors;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.options.OptionsParser;
 import jdk.graal.compiler.util.OptionsEncoder;
-import jdk.graal.compiler.word.Word;
 import jdk.internal.misc.Unsafe;
 import jdk.vm.ci.hotspot.HotSpotCompilationRequest;
 import jdk.vm.ci.hotspot.HotSpotCompilationRequestResult;
@@ -129,22 +134,23 @@ final class LibGraalEntryPoints {
      * @param optionsSize the number of bytes in the buffer
      * @param optionsHash hash code of bytes in the buffer (computed with
      *            {@link Arrays#hashCode(byte[])})
-     * @param stackTraceAddress a native buffer in which a serialized stack trace can be returned.
-     *            The caller will only read from this buffer if this method returns 0. A returned
-     *            serialized stack trace is returned in this buffer with the following format:
+     * @param compilationFailureBufferAddress a native buffer in which failure information can be
+     *            returned. The caller will only read from this buffer if this method returns 0. The
+     *            buffer has the following format:
      *
      *            <pre>
      *               struct {
-     *                   int   length;
-     *                   byte  data[length]; // Bytes from a stack trace printed to a ByteArrayOutputStream.
+     *                   int   retry;
+     *                   int   stackTraceLength;
+     *                   byte  stackTrace[stackTraceLength]; // Bytes from a stack trace printed to a ByteArrayOutputStream.
      *               }
      *            </pre>
      *
-     *            where {@code length} is truncated to {@code stackTraceCapacity - 4} if necessary
+     *            where {@code stackTraceLength} is truncated to
+     *            {@code compilationFailureBufferCapacity - 8} if necessary
      *
-     * @param stackTraceCapacity the size of the stack trace buffer
-     * @param timeAndMemBufferAddress 16-byte native buffer to store result of time and memory
-     *            measurements of the compilation
+     * @param compilationFailureBufferCapacity the size of the compilation failure buffer
+     * @param timeAndMemBufferAddress 16-byte native buffer to store memory and time measurements
      * @param profilePathBufferAddress native buffer containing a 0-terminated C string representing
      *            {@code Options#LoadProfiles} path.
      * @return a handle to a {@code InstalledCode} in HotSpot's heap or 0 if compilation failed
@@ -162,10 +168,11 @@ final class LibGraalEntryPoints {
                     long optionsAddress,
                     int optionsSize,
                     int optionsHash,
-                    long stackTraceAddress,
-                    int stackTraceCapacity,
+                    long compilationFailureBufferAddress,
+                    int compilationFailureBufferCapacity,
                     long timeAndMemBufferAddress,
                     long profilePathBufferAddress) {
+        boolean retry = false;
         try (JNIMethodScope jniScope = new JNIMethodScope("compileMethod", jniEnv)) {
             HotSpotJVMCIRuntime runtime = HotSpotJVMCIRuntime.runtime();
             HotSpotGraalCompiler compiler = (HotSpotGraalCompiler) runtime.getCompiler();
@@ -191,6 +198,7 @@ final class LibGraalEntryPoints {
                 }
                 HotSpotCompilationRequestResult compilationRequestResult = task.runCompilation(options);
                 if (compilationRequestResult.getFailure() != null) {
+                    retry = compilationRequestResult.getRetry();
                     throw new GraalError(compilationRequestResult.getFailureMessage());
                 }
                 if (timeAndMemBufferAddress != 0) {
@@ -210,12 +218,16 @@ final class LibGraalEntryPoints {
                 return runtime.translate(installedCode);
             }
         } catch (Throwable t) {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            t.printStackTrace(new PrintStream(baos));
-            byte[] stackTrace = baos.toByteArray();
-            int length = Math.min(stackTraceCapacity - Integer.BYTES, stackTrace.length);
-            Unsafe.getUnsafe().putInt(stackTraceAddress, length);
-            Unsafe.getUnsafe().copyMemory(stackTrace, Unsafe.ARRAY_BYTE_BASE_OFFSET, null, stackTraceAddress + Integer.BYTES, length);
+            if (compilationFailureBufferAddress != 0) {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                t.printStackTrace(new PrintStream(baos));
+                byte[] stackTrace = baos.toByteArray();
+                int headerSize = 2 * Integer.BYTES;
+                int length = Math.min(compilationFailureBufferCapacity - headerSize, stackTrace.length);
+                Unsafe.getUnsafe().putInt(compilationFailureBufferAddress, retry ? 1 : 0);
+                Unsafe.getUnsafe().putInt(compilationFailureBufferAddress + Integer.BYTES, length);
+                Unsafe.getUnsafe().copyMemory(stackTrace, Unsafe.ARRAY_BYTE_BASE_OFFSET, null, compilationFailureBufferAddress + headerSize, length);
+            }
             return 0L;
         } finally {
             /*
@@ -312,12 +324,117 @@ final class LibGraalEntryPoints {
             } else {
                 args = argString.split("\n");
             }
-            return ReplayCompilationRunner.run(args, TTY.out().out()).getStatus();
+            return ReplayCompilationRunner.run(args, TTY.out().out(), new LibgraalPAPIBridge(jniEnv)).getStatus();
         } catch (Throwable t) {
             JNIExceptionWrapper.throwInHotSpot(jniEnv, t);
             return ReplayCompilationRunner.ExitStatus.Failure.getStatus();
         } finally {
             LibGraalSupportImpl.doReferenceHandling();
+        }
+    }
+
+    /**
+     * The implementation that allows libgraal to interact with the PAPI bridge library,
+     * piggybacking HotSpot's {@link System#load} implementation.
+     * <p>
+     * The methods can be called from attached threads which provide their {@link JNIEnv} via
+     * {@link JNIMethodScope}.
+     *
+     * @see HardwarePerformanceCounters.PAPIBridge
+     */
+    @SuppressWarnings("try")
+    private static final class LibgraalPAPIBridge implements HardwarePerformanceCounters.PAPIBridge {
+        private final JNI.JClass hpcClass;
+
+        private final JNI.JClass stringClass;
+
+        private final JNICalls.JNIMethod linkAndInitializeOnceMethod;
+
+        private final JNICalls.JNIMethod createEventSetMethod;
+
+        private final JNICalls.JNIMethod getNullMethod;
+
+        private final JNICalls.JNIMethod cleanAndDestroyEventSetMethod;
+
+        private final JNICalls.JNIMethod startMethod;
+
+        private final JNICalls.JNIMethod stopMethod;
+
+        LibgraalPAPIBridge(JNIEnv env) {
+            this.hpcClass = JNIUtil.findClass(env, Word.nullPointer(), JNIUtil.getBinaryName(HardwarePerformanceCounters.class.getName()), true);
+            this.stringClass = JNIUtil.findClass(env, Word.nullPointer(), JNIUtil.getBinaryName(String.class.getName()), true);
+            this.linkAndInitializeOnceMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "linkAndInitializeOnce", "()Z");
+            this.createEventSetMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "createEventSet", "([Ljava/lang/String;)I");
+            this.getNullMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "getNull", "()I");
+            this.cleanAndDestroyEventSetMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "cleanAndDestroyEventSet", "(I)Z");
+            this.startMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "start", "(I)Z");
+            this.stopMethod = JNICalls.JNIMethod.findMethod(env, hpcClass, true, "stop", "(I)[J");
+        }
+
+        @Override
+        public boolean linkAndInitializeOnce() {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            return JNICalls.getDefault().callStaticBoolean(env, hpcClass, linkAndInitializeOnceMethod, StackValue.get(0));
+        }
+
+        @Override
+        public int createEventSet(String[] eventNames) {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            JNI.JObjectArray eventNamesArray = JNIUtil.NewObjectArray(env, eventNames.length, stringClass, Word.nullPointer());
+            try {
+                copyStringArray(env, eventNames, eventNamesArray);
+                JNI.JValue args = StackValue.get(1, JNI.JValue.class);
+                args.addressOf(0).setJObject(eventNamesArray);
+                return JNICalls.getDefault().callStaticInt(env, hpcClass, createEventSetMethod, args);
+            } finally {
+                JNIUtil.DeleteLocalRef(env, eventNamesArray);
+            }
+        }
+
+        private static void copyStringArray(JNIEnv env, String[] source, JNI.JObjectArray dest) {
+            for (int i = 0; i < source.length; i++) {
+                JNI.JString eventName = JNIUtil.createHSString(env, source[i]);
+                try {
+                    JNIUtil.SetObjectArrayElement(env, dest, i, eventName);
+                } finally {
+                    JNIUtil.DeleteLocalRef(env, eventName);
+                }
+            }
+        }
+
+        @Override
+        public int getNull() {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            return JNICalls.getDefault().callStaticInt(env, hpcClass, getNullMethod, StackValue.get(0));
+        }
+
+        @Override
+        public boolean cleanAndDestroyEventSet(int eventset) {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            JNI.JValue args = StackValue.get(1, JNI.JValue.class);
+            args.addressOf(0).setInt(eventset);
+            return JNICalls.getDefault().callStaticBoolean(env, hpcClass, cleanAndDestroyEventSetMethod, args);
+        }
+
+        @Override
+        public boolean start(int eventset) {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            JNI.JValue args = StackValue.get(1, JNI.JValue.class);
+            args.addressOf(0).setInt(eventset);
+            return JNICalls.getDefault().callStaticBoolean(env, hpcClass, startMethod, args);
+        }
+
+        @Override
+        public long[] stop(int eventset) {
+            JNI.JNIEnv env = JNIMethodScope.env();
+            JNI.JValue args = StackValue.get(1, JNI.JValue.class);
+            args.addressOf(0).setInt(eventset);
+            JNI.JLongArray result = JNICalls.getDefault().callStaticJObject(env, hpcClass, stopMethod, args);
+            try {
+                return JNIUtil.createArray(env, result);
+            } finally {
+                JNIUtil.DeleteLocalRef(env, result);
+            }
         }
     }
 }

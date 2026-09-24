@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -82,9 +82,9 @@ public class DefaultLoopPolicies implements LoopPolicies {
         @Option(help = "Maximum loop unswitching code size increase in nodes.", type = OptionType.Debug)
         public static final OptionKey<Integer> LoopUnswitchMaxIncrease = new OptionKey<>(2000);
         @Option(help = "Number of nodes allowed for a loop unswitching regardless of the loop frequency.", type = OptionType.Debug)
-        public static final OptionKey<Integer> LoopUnswitchTrivial = new OptionKey<>(20);
+        public static final OptionKey<Integer> LoopUnswitchTrivial = new OptionKey<>(40);
         @Option(help = "Specifies the number of nodes allowed for a loop unswitching per loop frequency. The number of nodes allowed for an unswitching is proportional to the relative frequency of the loop by this value.", type = OptionType.Debug)
-        public static final OptionKey<Double> LoopUnswitchFrequencyBoost = new OptionKey<>(20.0);
+        public static final OptionKey<Double> LoopUnswitchFrequencyBoost = new OptionKey<>(40.0);
         @Option(help = "Minimum value for the frequency factor of an invariant.", type = OptionType.Debug)
         public static final OptionKey<Double> LoopUnswitchFrequencyMinFactor = new OptionKey<>(0.05);
         @Option(help = "Maximun value for the frequency factor of an invariant.", type = OptionType.Debug)
@@ -216,6 +216,7 @@ public class DefaultLoopPolicies implements LoopPolicies {
         size -= 2; // remove the counted if and its non-exit begin
         size -= loop.loopBegin().loopEnds().count();
         GraalError.guarantee(size >= 0, "Wrong size");
+        int countedDescendantCloneFactor = loop.loopBegin().getCountedDescendantCloneFactor();
         /* @formatter:off
          * The check below should not throw ArithmeticException because:
          * maxTrips is guaranteed to be >= 1 by the check above
@@ -225,12 +226,26 @@ public class DefaultLoopPolicies implements LoopPolicies {
          * @formatter:on
          */
         UnsignedLong estimated = maxTrips.minus(1).times(size);
+        if (countedDescendantCloneFactor > 1) {
+            /*
+             * Ancestor unrolling may already have cloned this loop's body. Charge the same
+             * maxNodes budget for that prior duplication so oversized descendant loops stop being
+             * considered for another full unroll.
+             */
+            try {
+                estimated = estimated.times(countedDescendantCloneFactor);
+            } catch (ArithmeticException e) {
+                debug.log(DebugContext.INFO_LEVEL, "Loop %s not fully unrolled, because counted descendant clone factor %d makes the size increase too large", loop, countedDescendantCloneFactor);
+                return FullUnrollability.TOO_LARGE;
+            }
+        }
         if (estimated.isLessOrEqualTo(maxNodes)) {
             // check whether we're allowed to unroll this loop
-            debug.log(DebugContext.INFO_LEVEL, "Loop %s should be fully unrolled: estimated=%s, max=%d", loop, estimated, maxNodes);
+            debug.log(DebugContext.INFO_LEVEL, "Loop %s should be fully unrolled: estimated=%s, max=%d, countedDescendantCloneFactor=%d", loop, estimated, maxNodes, countedDescendantCloneFactor);
             return FullUnrollability.SHOULD_FULL_UNROLL;
         } else {
-            debug.log(DebugContext.INFO_LEVEL, "Loop %s not fully unrolled, because size increase is too large: estimated=%s, max=%d", loop, estimated, maxNodes);
+            debug.log(DebugContext.INFO_LEVEL, "Loop %s not fully unrolled, because size increase is too large: estimated=%s, max=%d, countedDescendantCloneFactor=%d", loop, estimated, maxNodes,
+                            countedDescendantCloneFactor);
             return FullUnrollability.TOO_LARGE;
         }
     }

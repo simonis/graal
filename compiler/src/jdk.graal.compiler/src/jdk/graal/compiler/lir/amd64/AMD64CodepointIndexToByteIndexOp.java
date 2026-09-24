@@ -35,16 +35,13 @@ import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.XMM;
 import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.YMM;
 import static jdk.graal.compiler.lir.LIRInstruction.OperandFlag.REG;
 import static jdk.graal.compiler.replacements.nodes.StringCodepointIndexToByteIndexNode.InputEncoding;
-import static jdk.vm.ci.amd64.AMD64.rcx;
-import static jdk.vm.ci.amd64.AMD64.rdi;
-import static jdk.vm.ci.amd64.AMD64.rdx;
-import static jdk.vm.ci.amd64.AMD64.rsi;
 import static jdk.vm.ci.code.ValueUtil.asRegister;
 
 import java.util.EnumSet;
 
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.asm.amd64.AMD64Address;
+import jdk.graal.compiler.asm.amd64.AMD64Assembler;
 import jdk.graal.compiler.asm.amd64.AMD64MacroAssembler;
 import jdk.graal.compiler.asm.amd64.AVXKind.AVXSize;
 import jdk.graal.compiler.code.DataSection;
@@ -58,7 +55,6 @@ import jdk.graal.compiler.replacements.nodes.StringCodepointIndexToByteIndexNode
 import jdk.vm.ci.amd64.AMD64.CPUFeature;
 import jdk.vm.ci.amd64.AMD64Kind;
 import jdk.vm.ci.code.Register;
-import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.Value;
 
@@ -70,29 +66,31 @@ import jdk.vm.ci.meta.Value;
 public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp {
     public static final LIRInstructionClass<AMD64CodepointIndexToByteIndexOp> TYPE = LIRInstructionClass.create(AMD64CodepointIndexToByteIndexOp.class);
 
-    private static final Register REG_ARRAY = rsi;
-    private static final Register REG_OFFSET = rcx;
-    private static final Register REG_LENGTH = rdx;
-    private static final Register REG_INDEX = rdi;
-
     private final InputEncoding inputEncoding;
     private final int vectorLength;
 
     @Def({REG}) private Value result;
-    @Use({REG}) private Value array;
-    @Use({REG}) private Value offset;
-    @Use({REG}) private Value length;
-    @Use({REG}) private Value index;
-
-    @Temp({REG}) private Value arrayTmp;
-    @Temp({REG}) private Value offsetTmp;
-    @Temp({REG}) private Value lengthTmp;
-    @Temp({REG}) private Value indexTmp;
+    @UseKill({REG}) private Value array;
+    @UseKill({REG}) private Value offset;
+    @UseKill({REG}) private Value length;
+    @UseKill({REG}) private Value index;
 
     @Temp({REG}) private Value[] temp;
     @Temp({REG}) private Value[] vectorTemp;
 
-    private AMD64CodepointIndexToByteIndexOp(LIRGeneratorTool tool, InputEncoding inputEncoding, EnumSet<CPUFeature> runtimeCheckedCPUFeatures, Value array, Value offset, Value length, Value index,
+    /**
+     * Converts a given codepoint index to a byte index on a <i>correctly encoded</i> UTF-8 or
+     * UTF-16 string.
+     *
+     * @param inputEncoding operation to run.
+     * @param array arbitrary array.
+     * @param offset byteOffset to start from. Must include array base byteOffset!
+     * @param length length of the array region to consider, in the given encoding's natural stride,
+     *            which is 1 byte for {@link InputEncoding#UTF_8} and 2 bytes for
+     *            {@link InputEncoding#UTF_16}.
+     * @param index the codepoint index to translate.
+     */
+    public AMD64CodepointIndexToByteIndexOp(LIRGeneratorTool tool, InputEncoding inputEncoding, EnumSet<CPUFeature> runtimeCheckedCPUFeatures, Value array, Value offset, Value length, Value index,
                     Value result) {
         super(TYPE, tool, runtimeCheckedCPUFeatures, YMM);
         this.inputEncoding = inputEncoding;
@@ -101,43 +99,20 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
 
         this.vectorLength = vectorSize.getBytes();
 
-        this.arrayTmp = this.array = array;
-        this.offsetTmp = this.offset = offset;
-        this.lengthTmp = this.length = length;
-        this.indexTmp = this.index = index;
+        this.array = array;
+        this.offset = offset;
+        this.length = length;
+        this.index = index;
         this.result = result;
 
         this.temp = allocateTempRegisters(tool, AMD64Kind.QWORD, 2);
-        this.vectorTemp = allocateVectorRegisters(tool, JavaKind.Byte, 5);
-    }
-
-    /**
-     * Converts a given codepoint index to a byte index on a <i>correctly encoded</i> UTF-8 or
-     * UTF-16 string.
-     *
-     * @param inputEncoding operation to run.
-     * @param array arbitrary array.
-     * @param byteOffset byteOffset to start from. Must include array base byteOffset!
-     * @param length length of the array region to consider, in the given encoding's natural stride,
-     *            which is 1 byte for {@link InputEncoding#UTF_8} and 2 bytes for
-     *            {@link InputEncoding#UTF_16}.
-     * @param index the codepoint index to translate.
-     */
-    public static AMD64CodepointIndexToByteIndexOp movParamsAndCreate(LIRGeneratorTool tool, InputEncoding inputEncoding, EnumSet<CPUFeature> runtimeCheckedCPUFeatures,
-                    Value array, Value byteOffset, Value length, Value index, Value result) {
-        RegisterValue regArray = REG_ARRAY.asValue(array.getValueKind());
-        RegisterValue regOffset = REG_OFFSET.asValue(byteOffset.getValueKind());
-        RegisterValue regLength = REG_LENGTH.asValue(length.getValueKind());
-        RegisterValue regIndex = REG_INDEX.asValue(index.getValueKind());
-        tool.emitConvertNullToZero(regArray, array);
-        tool.emitMove(regOffset, byteOffset);
-        tool.emitMove(regLength, length);
-        tool.emitMove(regIndex, index);
-        return new AMD64CodepointIndexToByteIndexOp(tool, inputEncoding, runtimeCheckedCPUFeatures, regArray, regOffset, regLength, regIndex, result);
+        this.vectorTemp = allocateVectorRegisters(tool, JavaKind.Byte, inputEncoding == InputEncoding.UTF_16_FOREIGN_ENDIAN ? 6 : 5);
     }
 
     @Override
     public void emitCode(CompilationResultBuilder crb, AMD64MacroAssembler asm) {
+        AMD64Assembler.AMD64SIMDInstructionEncoding oldEncoding = asm.setTemporaryAvxEncoding(AMD64Assembler.AMD64SIMDInstructionEncoding.VEX);
+
         Register arr = asRegister(array);
         Register off = asRegister(offset);
         Register len = asRegister(length);
@@ -146,6 +121,8 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
 
         asm.addq(arr, off);
         emitOp(crb, asm, arr, len, off, idx, ret);
+
+        asm.resetAvxEncoding(oldEncoding);
     }
 
     /**
@@ -235,7 +212,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
      * Now we can use this bitmask to get the number of codepoints in the current chunk via POPCNT.
      * As long as the total number of codepoints found is less than the target index, we continue this loop.
      *
-     * If the number of codepoints found so far is larger than the target index, we know the the target
+     * If the number of codepoints found so far is larger than the target index, we know that the target
      * codepoint's position is in the current chunk; so now we have to find it in the chunk.
      * We can use the bitmask for this as well, by performing a "bit-wise binary search":
      *
@@ -298,12 +275,13 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
         Register vecMask1 = asRegister(vectorTemp[2]);
         Register vecTmp1 = asRegister(vectorTemp[3]);
         Register vecTmp2 = asRegister(vectorTemp[4]);
+        Register vecMask3 = inputEncoding == InputEncoding.UTF_16_FOREIGN_ENDIAN ? asRegister(vectorTemp[5]) : null;
 
         Register tmp = asRegister(temp[0]);
         Register mask = asRegister(temp[1]);
         DataSection.Data xmmTailShuffleMask = writeToDataSection(crb, createXMMTailShuffleMask(XMM.getBytes()));
 
-        if (inputEncoding == InputEncoding.UTF_16) {
+        if (inputEncoding.isUTF16()) {
             // convert char indices to byte indices, to avoid having to shift the result of every
             // popcnt
             asm.shll(len, 1);
@@ -315,7 +293,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
         asm.movl(lengthTail, len);
 
         // if the target index is less than four, the scalar loop is faster
-        asm.cmplAndJcc(idx, inputEncoding == InputEncoding.UTF_16 ? 8 : 4, Less, tailScalarLoop, false);
+        asm.cmplAndJcc(idx, inputEncoding.isUTF16() ? 8 : 4, Less, tailScalarLoop, false);
 
         switch (inputEncoding) {
             case InputEncoding.UTF_8:
@@ -325,10 +303,18 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
                 loadMask(crb, asm, stride, vecMask2, 0x80);
                 break;
             case InputEncoding.UTF_16:
-                // create a vector filled with 0x37
+                // create a vector filled with 0x0037
                 loadMask(crb, asm, Stride.S2, vecMask1, 0x37);
-                // create a vector filled with 0xff
+                // create a vector filled with 0xffff
                 asm.pcmpeqb(vectorSize, vecMask2, vecMask2);
+                break;
+            case UTF_16_FOREIGN_ENDIAN:
+                // create a vector filled with 0x00fc
+                loadMask(crb, asm, Stride.S2, vecMask1, 0x00fc);
+                // create a vector filled with 0x00dc
+                loadMask(crb, asm, Stride.S2, vecMask2, 0x00dc);
+                // create a vector filled with 0xffff
+                asm.pcmpeqb(vectorSize, vecMask3, vecMask3);
                 break;
         }
 
@@ -343,7 +329,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
         // load one full vector from the array
         asm.movdqu(vectorSize, vecArray, new AMD64Address(arr, ret, stride));
         // count the number of codepoints in that vector
-        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, mask, tmp, vectorSize);
+        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, vecMask3, mask, tmp, vectorSize);
         // subtract the number of code points from target index.
         // if the result is negative, the target index must be in the current vector
         asm.subl(idx, tmp);
@@ -367,7 +353,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
             emitMaskTailBinarySearch(crb, asm, tmp, idx, ret, mask, lengthTail, null, tailMask16, tailMaskAscii, 32, false);
         }
         // determine whether the target index is in the mask's lower or upper 8 bits
-        emitMaskTailBinarySearch(crb, asm, tmp, idx, ret, mask, lengthTail, tailMask16, tailMask8, tailMaskAscii, 16, inputEncoding == InputEncoding.UTF_16);
+        emitMaskTailBinarySearch(crb, asm, tmp, idx, ret, mask, lengthTail, tailMask16, tailMask8, tailMaskAscii, 16, false);
         // determine whether the target index is in the mask's lower or upper 4 bits
         emitMaskTailBinarySearch(crb, asm, tmp, idx, ret, mask, lengthTail, tailMask8, tailMask4, tailMaskAscii, 8, true);
         switch (inputEncoding) {
@@ -385,7 +371,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
                 asm.subl(mask, 3);
                 asm.movl(idx, mask);
                 break;
-            case InputEncoding.UTF_16:
+            case InputEncoding.UTF_16, InputEncoding.UTF_16_FOREIGN_ENDIAN:
                 asm.align(preferredBranchTargetAlignment(crb));
                 asm.bind(tailMask4);
                 // binary search is down to four bits at this point. check for b1111
@@ -421,7 +407,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
             asm.bind(tailYMM);
         }
         // process the last vector the same way the vector loop would
-        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, mask, tmp, vectorSize);
+        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, vecMask3, mask, tmp, vectorSize);
         // subtract the number of code points from the target index
         asm.subl(idx, tmp);
         asm.jcc(Positive, outOfBounds);
@@ -445,7 +431,7 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
         asm.movl(len, lengthTail);
         asm.cmplAndJcc(lengthTail, 8, Less, tailScalarLoop, true);
         loadLessThan16IntoXMMOrdered(crb, asm, stride, arr, lengthTail, tmp, vecArray, vecTmp1, vecTmp2);
-        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, mask, tmp, XMM);
+        countCodepoints(asm, ret, vecArray, vecMask1, vecMask2, vecMask3, mask, tmp, XMM);
         // subtract the number of code points from the target index
         asm.subl(idx, tmp);
         asm.jcc(Negative, tailMask16);
@@ -473,12 +459,17 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
                 asm.incl(ret);
                 asm.declAndJcc(lengthTail, NotZero, tailScalarLoopHead, true);
                 break;
-            case InputEncoding.UTF_16:
+            case InputEncoding.UTF_16, InputEncoding.UTF_16_FOREIGN_ENDIAN:
                 // load current char
                 asm.movzwl(tmp, new AMD64Address(arr, ret, stride));
                 // check if it is a low surrogate
-                asm.shrl(tmp, 10);
-                asm.cmplAndJcc(tmp, 0x37, Equal, tailScalarLoopSkip, true);
+                if (inputEncoding == InputEncoding.UTF_16) {
+                    asm.shrl(tmp, 10);
+                    asm.cmplAndJcc(tmp, 0x37, Equal, tailScalarLoopSkip, true);
+                } else {
+                    asm.andl(tmp, 0x00fc);
+                    asm.cmplAndJcc(tmp, 0x00dc, Equal, tailScalarLoopSkip, true);
+                }
                 // not low surrogate -> decrease idx.
                 // if idx becomes negative, we found the target codepoint
                 asm.subl(idx, 2);
@@ -502,13 +493,13 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
         asm.movl(tmp, -1);
         asm.cmpl(ret, len);
         asm.cmovl(Greater, ret, tmp);
-        if (inputEncoding == InputEncoding.UTF_16) {
+        if (inputEncoding.isUTF16()) {
             // convert result back into char index
             asm.sarl(ret, 1);
         }
     }
 
-    private void countCodepoints(AMD64MacroAssembler asm, Register ret, Register vecArray, Register vecMask1, Register vecMask2, Register mask, Register tmp, AVXSize avxSize) {
+    private void countCodepoints(AMD64MacroAssembler asm, Register ret, Register vecArray, Register vecMask1, Register vecMask2, Register vecMask3, Register mask, Register tmp, AVXSize avxSize) {
         // codepoint counting logic:
         switch (inputEncoding) {
             case InputEncoding.UTF_8:
@@ -534,6 +525,18 @@ public final class AMD64CodepointIndexToByteIndexOp extends AMD64ComplexVectorOp
                 asm.pcmpeqw(avxSize, vecArray, vecMask1);
                 // invert the result
                 asm.pxor(avxSize, vecArray, vecMask2);
+                break;
+            case InputEncoding.UTF_16_FOREIGN_ENDIAN:
+                // vecMask1 is filled with 0x00fc
+                // vecMask2 is filled with 0x00dc
+                // vecMask3 is filled with 0xffff
+
+                // AND chars with 0x00fc
+                asm.pand(avxSize, vecArray, vecArray, vecMask1);
+                // check if the result is equal to 0x00dc, identifying low surrogates
+                asm.pcmpeqw(avxSize, vecArray, vecMask2);
+                // invert the result
+                asm.pxor(avxSize, vecArray, vecMask3);
                 break;
         }
         // count the number of code points

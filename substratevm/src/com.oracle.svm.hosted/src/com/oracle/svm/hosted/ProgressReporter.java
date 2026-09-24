@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -65,50 +66,47 @@ import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.graal.pointsto.util.Timer;
 import com.oracle.graal.pointsto.util.TimerCollection;
-import com.oracle.svm.common.option.CommonOptionParser;
+import com.oracle.svm.core.AssertionsSupport;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
-import com.oracle.svm.core.RuntimeAssertionsSupport;
-import com.oracle.svm.core.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.VM;
 import com.oracle.svm.core.configure.ConditionalRuntimeValue;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.jdk.Resources;
 import com.oracle.svm.core.jdk.resources.ResourceStorageEntryBase;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.OptionMigrationMessage;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.OptionUtils;
-import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.ByteFormattingUtil;
-import com.oracle.svm.core.util.TimeUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.hosted.ProgressReporterFeature.UserRecommendation;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.AnalysisResults;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.GeneralInfo;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.ImageDetailKey;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.JsonMetric;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.ResourceUsageKey;
+import com.oracle.svm.hosted.ProgressReporterSupport.UserRecommendation;
 import com.oracle.svm.hosted.c.codegen.CCompilerInvoker;
 import com.oracle.svm.hosted.image.AbstractImage.NativeImageKind;
-import com.oracle.svm.hosted.image.NativeImageDebugInfoStripFeature;
 import com.oracle.svm.hosted.reflect.ReflectionHostedSupport;
 import com.oracle.svm.hosted.util.CPUType;
 import com.oracle.svm.hosted.util.DiagnosticUtils;
 import com.oracle.svm.hosted.util.VMErrorReporter;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.CommonOptionParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.OptionMigrationMessage;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.OptionUtils;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.TimeUtils;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.ImageBuildStatistics;
-import com.oracle.svm.util.LogUtils;
 import com.sun.management.OperatingSystemMXBean;
 
 import jdk.graal.compiler.options.OptionDescriptor;
@@ -117,7 +115,7 @@ import jdk.graal.compiler.options.OptionStability;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.util.json.JsonWriter;
 
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class ProgressReporter {
     static final int CHARACTERS_PER_LINE;
     private static final String HEADLINE_SEPARATOR;
@@ -149,6 +147,7 @@ public class ProgressReporter {
     private int numForeignUpcalls = -1;
     private Timer debugInfoTimer;
     private boolean creationStageEndCompleted = false;
+    private Boolean strippedDebugInfoSuccessfully;
 
     /**
      * Build stages displayed as part of the Native Image build output. Changing this enum may
@@ -220,13 +219,27 @@ public class ProgressReporter {
         this.numForeignUpcalls = numUpcallStubs;
     }
 
+    public void setStrippedDebugInfoSuccessfully(boolean value) {
+        strippedDebugInfoSuccessfully = value;
+    }
+
+    public boolean isDebugInfoEmbeddedInImage() {
+        if (!SubstrateOptions.StripDebugInfo.getValue()) {
+            return true;
+        }
+        if (strippedDebugInfoSuccessfully == null) {
+            throw VMError.shouldNotReachHere("strippedDebugInfoSuccessfully not available yet");
+        }
+        return !strippedDebugInfoSuccessfully;
+    }
+
     public void printStart(String imageName, NativeImageKind imageKind) {
         l().printHeadlineSeparator();
         String outputFilename = imageKind.getOutputFilename(imageName);
         recordJsonMetric(GeneralInfo.NAME, outputFilename);
         String imageKindName = imageKind.name().toLowerCase(Locale.ROOT).replace('_', ' ');
-        l().blueBold().link("GraalVM Native Image", "https://www.graalvm.org/native-image/").reset()
-                        .a(": Generating '").bold().a(outputFilename).reset().a("' (").doclink(imageKindName, "#glossary-imagekind").a(")...").println();
+        l().blueBold().link("GraalVM Native Image", "https://www.graalvm.org/native-image/").reset().a(": Generating '").bold().a(outputFilename).reset().a("' (").doclink(imageKindName,
+                        "#glossary-imagekind").a(")...").println();
         l().printHeadlineSeparator();
         if (!linkStrategy.isTerminalSupported()) {
             l().a("For detailed information and explanations on the build output, visit:").println();
@@ -257,7 +270,7 @@ public class ProgressReporter {
         String march = CPUType.getSelectedOrDefaultMArch();
         recordJsonMetric(GeneralInfo.GRAAL_COMPILER_MARCH, march);
         DirectPrinter graalLine = l().a(" - ").doclink("Graal compiler", "#glossary-graal-compiler").a(": optimization level: %s, target machine: %s", optimizationLevel, march);
-        ImageSingletons.lookup(ProgressReporterFeature.class).appendGraalSuffix(graalLine);
+        ProgressReporterSupport.singleton().appendGraalSuffix(graalLine);
         graalLine.println();
         String cCompilerShort = null;
         if (ImageSingletons.contains(CCompilerInvoker.class)) {
@@ -270,18 +283,22 @@ public class ProgressReporter {
         long maxHeapSize = SubstrateGCOptions.MaxHeapSize.getValue();
         String maxHeapValue = maxHeapSize == 0 ? Heap.getHeap().getGC().getDefaultMaxHeapSize() : ByteFormattingUtil.bytesToHuman(maxHeapSize);
 
-        l().a(" - ").doclink("Assertions", "#glossary-builder-assertions").a(": ").a(SubstrateUtil.assertionsEnabled() ? "enabled" : "disabled").a(", system assertions: ")
-                        .a(getSystemAssertionStatus() ? "enabled" : "disabled")
-                        .println();
+        l().a(" - ").doclink("Assertions", "#glossary-builder-assertions").a(": ") //
+                        .a(SubstrateUtil.assertionsEnabled() ? "enabled" : "disabled").a(", system assertions: ") //
+                        .a(getSystemAssertionStatus() ? "enabled" : "disabled").println();
 
         printFeatures(features);
 
         // Image Configuration section
         l().a(" ").a("Image configuration:").println();
         l().a(" - ").doclink("Garbage collector", "#glossary-gc").a(": ").a(gcName).a(" (").doclink("max heap size", "#glossary-gc-max-heap-size").a(": ").a(maxHeapValue).a(")").println();
-        l().a(" - ").doclink("Assertions", "#glossary-image-assertions").a(": ").a(RuntimeAssertionsSupport.singleton().getDefaultAssertionStatus() ? "enabled" : "disabled")
-                        .a(" (class-specific config may apply), system assertions: ")
-                        .a(RuntimeAssertionsSupport.singleton().getDefaultSystemAssertionStatus() ? "enabled" : "disabled").println();
+        l().a(" - ").doclink("Assertions", "#glossary-image-assertions").a(": ").a(AssertionsSupport.singleton().getDefaultAssertionStatus() ? "enabled" : "disabled") //
+                        .a(" (class-specific config may apply), system assertions: ") //
+                        .a(AssertionsSupport.singleton().getDefaultSystemAssertionStatus() ? "enabled" : "disabled") //
+                        .println();
+        if (SubstrateOptions.StrictRuntimeJavaOptions.getValue()) {
+            l().a("               runtime-initialized classes: set by -ea/-da/-esa/-dsa at runtime; build-time-initialized classes retain the image settings").println();
+        }
 
         printExperimentalOptions(classLoader);
         printResourceInfo();
@@ -367,16 +384,17 @@ public class ProgressReporter {
          * Step 2: scan HostedOptionValues and collect migrationMessage, alternatives, and origins.
          */
         Map<String, ExperimentalOptionDetails> experimentalOptions = new HashMap<>();
-        var hostedOptionValues = HostedOptionValues.singleton().getMap();
-        for (OptionKey<?> option : hostedOptionValues.getKeys()) {
+        OptionValues hostedOptionValues = HostedOptionValues.singleton().get();
+        var hostedOptionValuesMap = hostedOptionValues.getMap();
+        for (OptionKey<?> option : hostedOptionValuesMap.getKeys()) {
             if (option instanceof RuntimeOptionKey || option == SubstrateOptions.UnlockExperimentalVMOptions || option.getDescriptor().getStability() != OptionStability.EXPERIMENTAL) {
                 continue;
             }
             OptionDescriptor descriptor = option.getDescriptor();
-            Object optionValue = option.getValueOrDefault(hostedOptionValues);
+            Object optionValue = option.getValue(hostedOptionValues);
             String emptyOrBooleanValue = "";
             if (descriptor.getOptionValueType() == Boolean.class) {
-                emptyOrBooleanValue = Boolean.parseBoolean(optionValue.toString()) ? "+" : "-";
+                emptyOrBooleanValue = Boolean.parseBoolean(Objects.toString(optionValue)) ? "+" : "-";
             }
             String prefixedOptionName = CommonOptionParser.HOSTED_OPTION_PREFIX + emptyOrBooleanValue + option.getName();
             if (!experimentalBuilderOptionsAndOrigins.containsKey(prefixedOptionName)) {
@@ -392,9 +410,8 @@ public class ProgressReporter {
                     continue;
                 } else {
                     origins = lmov.getValuesWithOrigins().filter(p -> !isStableOrInternalOrigin(p.origin())).map(p -> p.origin().toString()).distinct().collect(Collectors.joining(", "));
-                    alternatives = lmov.getValuesWithOrigins().map(p -> SubstrateOptionsParser.commandArgument(option, p.value().toString()))
-                                    .filter(c -> !c.startsWith(CommonOptionParser.HOSTED_OPTION_PREFIX))
-                                    .collect(Collectors.joining(", "));
+                    alternatives = lmov.getValuesWithOrigins().map(p -> SubstrateOptionsParser.commandArgument(option, p.value().toString())).filter(c -> !c.startsWith(
+                                    CommonOptionParser.HOSTED_OPTION_PREFIX)).collect(Collectors.joining(", "));
                 }
             } else {
                 OptionOrigin origin = experimentalBuilderOptionsAndOrigins.get(prefixedOptionName);
@@ -501,30 +518,26 @@ public class ProgressReporter {
         int totalMethods = methods.size();
         recordJsonMetric(AnalysisResults.DEPRECATED_METHOD_TOTAL, totalMethods);
         recordJsonMetric(AnalysisResults.METHOD_REACHABLE, reachableMethods);
-        l().a(typesFieldsMethodFormat, reachableTypes, reachableFields, reachableMethods)
-                        .doclink("found reachable", "#glossary-reachability").println();
-        int reflectClassesCount = ClassForNameSupport.currentLayer().count();
+        l().a(typesFieldsMethodFormat, reachableTypes, reachableFields, reachableMethods).doclink("found reachable", "#glossary-reachability").println();
         ReflectionHostedSupport rs = ImageSingletons.lookup(ReflectionHostedSupport.class);
+        int reflectClassesCount = rs.getReflectionClassesCount();
         int reflectFieldsCount = rs.getReflectionFieldsCount();
         int reflectMethodsCount = rs.getReflectionMethodsCount();
         recordJsonMetric(AnalysisResults.METHOD_REFLECT, reflectMethodsCount);
         recordJsonMetric(AnalysisResults.TYPES_REFLECT, reflectClassesCount);
         recordJsonMetric(AnalysisResults.FIELD_REFLECT, reflectFieldsCount);
-        l().a(typesFieldsMethodFormat, reflectClassesCount, reflectFieldsCount, reflectMethodsCount)
-                        .doclink("registered for reflection", "#glossary-reflection-registrations").println();
+        l().a(typesFieldsMethodFormat, reflectClassesCount, reflectFieldsCount, reflectMethodsCount).doclink("registered for reflection", "#glossary-reflection-registrations").println();
         recordJsonMetric(AnalysisResults.METHOD_JNI, (numJNIMethods >= 0 ? numJNIMethods : UNAVAILABLE_METRIC));
         recordJsonMetric(AnalysisResults.TYPES_JNI, (numJNIClasses >= 0 ? numJNIClasses : UNAVAILABLE_METRIC));
         recordJsonMetric(AnalysisResults.FIELD_JNI, (numJNIFields >= 0 ? numJNIFields : UNAVAILABLE_METRIC));
         if (numJNIClasses >= 0) {
-            l().a(typesFieldsMethodFormat, numJNIClasses, numJNIFields, numJNIMethods)
-                            .doclink("registered for JNI access", "#glossary-jni-access-registrations").println();
+            l().a(typesFieldsMethodFormat, numJNIClasses, numJNIFields, numJNIMethods).doclink("registered for JNI access", "#glossary-jni-access-registrations").println();
         }
         String stubsFormat = "%,9d downcalls and %,d upcalls ";
         recordJsonMetric(AnalysisResults.FOREIGN_DOWNCALLS, (numForeignDowncalls >= 0 ? numForeignDowncalls : UNAVAILABLE_METRIC));
         recordJsonMetric(AnalysisResults.FOREIGN_UPCALLS, (numForeignUpcalls >= 0 ? numForeignUpcalls : UNAVAILABLE_METRIC));
         if (numForeignDowncalls > 0 || numForeignUpcalls > 0) {
-            l().a(stubsFormat, numForeignDowncalls, numForeignUpcalls)
-                            .doclink("registered for foreign access", "#glossary-foreign-downcall-and-upcall-registrations").println();
+            l().a(stubsFormat, numForeignDowncalls, numForeignUpcalls).doclink("registered for foreign access", "#glossary-foreign-downcall-and-upcall-registrations").println();
         }
         int resourceCount = Resources.currentLayer().resources().size();
         long totalResourceSize = 0;
@@ -545,21 +558,21 @@ public class ProgressReporter {
         }
         if (numRuntimeCompiledMethods >= 0) {
             recordJsonMetric(ImageDetailKey.RUNTIME_COMPILED_METHODS_COUNT, numRuntimeCompiledMethods);
-            l().a("%,9d ", numRuntimeCompiledMethods).doclink("runtime compiled methods", "#glossary-runtime-methods")
-                            .a(" (%.1f%% of all reachable methods)", ProgressReporterUtils.toPercentage(numRuntimeCompiledMethods, reachableMethods), reachableMethods).println();
+            l().a("%,9d ", numRuntimeCompiledMethods).doclink("runtime compiled methods", "#glossary-runtime-methods").a(" (%.1f%% of all reachable methods)", ProgressReporterUtils.toPercentage(
+                            numRuntimeCompiledMethods, reachableMethods), reachableMethods).println();
         }
     }
 
     public static List<AnalysisType> reportedReachableTypes(AnalysisUniverse universe) {
-        return reportedElements(universe, universe.getTypes(), AnalysisType::isReachable, t -> !t.isInBaseLayer());
+        return reportedElements(universe, universe.getTypes(), AnalysisType::isReachable, t -> !t.isInSharedLayer());
     }
 
     public static List<AnalysisField> reportedReachableFields(AnalysisUniverse universe) {
-        return reportedElements(universe, universe.getFields(), AnalysisField::isAccessed, f -> !f.isInBaseLayer());
+        return reportedElements(universe, universe.getFields(), AnalysisField::isAccessed, f -> !f.isInSharedLayer());
     }
 
     public static List<AnalysisMethod> reportedReachableMethods(AnalysisUniverse universe) {
-        return reportedElements(universe, universe.getMethods(), AnalysisMethod::isReachable, m -> !m.isInBaseLayer());
+        return reportedElements(universe, universe.getMethods(), AnalysisMethod::isReachable, m -> !m.isInSharedLayer());
     }
 
     private static <T extends AnalysisElement> List<T> reportedElements(AnalysisUniverse universe, Collection<T> elements, Predicate<T> elementsFilter, Predicate<T> baseLayerFilter) {
@@ -596,7 +609,7 @@ public class ProgressReporter {
         this.debugInfoTimer = timer;
     }
 
-    public void printCreationEnd(int imageFileSize, int heapObjectCount, long imageHeapSize, int codeAreaSize, int numCompilations, int debugInfoSize, int imageDiskFileSize) {
+    public void printCreationEnd(int imageFileSize, int heapObjectCount, long imageHeapSize, long codeSize, int numCompilations, int debugInfoSize, int imageDiskFileSize) {
         recordJsonMetric(ImageDetailKey.IMAGE_HEAP_OBJECT_COUNT, heapObjectCount);
         Timer imageTimer = getTimer(TimerCollection.Registry.IMAGE);
         Timer writeTimer = getTimer(TimerCollection.Registry.WRITE);
@@ -604,8 +617,8 @@ public class ProgressReporter {
         stagePrinter.end(imageTimer.getTotalTime() + writeTimer.getTotalTime() + archiveTimer.getTotalTime());
         creationStageEndCompleted = true;
         String format = BYTES_TO_HUMAN_FORMAT + " (%5.2f%%) for ";
-        l().a(format, ByteFormattingUtil.bytesToHuman(codeAreaSize), ProgressReporterUtils.toPercentage(codeAreaSize, imageFileSize))
-                        .doclink("code area", "#glossary-code-area").a(":%,10d compilation units", numCompilations).println();
+        l().a(format, ByteFormattingUtil.bytesToHuman(codeSize), ProgressReporterUtils.toPercentage(codeSize, imageFileSize)).doclink("code area", "#glossary-code-area").a(":%,10d compilation units",
+                        numCompilations).println();
         int numResources = 0;
         for (ConditionalRuntimeValue<ResourceStorageEntryBase> entry : Resources.currentLayer().resources().getValues()) {
             if (entry.getValueUnconditionally() != Resources.NEGATIVE_QUERY_MARKER && entry.getValueUnconditionally() != Resources.MISSING_METADATA_MARKER) {
@@ -613,9 +626,9 @@ public class ProgressReporter {
             }
         }
         recordJsonMetric(ImageDetailKey.IMAGE_HEAP_RESOURCE_COUNT, numResources);
-        l().a(format, ByteFormattingUtil.bytesToHuman(imageHeapSize), ProgressReporterUtils.toPercentage(imageHeapSize, imageFileSize))
-                        .doclink("image heap", "#glossary-image-heap").a(":%,9d objects and %,d resource%s", heapObjectCount, numResources, numResources == 1 ? "" : "s").println();
-        long otherBytes = imageFileSize - codeAreaSize - imageHeapSize;
+        l().a(format, ByteFormattingUtil.bytesToHuman(imageHeapSize), ProgressReporterUtils.toPercentage(imageHeapSize, imageFileSize)).doclink("image heap", "#glossary-image-heap").a(
+                        ":%,9d objects and %,d resource%s", heapObjectCount, numResources, numResources == 1 ? "" : "s").println();
+        long otherBytes = imageFileSize - codeSize - imageHeapSize;
         if (debugInfoSize > 0) {
             recordJsonMetric(ImageDetailKey.DEBUG_INFO_SIZE, debugInfoSize); // Optional metric
             DirectPrinter l = l().a(format, ByteFormattingUtil.bytesToHuman(debugInfoSize), ProgressReporterUtils.toPercentage(debugInfoSize, imageFileSize))
@@ -625,7 +638,7 @@ public class ProgressReporter {
                 l.a(" generated in %.1fs", ProgressReporterUtils.millisToSeconds(debugInfoTimer.getTotalTime()));
             }
             l.println();
-            if (!(ImageSingletons.contains(NativeImageDebugInfoStripFeature.class) && ImageSingletons.lookup(NativeImageDebugInfoStripFeature.class).hasStrippedSuccessfully())) {
+            if (isDebugInfoEmbeddedInImage()) {
                 // Only subtract if debug info is embedded in file (not stripped).
                 otherBytes -= debugInfoSize;
             }
@@ -633,17 +646,16 @@ public class ProgressReporter {
         assert otherBytes >= 0 : "Other bytes should never be negative: " + otherBytes;
         recordJsonMetric(ImageDetailKey.IMAGE_HEAP_SIZE, imageHeapSize);
         recordJsonMetric(ImageDetailKey.TOTAL_SIZE, imageFileSize);
-        recordJsonMetric(ImageDetailKey.CODE_AREA_SIZE, codeAreaSize);
+        recordJsonMetric(ImageDetailKey.CODE_AREA_SIZE, codeSize);
         recordJsonMetric(ImageDetailKey.NUM_COMP_UNITS, numCompilations);
-        l().a(format, ByteFormattingUtil.bytesToHuman(otherBytes), ProgressReporterUtils.toPercentage(otherBytes, imageFileSize))
-                        .doclink("other data", "#glossary-other-data").println();
+        l().a(format, ByteFormattingUtil.bytesToHuman(otherBytes), ProgressReporterUtils.toPercentage(otherBytes, imageFileSize)).doclink("other data", "#glossary-other-data").println();
         l().a(BYTES_TO_HUMAN_FORMAT + " in total image size", ByteFormattingUtil.bytesToHuman(imageFileSize));
         if (imageDiskFileSize >= 0) {
             l().a(", %s in total file size", ByteFormattingUtil.bytesToHuman(imageDiskFileSize));
         }
         l().println();
-        printBreakdowns();
-        ImageSingletons.lookup(ProgressReporterFeature.class).afterBreakdowns();
+        printBreakdowns(codeSize);
+        ProgressReporterSupport.singleton().afterBreakdowns();
         printRecommendations();
     }
 
@@ -653,14 +665,12 @@ public class ProgressReporter {
         }
     }
 
-    private void printBreakdowns() {
-        Map<ProgressReporterUtils.BreakDownClassifier, Long> codeBreakdown = CodeBreakdownProvider.getAndClear().entrySet().stream()
-                        .collect(Collectors.groupingBy(
-                                        entry -> ProgressReporterUtils.BreakDownClassifier.of(entry.getKey()),
-                                        Collectors.summingLong(Entry::getValue)));
+    private void printBreakdowns(long totalCodeBytes) {
+        Map<ProgressReporterUtils.BreakDownClassifier, Long> codeBreakdown = CodeBreakdownProvider.getAndClear().entrySet().stream().collect(Collectors.groupingBy(
+                        entry -> ProgressReporterUtils.BreakDownClassifier.of(entry.getKey()),
+                        Collectors.summingLong(Entry::getValue)));
 
-        List<Entry<ProgressReporterUtils.BreakDownClassifier, Long>> sortedBreakdownData = codeBreakdown.entrySet().stream()
-                        .sorted(Entry.comparingByValue(Comparator.reverseOrder())).toList();
+        List<Entry<ProgressReporterUtils.BreakDownClassifier, Long>> sortedBreakdownData = codeBreakdown.entrySet().stream().sorted(Entry.comparingByValue(Comparator.reverseOrder())).toList();
 
         if (SubstrateOptions.BuildOutputCodeBreakdownFile.getValue()) {
             String valueSeparator = ",";
@@ -684,9 +694,8 @@ public class ProgressReporter {
 
         final TwoColumnPrinter p = new TwoColumnPrinter();
         l().printLineSeparator();
-        p.l().yellowBold().a(String.format("Top %d ", MAX_NUM_BREAKDOWN)).doclink("origins", "#glossary-code-area-origins").a(" of code area:")
-                        .jumpToMiddle()
-                        .a(String.format("Top %d object types in image heap:", MAX_NUM_BREAKDOWN)).reset().flushln();
+        p.l().yellowBold().a(String.format("Top %d ", MAX_NUM_BREAKDOWN)).doclink("origins", "#glossary-code-area-origins").a(" of code area:").jumpToMiddle().a(String.format(
+                        "Top %d object types in image heap:", MAX_NUM_BREAKDOWN)).reset().flushln();
 
         long printedCodeBytes = 0;
         long printedHeapBytes = 0;
@@ -726,13 +735,10 @@ public class ProgressReporter {
 
         int numCodeItems = codeBreakdown.size();
         int numHeapItems = heapBreakdown.getSortedBreakdownEntries().size();
-        long totalCodeBytes = codeBreakdown.values().stream().mapToLong(Long::longValue).sum();
 
-        p.l().a(String.format(BYTES_TO_HUMAN_FORMAT + " for %s more packages", ByteFormattingUtil.bytesToHuman(totalCodeBytes - printedCodeBytes), numCodeItems - printedCodeItems))
-                        .jumpToMiddle()
-                        .a(String.format(BYTES_TO_HUMAN_FORMAT + " for %s more object types", ByteFormattingUtil.bytesToHuman(heapBreakdown.getTotalHeapSize() - printedHeapBytes),
-                                        numHeapItems - printedHeapItems))
-                        .flushln();
+        p.l().a(String.format(BYTES_TO_HUMAN_FORMAT + " for %s more packages", ByteFormattingUtil.bytesToHuman(totalCodeBytes - printedCodeBytes), numCodeItems - printedCodeItems)).jumpToMiddle().a(
+                        String.format(BYTES_TO_HUMAN_FORMAT + " for %s more object types", ByteFormattingUtil.bytesToHuman(heapBreakdown.getTotalHeapSize() - printedHeapBytes),
+                                        numHeapItems - printedHeapItems)).flushln();
     }
 
     private static String getBreakdownSizeString(long sizeInBytes) {
@@ -743,7 +749,7 @@ public class ProgressReporter {
         if (!SubstrateOptions.BuildOutputRecommendations.getValue()) {
             return;
         }
-        List<UserRecommendation> recommendations = ImageSingletons.lookup(ProgressReporterFeature.class).getRecommendations();
+        List<UserRecommendation> recommendations = ProgressReporterSupport.singleton().getRecommendations();
         List<UserRecommendation> topApplicableRecommendations = recommendations.stream().filter(r -> r.isApplicable().get()).limit(5).toList();
         if (topApplicableRecommendations.isEmpty()) {
             return;
@@ -798,8 +804,7 @@ public class ProgressReporter {
         } else {
             timeStats = String.format("%dm %ds", (int) totalSeconds / 60, (int) totalSeconds % 60);
         }
-        l().a(outcomePrefix(buildOutcome)).a(" generating '").bold().a(imageName).reset().a("' ")
-                        .a(buildOutcome.successful() ? "in" : "after").a(" ").a(timeStats).a(".").println();
+        l().a(outcomePrefix(buildOutcome)).a(" generating '").bold().a(imageName).reset().a("' ").a(buildOutcome.successful() ? "in" : "after").a(" ").a(timeStats).a(".").println();
 
         printWarningsCount();
         printErrorMessage(optionalUnhandledThrowable, parsedHostedOptions);
@@ -815,7 +820,7 @@ public class ProgressReporter {
     }
 
     private void printWarningsCount() {
-        int warningsCount = LogUtils.getWarningsCount() + SubstrateOptions.DriverWarningsCount.getValue();
+        int warningsCount = getWarningsCount();
         if (warningsCount == 0) {
             return;
         }
@@ -825,8 +830,12 @@ public class ProgressReporter {
         l().println();
     }
 
+    private static int getWarningsCount() {
+        return SubstrateOptions.DriverWarningsCount.getValue() + LogUtils.getWarningsCount();
+    }
+
     private static void checkTreatWarningsAsError() {
-        if (SubstrateOptions.TreatWarningsAsError.getValue().contains("all")) {
+        if (getWarningsCount() > 0 && SubstrateOptions.TreatWarningsAsError.getValue().contains("all")) {
             deleteBuiltArtifacts();
             throw UserError.abort("Build failed: Warnings are treated as errors because the -Werror flag is set.");
         }
@@ -869,8 +878,8 @@ public class ProgressReporter {
             l().println();
             l().dim().a("> %s", unhandledThrowable).reset().println();
             l().println();
-            l().a("Please inspect the generated error report at:").println();
-            l().link(NativeImageOptions.getErrorFilePath(parsedHostedOptions)).println();
+            // Keep in sync with the {@code catch_files} array in {@code ci/common.jsonnet}.
+            l().a("Please inspect the generated error report at: '").link(NativeImageOptions.getErrorFilePath(parsedHostedOptions)).a("'").println();
             l().println();
             l().a("If you are unable to resolve this problem, please file an issue with the error report at:").println();
             var supportUrl = VM.getSupportUrl();
@@ -892,7 +901,7 @@ public class ProgressReporter {
         if (generator.getBigbang() != null && ImageBuildStatistics.Options.CollectImageBuildStatistics.getValue(parsedHostedOptions)) {
             artifacts.add(ArtifactType.BUILD_INFO, reportImageBuildStatistics());
         }
-        ImageSingletons.lookup(ProgressReporterFeature.class).createAdditionalArtifactsOnSuccess(artifacts);
+        ProgressReporterSupport.singleton().createAdditionalArtifactsOnSuccess(artifacts);
     }
 
     private void printArtifacts(BuildArtifacts artifacts) {
@@ -949,7 +958,7 @@ public class ProgressReporter {
 
     private static Path reportImageBuildStatistics() {
         Consumer<PrintWriter> statsReporter = ImageSingletons.lookup(ImageBuildStatistics.class).getReporter();
-        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton()).resolve("reports");
+        Path reportsPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get()).resolve("reports");
         return ReportUtils.report("image build statistics", reportsPath.resolve("image_build_statistics.json"), statsReporter, false);
     }
 
@@ -960,8 +969,7 @@ public class ProgressReporter {
         recordJsonMetric(ResourceUsageKey.GC_COUNT, gcStats.totalCount);
         recordJsonMetric(ResourceUsageKey.GC_SECS, gcSeconds);
         CenteredTextPrinter p = centered();
-        p.a("%.1fs (%.1f%% of total time) in %d ", gcSeconds, gcSeconds / totalProcessTimeSeconds * 100, gcStats.totalCount)
-                        .doclink("GCs", "#glossary-garbage-collections");
+        p.a("%.1fs (%.1f%% of total time) in %d ", gcSeconds, gcSeconds / totalProcessTimeSeconds * 100, gcStats.totalCount).doclink("GCs", "#glossary-garbage-collections");
         long peakRSS = ProgressReporterCHelper.getPeakRSS();
         if (peakRSS >= 0) {
             p.a(" | ").doclink("Peak RSS", "#glossary-peak-rss").a(": ").a(ByteFormattingUtil.bytesToHuman(peakRSS));
@@ -985,10 +993,8 @@ public class ProgressReporter {
         long gcTimeDeltaMillis = currentGCStats.totalTimeMillis - lastGCStats.totalTimeMillis;
         double ratio = gcTimeDeltaMillis / (double) timeDeltaMillis;
         if (gcTimeDeltaMillis > EXCESSIVE_GC_MIN_THRESHOLD_MILLIS && ratio > EXCESSIVE_GC_RATIO) {
-            l().redBold().a("GC warning").reset()
-                            .a(": %.1fs spent in %d GCs during the last stage, taking up %.2f%% of the time.",
-                                            ProgressReporterUtils.millisToSeconds(gcTimeDeltaMillis), currentGCStats.totalCount - lastGCStats.totalCount, ratio * 100)
-                            .println();
+            l().redBold().a("GC warning").reset().a(": %.1fs spent in %d GCs during the last stage, taking up %.2f%% of the time.",
+                            ProgressReporterUtils.millisToSeconds(gcTimeDeltaMillis), currentGCStats.totalCount - lastGCStats.totalCount, ratio * 100).println();
             l().a("            Please ensure more than %s of memory is available for Native Image", ByteFormattingUtil.bytesToHuman(ProgressReporterCHelper.getPeakRSS())).println();
             l().a("            to reduce GC overhead and improve image build time.").println();
         }
@@ -1278,8 +1284,8 @@ public class ProgressReporter {
         }
 
         private void appendStageStart() {
-            blue().a(String.format("[%s/%s] ", 1 + activeBuildStage.ordinal(), BuildStage.NUM_STAGES)).reset()
-                            .blueBold().doclink(activeBuildStage.message, "#stage-" + activeBuildStage.name().toLowerCase(Locale.ROOT)).a("...").reset();
+            blue().a(String.format("[%s/%s] ", 1 + activeBuildStage.ordinal(), BuildStage.NUM_STAGES)).reset().blueBold().doclink(activeBuildStage.message, "#stage-" +
+                            activeBuildStage.name().toLowerCase(Locale.ROOT)).a("...").reset();
         }
 
         final String progressBarStartPadding() {

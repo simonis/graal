@@ -40,6 +40,8 @@
  */
 package com.oracle.truffle.sl.parser;
 
+import static com.oracle.truffle.sl.bytecode.SLBytecodeRootNodeGen.BYTECODE;
+
 import java.io.IOException;
 import java.math.BigInteger;
 import java.util.ArrayDeque;
@@ -133,9 +135,10 @@ public final class SLBytecodeParser extends SLBaseParser {
             }
         } else {
             if (FORCE_MATERIALIZE_COMPLETE) {
-                nodes = SLBytecodeRootNodeGen.create(language, BytecodeConfig.COMPLETE, slParser);
+                nodes = BYTECODE.create(language, BytecodeConfig.COMPLETE, slParser);
             } else {
-                nodes = SLBytecodeRootNodeGen.create(language, BytecodeConfig.DEFAULT, slParser);
+                // TODO GR-73669: stop eagerly loading sources once instruments can request them
+                nodes = BYTECODE.create(language, BytecodeConfig.WITH_SOURCE, slParser);
             }
         }
 

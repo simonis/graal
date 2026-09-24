@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -199,7 +199,6 @@ public class FlatNodeGenFactory {
     private final boolean primaryNode;
     private final Map<CacheExpression, String> sharedCaches;
     private final Map<CacheExpression, CacheExpression> sharedCacheKey;
-    private final ParentInlineData parentInlineAccess;
     private final Map<ExecutableElement, Function<Call, DSLExpression>> substitutions = new LinkedHashMap<>();
     private final StaticConstants constants;
     private NodeConstants nodeConstants;
@@ -238,7 +237,6 @@ public class FlatNodeGenFactory {
         this.primaryNode = stateSharingNodes.iterator().next() == node;
         this.sharedCaches = sharedCaches;
         this.sharedCacheKey = computeSharedCacheKeys(stateSharingNodes, sharedCaches);
-        this.parentInlineAccess = computeParentInlineAccess();
         this.state = createNodeState();
         this.multiState = state.activeState;
         this.allMultiState = state.allState;
@@ -299,11 +297,17 @@ public class FlatNodeGenFactory {
                 int dimensions = 0;
                 if (pruneInternalClasses) {
                     if (ElementUtils.isAssignable(type, types.Node)) {
-                        type = types.Node;
+                        if (!isPublicInlineFieldType(type)) {
+                            type = types.Node;
+                        }
                     } else if (ElementUtils.isAssignable(type, types.NodeInterface)) {
-                        type = types.NodeInterface;
+                        if (!isPublicInlineFieldType(type)) {
+                            type = types.NodeInterface;
+                        }
                     } else if (isNodeArray(type)) {
-                        type = new ArrayCodeTypeMirror(types.Node);
+                        if (!isPublicInlineFieldType(((ArrayType) type).getComponentType())) {
+                            type = new ArrayCodeTypeMirror(types.Node);
+                        }
                     } else if (type.getKind() == TypeKind.ARRAY) {
                         type = context.getType(Object[].class);
                         AnnotationMirror annotationMirror = ElementUtils.findAnnotationMirror(var, types.CompilerDirectives_CompilationFinal);
@@ -322,6 +326,26 @@ public class FlatNodeGenFactory {
         this.nodeConstants = savedConstants;
         return fields;
 
+    }
+
+    private static boolean isPublicInlineFieldType(TypeMirror type) {
+        if (type instanceof GeneratedTypeMirror) {
+            return false;
+        } else if (type.getKind() == TypeKind.ARRAY) {
+            return isPublicInlineFieldType(((ArrayType) type).getComponentType());
+        }
+        TypeElement typeElement = ElementUtils.castTypeElement(type);
+        if (typeElement == null) {
+            return false;
+        }
+        Element current = typeElement;
+        while (current instanceof TypeElement) {
+            if (ElementUtils.getVisibility(current.getModifiers()) != Modifier.PUBLIC) {
+                return false;
+            }
+            current = current.getEnclosingElement();
+        }
+        return true;
     }
 
     static boolean isImplicitCastUsed(ExecutableTypeData executable, Collection<SpecializationData> usedSpecializations, TypeGuard guard) {
@@ -382,14 +406,7 @@ public class FlatNodeGenFactory {
     }
 
     private String createStaticInlinedCacheName(SpecializationData specialization, CacheExpression cache) {
-        String baseName;
-        String sharedName = sharedCaches.get(cache);
-        if (sharedName != null && specialization != null && hasCacheParentAccess(cache)) {
-            baseName = specialization.getId() + "_" + sharedName;
-        } else {
-            baseName = createFieldName(specialization, cache);
-        }
-        return "INLINED_" + ElementUtils.createConstantName(baseName);
+        return "INLINED_" + ElementUtils.createConstantName(createFieldName(specialization, cache));
     }
 
     private String createFieldName(SpecializationData specialization, CacheExpression cache) {
@@ -501,73 +518,11 @@ public class FlatNodeGenFactory {
         return foundCaches;
     }
 
-    private boolean hasCacheParentAccess(CacheExpression cache) {
-        return parentInlineAccess.foundSharedParentAccess.contains(cache);
-    }
-
-    private boolean hasSharedCacheDirectAccess(CacheExpression cache) {
-        return parentInlineAccess.foundSharedDirectAccess.contains(cache);
-    }
-
-    private static final class ParentInlineData {
-
-        final Set<CacheExpression> foundSharedParentAccess = new LinkedHashSet<>();
-        final Set<CacheExpression> foundSharedDirectAccess = new LinkedHashSet<>();
-
-    }
-
-    private ParentInlineData computeParentInlineAccess() {
-        ParentInlineData data = new ParentInlineData();
-        for (NodeData n : this.sharingNodes) {
-            for (SpecializationData specialization : n.getReachableSpecializations()) {
-                // shared caches are not supported with multiple instances at the moment
-                boolean parentInlinedAccess = useParentInlinedAccess(specialization);
-                for (CacheExpression cache : specialization.getCaches()) {
-                    if (sharedCaches.containsKey(cache) && cache.getInlinedNode() != null) {
-                        if (parentInlinedAccess) {
-                            data.foundSharedParentAccess.add(cache);
-                        } else {
-                            data.foundSharedDirectAccess.add(lookupSharedCacheKey(cache));
-                        }
-                    }
-                }
-            }
-        }
-        return data;
-    }
-
-    /**
-     * This is needed if a specialization contains both shared and non-shared inlined elements and
-     * at the same time requires a specialization class. So in order to pass in a single node into
-     * the specialization to access inlined nodes, the shared inlined nodes must use a special field
-     * with a configured parent class.
-     */
-    private static boolean useParentInlinedAccess(SpecializationData specialization) {
-        if (!useSpecializationClass(specialization)) {
-            return false;
-        }
-        boolean hasSharedInlined = false;
-        boolean hasSpecializationClassInlined = false;
-        for (CacheExpression cache : specialization.getCaches()) {
-            if (cache.getInlinedNode() != null) {
-                if (canCacheBeStoredInSpecialializationClass(cache)) {
-                    hasSpecializationClassInlined = true;
-                } else if (cache.getSharedGroup() != null) {
-                    hasSharedInlined = true;
-                }
-            }
-            if (hasSharedInlined && hasSpecializationClassInlined) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public static boolean isLayoutBenefittingFromNeverDefault(SpecializationData specialization) {
         if (specialization.hasMultipleInstances()) {
             return false;
         }
-        if (specialization.isGuardBindsExclusiveCache() && FlatNodeGenFactory.usesExclusiveInstanceField(specialization)) {
+        if (specialization.isGuardBindsExclusiveCache() && FlatNodeGenFactory.usesSeparateCacheFieldInDuplicateCheck(specialization)) {
             return false;
         }
         return !FlatNodeGenFactory.shouldUseSpecializationClassBySize(specialization);
@@ -584,12 +539,12 @@ public class FlatNodeGenFactory {
                 return true;
             }
 
-            if (specialization.isGuardBindsExclusiveCache() && usesExclusiveInstanceField(specialization)) {
+            if (specialization.isGuardBindsExclusiveCache() && usesSeparateCacheFieldInDuplicateCheck(specialization)) {
                 /*
-                 * For specializations that bind cached values in guards that use instance fields we
-                 * need to use specialization classes because the duplication check is not reliable
-                 * otherwise. E.g. NeverDefaultTest#testSingleInstancePrimitiveCacheNode fails
-                 * without this check.
+                 * The duplicate-flag path uses the specialization-active state as its publication
+                 * marker. If duplicate detection also reads a separately stored cache field, the
+                 * active state may become visible before that field. Use a specialization class to
+                 * publish the cache fields through the existing volatile/CAS protocol.
                  */
                 return true;
             }
@@ -598,7 +553,7 @@ public class FlatNodeGenFactory {
                 if (cache.isEncodedEnum()) {
                     continue;
                 }
-                if (!canCacheBeStoredInSpecialializationClass(cache)) {
+                if (!canCacheBeStoredInSpecializationClass(specialization, cache)) {
                     continue;
                 }
                 if (!cache.isNeverDefault()) {
@@ -614,9 +569,9 @@ public class FlatNodeGenFactory {
         }
     }
 
-    private static boolean usesExclusiveInstanceField(SpecializationData s) {
-        for (CacheExpression cache : s.getCaches()) {
-            if (usesExclusiveInstanceField(cache)) {
+    private static boolean usesSeparateCacheFieldInDuplicateCheck(SpecializationData specialization) {
+        for (CacheExpression cache : specialization.getCaches()) {
+            if (usesSeparateCacheFieldInDuplicateCheck(cache)) {
                 return true;
             }
         }
@@ -634,7 +589,7 @@ public class FlatNodeGenFactory {
         int fieldsSize = 0;
         int stateBits = 0;
         for (CacheExpression cache : specialization.getCaches()) {
-            if (!canCacheBeStoredInSpecialializationClass(cache)) {
+            if (!canCacheBeStoredInSpecializationClass(specialization, cache)) {
                 continue;
             }
             if (cache.getInlinedNode() != null) {
@@ -681,12 +636,29 @@ public class FlatNodeGenFactory {
 
     }
 
-    static boolean canCacheBeStoredInSpecialializationClass(CacheExpression cache) {
+    public static boolean canCacheBeStoredInSpecializationClass(SpecializationData specialization, CacheExpression cache) {
         if (cache.isBind()) {
             return false;
         } else if (cache.isAlwaysInitialized()) {
             return false;
-        } else if (cache.getSharedGroup() != null) {
+        } else if (specialization != null && !specialization.hasMultipleInstances() && cache.getInlinedNode() != null && (!specialization.isNodeBound() || !specialization.isStatic())) {
+            for (CacheExpression otherCache : specialization.getCaches()) {
+                if (otherCache.getDisabledSharingGroup() != null) {
+                    /*
+                     * If either node is not bound or the specialization is not static, then this
+                     * likely means that the specialization uses "this" as an inline context, so we
+                     * need to be conservative with introducing a specialization class as a result
+                     * of the disabled specialization, as this would break existing implementations.
+                     *
+                     * This case is hopefully rare and in future version of the DSL strongly
+                     * enforced to no longer be the case.
+                     */
+                    return false;
+                }
+            }
+            // fall-through to other checks intended
+        }
+        if (cache.getSharedGroup() != null) {
             return false;
         } else if (cache.isEagerInitialize()) {
             return false;
@@ -726,6 +698,10 @@ public class FlatNodeGenFactory {
     }
 
     public CodeTypeElement create(CodeTypeElement clazz) {
+        return create(clazz, true);
+    }
+
+    public CodeTypeElement create(CodeTypeElement clazz, boolean generateUncached) {
         TypeMirror genericReturnType = node.getPolymorphicExecutable().getReturnType();
 
         List<ExecutableTypeData> executableTypes = filterExecutableTypes(node.getExecutableTypes(), node.getReachableSpecializations());
@@ -767,7 +743,6 @@ public class FlatNodeGenFactory {
 
         if (node.isGenerateCached()) {
             if (primaryNode) {
-
                 for (NodeChildData child : node.getChildren()) {
                     clazz.addOptional(createAccessChildMethod(child, false));
                 }
@@ -922,10 +897,6 @@ public class FlatNodeGenFactory {
                         continue;
                     }
 
-                    if (!hasSharedCacheDirectAccess(cache)) {
-                        continue;
-                    }
-
                     inlined.addOptional(createCacheInlinedField(builder, null, null, cache));
                 }
             }
@@ -943,7 +914,7 @@ public class FlatNodeGenFactory {
                         continue;
                     }
 
-                    if (sharedCaches.containsKey(cache) && !hasCacheParentAccess(cache)) {
+                    if (sharedCaches.containsKey(cache)) {
                         // already generated
                         continue;
                     }
@@ -1009,7 +980,7 @@ public class FlatNodeGenFactory {
             clazz.add(specializationClass);
         }
 
-        if (node.isUncachable() && node.isGenerateUncached()) {
+        if (node.isUncachable() && node.isGenerateUncached() && generateUncached) {
             CodeTypeElement uncached = GeneratorUtils.createClass(node, null, modifiers(PRIVATE, STATIC, FINAL), "Uncached", node.getTemplateType().asType());
             uncached.getEnclosedElements().addAll(createUncachedFields());
             uncached.addAnnotationMirror(new CodeAnnotationMirror(types.DenyReplace));
@@ -1082,7 +1053,6 @@ public class FlatNodeGenFactory {
         final Parameter parameter = cache.getParameter();
         final String fieldName = createLocalCachedInlinedName(specialization, cache);
 
-        // for state access we need use the shared cache
         boolean needsInlineTarget = needsInlineTarget(specialization, cache);
 
         CodeTreeBuilder b = init.create();
@@ -1141,7 +1111,7 @@ public class FlatNodeGenFactory {
                 }
             } else {
                 String inlinedFieldName = createCachedInlinedFieldName(specialization, cache, field);
-                if (specialization != null && useSpecializationClass(specialization) && cache.getSharedGroup() == null) {
+                if (specialization != null && useSpecializationClass(specialization) && canCacheBeStoredInSpecializationClass(specialization, cache)) {
                     CodeTypeElement specializationDataClass = specializationClasses.get(specialization);
                     CodeTreeBuilder helper = b.create();
 
@@ -1207,8 +1177,8 @@ public class FlatNodeGenFactory {
      * initializing it in the generated Inlined class constructor.
      */
     private boolean needsInlineTarget(SpecializationData specialization, CacheExpression cache) {
-        if (cache.getSharedGroup() != null) {
-            // shared cache -> never in data class
+        if (!canCacheBeStoredInSpecializationClass(specialization, cache)) {
+            // never in data class
             return true;
         }
         for (InlineFieldData field : cache.getInlinedNode().getFields()) {
@@ -1225,12 +1195,7 @@ public class FlatNodeGenFactory {
     }
 
     private String createLocalCachedInlinedName(SpecializationData specialization, CacheExpression cache) {
-        String sharedName = sharedCaches.get(cache);
-        if (sharedName != null && specialization != null && hasCacheParentAccess(cache)) {
-            return specialization.getId().toLowerCase() + "_" + sharedName + "_";
-        } else {
-            return createFieldName(specialization, cache);
-        }
+        return createFieldName(specialization, cache);
     }
 
     private String createCachedInlinedFieldName(SpecializationData specialization, CacheExpression cache, InlineFieldData field) {
@@ -1774,7 +1739,7 @@ public class FlatNodeGenFactory {
                     continue;
                 }
                 expressions.add(fieldName);
-                createCachedFieldsImpl(nodeElements, nodeElements, null, null, cache, true);
+                createCachedFieldsImpl(nodeElements, nodeElements, null, null, cache);
             }
         }
 
@@ -1785,11 +1750,11 @@ public class FlatNodeGenFactory {
             List<Element> specializationClassElements = useSpecializationClass ? new ArrayList<>() : nodeElements;
             for (CacheExpression cache : specialization.getCaches()) {
                 boolean shared = sharedCaches.containsKey(cache);
-                if (shared && !hasCacheParentAccess(cache)) {
+                if (shared) {
                     continue;
                 }
                 createCachedFieldsImpl(nodeElements, specializationClassElements,
-                                specialization, specializationState, cache, !shared);
+                                specialization, specializationState, cache);
             }
 
             for (AssumptionExpression assumption : specialization.getAssumptionExpressions()) {
@@ -1857,6 +1822,12 @@ public class FlatNodeGenFactory {
         if (specialization.hasMultipleInstances()) {
             return true;
         } else if (specialization.isGuardBindsExclusiveCache()) {
+            return true;
+        } else if (useSpecializationClass(specialization) && hasExclusiveWeakReferenceCache(specialization)) {
+            /*
+             * Duplication checking reuses a live referent and counts a collected referent towards
+             * the single-instance limit.
+             */
             return true;
         }
         return false;
@@ -2044,8 +2015,7 @@ public class FlatNodeGenFactory {
                     List<Element> specializationClassElements,
                     SpecializationData specialization,
                     MultiStateBitSet specializationState,
-                    CacheExpression cache,
-                    boolean generateInlinedFields) {
+                    CacheExpression cache) {
         if (cache.isAlwaysInitialized()) {
             return;
         } else if (cache.isEncodedEnum()) {
@@ -2053,12 +2023,6 @@ public class FlatNodeGenFactory {
         }
         CacheExpression sharedCache = lookupSharedCacheKey(cache);
         InlinedNodeData inline = sharedCache.getInlinedNode();
-        /*
-         * Handles corner case where we try to avoid generating shared cached fields if we are
-         * always using parent access cache for a shared cache.
-         */
-        boolean generateCachedFields = specialization != null || !hasCacheParentAccess(cache) || hasSharedCacheDirectAccess(lookupSharedCacheKey(cache));
-
         if (inline != null) {
             Parameter parameter = cache.getParameter();
             String fieldName = createStaticInlinedCacheName(specialization, cache);
@@ -2073,17 +2037,14 @@ public class FlatNodeGenFactory {
             for (InlineFieldData field : inline.getFields()) {
                 builder.startGroup();
                 if (field.isState()) {
-                    if (generateCachedFields) {
-                        BitSet specializationBitSet = findInlinedState(specializationState, field);
-                        CodeVariableElement updaterField = createStateUpdaterField(specialization, specializationState, field, specializationClassElements);
-                        BitRange range = specializationBitSet.getStates().queryRange(StateQuery.create(InlinedNodeState.class, field));
-                        String updaterFieldName = updaterField.getName();
-                        builder.startCall(updaterFieldName, "subUpdater");
-                        builder.string(String.valueOf(range.offset));
-                        builder.string(String.valueOf(range.length));
-                        builder.end();
-
-                    }
+                    BitSet specializationBitSet = findInlinedState(specializationState, field);
+                    CodeVariableElement updaterField = createStateUpdaterField(specialization, specializationState, field, specializationClassElements);
+                    BitRange range = specializationBitSet.getStates().queryRange(StateQuery.create(InlinedNodeState.class, field));
+                    String updaterFieldName = updaterField.getName();
+                    builder.startCall(updaterFieldName, "subUpdater");
+                    builder.string(String.valueOf(range.offset));
+                    builder.string(String.valueOf(range.length));
+                    builder.end();
                 } else {
                     /*
                      * All other fields need fields to get inlined. We do not support specialization
@@ -2093,36 +2054,34 @@ public class FlatNodeGenFactory {
 
                     TypeMirror type = field.getType();
 
-                    if (generateInlinedFields) {
-                        CodeVariableElement inlinedCacheField;
-                        if (isAssignable(type, types().Node)) {
-                            inlinedCacheField = createNodeField(Modifier.PRIVATE, types.Node, inlinedFieldName, types().Node_Child);
-                        } else if (isAssignable(type, types().NodeInterface)) {
-                            inlinedCacheField = createNodeField(Modifier.PRIVATE, types.NodeInterface, inlinedFieldName, types().Node_Child);
-                        } else if (isNodeArray(type)) {
-                            inlinedCacheField = createNodeField(Modifier.PRIVATE, new ArrayCodeTypeMirror(types.Node), inlinedFieldName, types().Node_Children);
-                        } else {
-                            inlinedCacheField = createNodeField(Modifier.PRIVATE, type, inlinedFieldName, null);
-                            addCompilationFinalAnnotation(inlinedCacheField, field.getDimensions());
-                        }
-                        if (specialization != null && useSpecializationClass(specialization) && canCacheBeStoredInSpecialializationClass(cache)) {
-                            specializationClassElements.add(inlinedCacheField);
-                        } else {
-                            nodeElements.add(inlinedCacheField);
-                        }
-                        GeneratorUtils.markUnsafeAccessed(inlinedCacheField);
-
-                        CodeTreeBuilder javadoc = inlinedCacheField.createDocBuilder();
-                        javadoc.startJavadoc();
-                        addSourceDoc(javadoc, specialization, cache, field);
-                        javadoc.end();
-
-                        // never directly used, so will produce a warning.
-                        GeneratorUtils.mergeSuppressWarnings(inlinedCacheField, "unused");
+                    CodeVariableElement inlinedCacheField;
+                    if (isAssignable(type, types().Node)) {
+                        inlinedCacheField = createNodeField(Modifier.PRIVATE, type, inlinedFieldName, types().Node_Child);
+                    } else if (isAssignable(type, types().NodeInterface)) {
+                        inlinedCacheField = createNodeField(Modifier.PRIVATE, type, inlinedFieldName, types().Node_Child);
+                    } else if (isNodeArray(type)) {
+                        inlinedCacheField = createNodeField(Modifier.PRIVATE, type, inlinedFieldName, types().Node_Children);
+                    } else {
+                        inlinedCacheField = createNodeField(Modifier.PRIVATE, type, inlinedFieldName, null);
+                        addCompilationFinalAnnotation(inlinedCacheField, field.getDimensions());
                     }
+                    if (specialization != null && useSpecializationClass(specialization) && canCacheBeStoredInSpecializationClass(specialization, cache)) {
+                        specializationClassElements.add(inlinedCacheField);
+                    } else {
+                        nodeElements.add(inlinedCacheField);
+                    }
+                    GeneratorUtils.markUnsafeAccessed(inlinedCacheField);
+
+                    CodeTreeBuilder javadoc = inlinedCacheField.createDocBuilder();
+                    javadoc.startJavadoc();
+                    addSourceDoc(javadoc, specialization, cache, field);
+                    javadoc.end();
+
+                    // never directly used, so will produce a warning.
+                    GeneratorUtils.mergeSuppressWarnings(inlinedCacheField, "unused");
 
                     builder.startStaticCall(field.getFieldType(), "create");
-                    if (specialization != null && useSpecializationClass(specialization) && canCacheBeStoredInSpecialializationClass(cache)) {
+                    if (specialization != null && useSpecializationClass(specialization) && canCacheBeStoredInSpecializationClass(specialization, cache)) {
                         builder.tree(createLookupNodeType(createSpecializationClassReferenceType(specialization), specializationClassElements));
                     } else {
                         builder.startStaticCall(context.getType(MethodHandles.class), "lookup").end();
@@ -2147,9 +2106,7 @@ public class FlatNodeGenFactory {
             addSourceDoc(javadoc, specialization, cache, null);
             javadoc.end();
 
-            if (generateCachedFields) {
-                nodeConstants.updaterReferences.putIfAbsent(fieldName, cachedField);
-            }
+            nodeConstants.updaterReferences.putIfAbsent(fieldName, cachedField);
         } else {
             Parameter parameter = cache.getParameter();
             String fieldName = createFieldName(specialization, cache);
@@ -2325,7 +2282,7 @@ public class FlatNodeGenFactory {
                  */
                 return true;
             }
-            if (!canCacheBeStoredInSpecialializationClass(cache)) {
+            if (!canCacheBeStoredInSpecializationClass(specialization, cache)) {
                 continue;
             }
             TypeMirror type = cache.getParameter().getType();
@@ -2626,13 +2583,10 @@ public class FlatNodeGenFactory {
         return compatible;
     }
 
-    public CodeExecutableElement createExecuteMethod(CodeTypeElement clazz, CodeExecutableElement baseMethod,
+    public CodeExecutableElement emitExecuteMethod(CodeTypeElement clazz, CodeExecutableElement baseMethod,
                     List<SpecializationData> specializations, boolean skipStateChecks) {
-        final List<SpecializationData> allSpecializations = specializations;
         int signatureSize = node.getPolymorphicExecutable().getSignatureParameters().size();
         ExecutableTypeData type = new ExecutableTypeData(node, baseMethod, signatureSize, List.of(node.getFrameType()), false, true);
-
-        List<SpecializationData> implementedSpecializations = allSpecializations;
         CodeExecutableElement method = createExecuteMethod(type);
         method.addAnnotationMirror(new CodeAnnotationMirror(types.HostCompilerDirectives_InliningRoot));
         FrameState frameState = FrameState.load(this, type, Integer.MAX_VALUE, NodeExecutionMode.FAST_PATH, method);
@@ -2643,9 +2597,33 @@ public class FlatNodeGenFactory {
         }
         clazz.add(method);
         CodeTreeBuilder builder = method.createBuilder();
-        SpecializationGroup group = SpecializationGroup.create(implementedSpecializations);
+        SpecializationGroup group = SpecializationGroup.create(specializations);
         frameState.setSkipStateChecks(skipStateChecks);
-        builder.tree(createFastPath(builder, implementedSpecializations, group, type, frameState));
+        builder.tree(createFastPath(builder, specializations, group, type, frameState));
+
+        if (!group.hasFallthrough() && skipStateChecks) {
+            boolean removeUnexpectedResult = true;
+            for (SpecializationData specialization : specializations) {
+                SpecializationData overload = specialization.lookupBoxingOverload(type);
+                if (overload != null && overload.hasUnexpectedResultRewrite()) {
+                    removeUnexpectedResult = false;
+                    break;
+                }
+                if (specialization.hasUnexpectedResultRewrite()) {
+                    removeUnexpectedResult = false;
+                    break;
+                }
+                if (!specialization.getExceptions().isEmpty()) {
+                    removeUnexpectedResult = false;
+                    break;
+                }
+            }
+
+            if (removeUnexpectedResult) {
+                removeThrownException(method, types.UnexpectedResultException);
+            }
+        }
+
         return method;
     }
 
@@ -2704,6 +2682,12 @@ public class FlatNodeGenFactory {
             parameterTypes.add(parameter.getType());
         }
         ExecutableTypeData forType = new ExecutableTypeData(node, returnType, "uncached", null, parameterTypes);
+        return createUncachedExecute(forType);
+    }
+
+    public CodeExecutableElement createUncachedExecute(CodeExecutableElement baseMethod) {
+        int signatureSize = node.getPolymorphicExecutable().getSignatureParameters().size();
+        ExecutableTypeData forType = new ExecutableTypeData(node, baseMethod, signatureSize, List.of(node.getFrameType()), false, true);
         return createUncachedExecute(forType);
     }
 
@@ -3573,7 +3557,7 @@ public class FlatNodeGenFactory {
                     builder.declaration(sType, localName, CodeTreeBuilder.createBuilder().defaultValue(sType).build());
 
                     CodeTreeBuilder accessBuilder = builder.create();
-                    accessBuilder.startParantheses();
+                    accessBuilder.startParentheses();
 
                     CodeTree containsOnly = multiState.createContainsOnly(frameState, originalSourceTypes.indexOf(sType), 1,
                                     StateQuery.create(ImplicitCastState.class, typeGuard),
@@ -3619,7 +3603,7 @@ public class FlatNodeGenFactory {
             return null;
         }
         NodeExecutionData currentExecution = node.getChildExecutions().get(guard.getSignatureIndex());
-        if (plugs.canBoxingEliminateType(currentExecution, guard.getType())) {
+        if (plugs.canEliminateTypeGuard(currentExecution, guard.getType())) {
             return guard;
         }
         return null;
@@ -4081,18 +4065,22 @@ public class FlatNodeGenFactory {
             executable.addParameter(arg);
         }
 
-        DeclaredType unexpectedResult = types.UnexpectedResultException;
+        removeThrownException(executable, types.UnexpectedResultException);
+
+        if (needsUnexpectedResultException(executedType)) {
+            executable.getThrownTypes().add(types.UnexpectedResultException);
+        }
+
+        return executable;
+    }
+
+    private static void removeThrownException(CodeExecutableElement executable, DeclaredType unexpectedResult) {
         Iterator<TypeMirror> thrownTypes = executable.getThrownTypes().iterator();
         while (thrownTypes.hasNext()) {
             if (typeEquals(unexpectedResult, thrownTypes.next())) {
                 thrownTypes.remove();
             }
         }
-        if (needsUnexpectedResultException(executedType)) {
-            executable.getThrownTypes().add(unexpectedResult);
-        }
-
-        return executable;
     }
 
     private void renameOriginalParameters(ExecutableTypeData executedType, CodeExecutableElement executable, FrameState frameState) {
@@ -4585,7 +4573,7 @@ public class FlatNodeGenFactory {
             if (useSpecializationClass) {
                 outer: for (GuardExpression guard : specialization.getGuards()) {
                     for (CacheExpression cache : specialization.getBoundCaches(guard.getExpression(), true)) {
-                        if (canCacheBeStoredInSpecialializationClass(cache)) {
+                        if (canCacheBeStoredInSpecializationClass(specialization, cache)) {
                             cachedTriples.add(new IfTriple(loadSpecializationClass(frameState, specialization, false), null, null));
                             break outer;
                         }
@@ -5024,16 +5012,6 @@ public class FlatNodeGenFactory {
                 setCacheInitialized(frameState, specialization, cache, true);
             }
 
-            // need to ensure that we update the implicit cast specializations on duplicates
-            if (updateImplicitCast != null) {
-                builder.startElseBlock();
-                stateTransaction = new StateTransaction();
-                builder.tree(createUpdateImplicitCastState(builder, frameState, stateTransaction, specialization));
-                builder.tree(multiState.createSet(frameState, stateTransaction, StateQuery.create(SpecializationActive.class, specialization), true, false));
-                builder.tree(multiState.persistTransaction(innerFrameState, stateTransaction));
-                builder.end();
-            }
-
             builder.startIf();
             if (useDuplicateFlag) {
                 builder.string(duplicateFoundName);
@@ -5041,6 +5019,36 @@ public class FlatNodeGenFactory {
                 builder.string(createSpecializationLocalName(specialization), " != null");
             }
             builder.end().startBlock();
+
+            /*
+             * Specialization data is published separately from the node state. A racy state write
+             * can erase activation after publication. Previously, generated duplicate reuse was:
+             *
+             * if (s0_ != null) {
+             *     return doCached(...);
+             * }
+             *
+             * Restore the activation state before reuse, generating:
+             *
+             * if (s0_ != null) {
+             *     int state_0_previous = state_0;
+             *     state_0 |= SPECIALIZATION_ACTIVE;
+             *     if (state_0_previous != state_0) {
+             *         persist(state_0);
+             *     }
+             *     return doCached(...);
+             * }
+             *
+             * Implicit-cast state updates use the same conditional transaction.
+             */
+            stateTransaction = new StateTransaction();
+            CodeTreeBuilder stateUpdates = builder.create();
+            CodeTree duplicateImplicitCastUpdate = createUpdateImplicitCastState(stateUpdates, frameState, stateTransaction, specialization);
+            if (duplicateImplicitCastUpdate != null) {
+                stateUpdates.tree(duplicateImplicitCastUpdate);
+            }
+            stateUpdates.tree(multiState.createSet(frameState, stateTransaction, StateQuery.create(SpecializationActive.class, specialization), true, false));
+            builder.tree(multiState.persistTransactionIfChanged(frameState, stateTransaction, stateUpdates.build()));
 
             builder.tree(createCallSpecialization(builder, frameState, executeAndSpecializeType, specialization));
             builder.end();
@@ -5067,20 +5075,24 @@ public class FlatNodeGenFactory {
 
     private static void validateDuplicateFlagUsage(SpecializationData specialization) throws AssertionError {
         for (CacheExpression cache : specialization.getCaches()) {
-            if (usesExclusiveInstanceField(cache)) {
-                throw new AssertionError("Using duplicate flag with cached reference fields is not thread-safe. " + specialization + ": " + cache);
+            if (usesSeparateCacheFieldInDuplicateCheck(cache)) {
+                throw new AssertionError("Using duplicate flag with a separately stored cached field is not thread-safe. " + specialization + ": " + cache);
             }
         }
     }
 
-    static boolean usesExclusiveInstanceField(CacheExpression cache) {
+    /*
+     * Returns whether duplicate detection checks cache initialization through a field that is
+     * stored separately from the specialization-active state. Always and eagerly initialized
+     * caches require no such check. Encoded enums are stored in the active-state bit set, and
+     * inlined caches manage their own state.
+     */
+    static boolean usesSeparateCacheFieldInDuplicateCheck(CacheExpression cache) {
         if (cache.isAlwaysInitialized()) {
             return false;
         } else if (cache.isEagerInitialize()) {
             return false;
         } else if (cache.isEncodedEnum()) {
-            return false;
-        } else if (cache.getSharedGroup() != null) {
             return false;
         } else if (cache.getInlinedNode() != null) {
             return false;
@@ -5974,9 +5986,13 @@ public class FlatNodeGenFactory {
             if (useSpecializationClass) {
                 method.addParameter(new CodeVariableElement(specializationType, specializationLocalName));
             }
+            for (VariableElement arg : plugs.additionalArguments()) {
+                method.addParameter(arg);
+            }
             CodeTreeBuilder builder = method.createBuilder();
             if (!useSpecializationClass || !specialization.hasMultipleInstances()) {
                 // single instance remove
+                builder.tree(multiState.createForceLoad(frameState, StateQuery.create(SpecializationActive.class, specialization)));
                 builder.tree((multiState.createSet(frameState, null, StateQuery.create(SpecializationActive.class, specialization), false, true)));
                 plugs.notifySpecialize(this, builder, frameState, specialization);
                 if (useSpecializationClass) {
@@ -6001,7 +6017,7 @@ public class FlatNodeGenFactory {
                 builder.statement("update = cur.next_");
                 builder.end().startElseBlock();
                 if (specializedIsNode) {
-                    builder.statement("update = original.remove(this, ", specializationLocalName, ")");
+                    builder.startStatement().string("update = original.remove(").tree(createNodeAccess(frameState)).string(", ").string(specializationLocalName).string(")").end();
                 } else {
                     builder.statement("update = original.remove(", specializationLocalName, ")");
                 }
@@ -6043,6 +6059,9 @@ public class FlatNodeGenFactory {
         }
         if (useSpecializationClass) {
             builder.string(specializationLocalName);
+        }
+        for (VariableElement arg : plugs.additionalArguments()) {
+            builder.variable(arg);
         }
         builder.end().end();
         builder.tree(createCallExecuteAndSpecialize(builder, forType, frameState));
@@ -6219,14 +6238,14 @@ public class FlatNodeGenFactory {
             triples.addAll(initializeCasts(innerFrameState, group, guard.getExpression(), mode));
             IfTriple.materialize(builder, triples, true);
 
-            builder.startStatement();
-            builder.tree(stateRef.reference).string(" = ");
-            builder.tree(stateRef.bitSet.createSetExpression(stateRef.reference, query, true));
-            builder.end();
-
-            innerTriples.addAll(persistSpecializationClass(innerFrameState, group.getSpecialization(), false));
-
             if (useSpecializationClass(specialization)) {
+                builder.startStatement();
+                builder.tree(stateRef.reference).string(" = ");
+                builder.tree(stateRef.bitSet.createSetExpression(stateRef.reference, query, true));
+                builder.end();
+
+                innerTriples.addAll(persistSpecializationClass(innerFrameState, group.getSpecialization(), false));
+
                 CodeTreeBuilder b;
                 if (needsDuplicationCheck(specialization)) {
                     b = builder.create();
@@ -6262,6 +6281,12 @@ public class FlatNodeGenFactory {
                 b.end();
 
                 innerTriples.add(new IfTriple(null, null, b.build()));
+            } else {
+                /*
+                 * Node-level guard state is not published with a specialization class. Persist it
+                 * before evaluating the guard so every subsequent slow-path exit can use it.
+                 */
+                builder.tree(stateRef.bitSet.createSet(innerFrameState, query, true, true));
             }
 
             IfTriple.materialize(builder, innerTriples, true);
@@ -6634,6 +6659,16 @@ public class FlatNodeGenFactory {
             b.tree(createCacheAccess(frameState, specialization, cache, null));
 
             useValue = b.build();
+        } else if (mode.isSlowPath() && cache.isWeakReference() && isExclusiveWeakReferenceCache(specialization, cache) && !needsDuplicationCheck(specialization)) {
+            /*
+             * A non-null weak-reference field represents a consumed single-instance cache slot,
+             * even after its referent was collected. Reuse the wrapper so the synthetic get()
+             * cache can reject a collected referent instead of initializing a new slot.
+             */
+            builder.declaration(type, refName, createCacheAccess(frameState, specialization, cache, null));
+            builder.startIf().string(refName).string(" == null").end().startBlock();
+            builder.startStatement().string(refName, " = ").tree(useValue).end();
+            builder.end();
         } else if (cache.isAlwaysInitialized() && frameState.getMode().isSlowPath()) {
             builder.startStatement().string(refName, " = ").tree(useValue).end();
         } else {
@@ -6645,6 +6680,24 @@ public class FlatNodeGenFactory {
         List<IfTriple> triples = new ArrayList<>();
         triples.add(new IfTriple(builder.build(), null, null));
         return triples;
+    }
+
+    private static boolean hasExclusiveWeakReferenceCache(SpecializationData specialization) {
+        for (CacheExpression cache : specialization.getCaches()) {
+            if (cache.isWeakReference() && isExclusiveWeakReferenceCache(specialization, cache)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isExclusiveWeakReferenceCache(SpecializationData specialization, CacheExpression weakReferenceCache) {
+        for (CacheExpression cache : specialization.getCaches()) {
+            if (cache.isWeakReferenceGet() && specialization.getBoundCaches(cache.getDefaultExpression(), true).contains(weakReferenceCache)) {
+                return cache.getSharedGroup() == null && cache.getDisabledSharingGroup() == null;
+            }
+        }
+        throw new AssertionError("Weak-reference get cache not found for " + weakReferenceCache);
     }
 
     private static boolean cacheNeedsSpecializationClass(FrameState frameState, SpecializationData specialization, CacheExpression cache) {
@@ -6912,7 +6965,7 @@ public class FlatNodeGenFactory {
                 targetType = variable.getResolvedType();
             }
             if (!isAssignable(sourceType, targetType)) {
-                resolved = CodeTreeBuilder.createBuilder().startParantheses().cast(targetType, resolved).end().build();
+                resolved = CodeTreeBuilder.createBuilder().startParentheses().cast(targetType, resolved).end().build();
             }
             resolvedBindings.put(variable, resolved);
         }
@@ -7002,18 +7055,16 @@ public class FlatNodeGenFactory {
         if (!specializationClassIsNode(specialization)) {
             return false;
         }
-        if (useParentInlinedAccess(specialization)) {
-            // we always need to pass the target node if that happens.
-            return true;
-        } else if (hasSharedInlinedCache(specialization)) {
+        if (hasSharedInlinedCache(specialization)) {
             return false;
         }
         if (specialization.hasMultipleInstances()) {
             return true;
         }
 
+        // inlined node stored in a specialization data class
         for (CacheExpression cache : specialization.getCaches()) {
-            if (cache.getSharedGroup() == null && cache.getInlinedNode() != null) {
+            if (cache.getInlinedNode() != null && canCacheBeStoredInSpecializationClass(specialization, cache)) {
                 return true;
             }
         }
@@ -7021,14 +7072,12 @@ public class FlatNodeGenFactory {
     }
 
     private static boolean hasSharedInlinedCache(SpecializationData specialization) {
-        boolean hasSharedInlined = false;
         for (CacheExpression cache : specialization.getCaches()) {
-            if (cache.getInlinedNode() != null && !canCacheBeStoredInSpecialializationClass(cache) && cache.getSharedGroup() != null) {
-                hasSharedInlined = true;
-                break;
+            if (cache.getInlinedNode() != null && !canCacheBeStoredInSpecializationClass(specialization, cache) && cache.getSharedGroup() != null) {
+                return true;
             }
         }
-        return hasSharedInlined;
+        return false;
     }
 
     private CodeTree createSpecializationFieldAccess(FrameState frameState, SpecializationData specialization, boolean useSpecializationClass, boolean useSpecializationClassLocal, String fieldName,
@@ -7366,10 +7415,12 @@ public class FlatNodeGenFactory {
 
         NodeExecutionData execution = node.getChildExecutions().get(signatureIndex);
         CodeTreeBuilder castBuilder = prepareBuilder.create();
+        TypeMirror sourceType = value.getTypeMirror();
 
-        List<ImplicitCastData> sourceTypes = typeSystem.lookupByTargetType(targetType);
+        List<ImplicitCastData> implicitCasts = typeSystem.lookupByTargetType(targetType);
+        List<TypeMirror> sourceTypes = List.copyOf(typeSystem.lookupSourceTypes(targetType));
         CodeTree valueReference = value.createReference();
-        if (sourceTypes.isEmpty()) {
+        if (implicitCasts.isEmpty()) {
             checkBuilder.tree(TypeSystemCodeGenerator.check(typeSystem, targetType, valueReference));
             castBuilder.tree(TypeSystemCodeGenerator.cast(typeSystem, targetType, valueReference));
         } else {
@@ -7380,21 +7431,62 @@ public class FlatNodeGenFactory {
             }
 
             if (specializationExecution.isFastPath() || specializationExecution.isGuardFallback() || specializationExecution.isUncached()) {
+                ImplicitCastData singleCast = null;
+                for (ImplicitCastData cast : implicitCasts) {
+                    if (ElementUtils.typeEquals(cast.getSourceType(), sourceType)) {
+                        if (singleCast != null) {
+                            throw new AssertionError("A concrete type must directly select an implicit cast.");
+                        }
+                        singleCast = cast;
+                    }
+                }
                 CodeTree implicitState;
                 if (specializationExecution.isGuardFallback() || specializationExecution.isUncached()) {
                     implicitState = null;
                 } else {
-                    implicitState = multiState.createExtractInteger(frameState, StateQuery.create(ImplicitCastState.class, typeGuard));
+                    StateQuery query = StateQuery.create(ImplicitCastState.class, typeGuard);
+                    BitSet set = multiState.findSet(query);
+                    /*
+                     * There is a special case within the bytecode dsl where it is expected that the
+                     * state is not loaded for quickened variants. This indicates that the state
+                     * does not need to be checked in such a case.
+                     */
+                    if (set.isLoaded(frameState)) {
+                        implicitState = multiState.createExtractInteger(frameState, StateQuery.create(ImplicitCastState.class, typeGuard));
+                    } else {
+                        implicitState = null;
+                    }
                 }
-                checkBuilder.tree(TypeSystemCodeGenerator.implicitCheckFlat(typeSystem, targetType, valueReference, implicitState));
-                castBuilder.tree(TypeSystemCodeGenerator.implicitCastFlat(typeSystem, targetType, valueReference, implicitState));
+
+                if (singleCast != null || ElementUtils.typeEquals(sourceType, targetType)) {
+
+                    /*
+                     * Depending on the source type the target type implicit cast can be known. We
+                     * can then directly invoke it without a check.
+                     */
+                    if (implicitState != null) {
+                        int castIndex = sourceTypes.indexOf(sourceType);
+                        checkBuilder.string("((").tree(implicitState).string(") & 0b" + Integer.toBinaryString(1 << castIndex) + ") != 0");
+                    }
+
+                    if (singleCast != null) {
+                        castBuilder.startStaticCall(singleCast.getMethod());
+                        castBuilder.tree(valueReference);
+                        castBuilder.end();
+                    } else {
+                        castBuilder.tree(valueReference);
+                    }
+                } else {
+                    checkBuilder.tree(TypeSystemCodeGenerator.implicitCheckFlat(typeSystem, targetType, valueReference, implicitState));
+                    castBuilder.tree(TypeSystemCodeGenerator.implicitCastFlat(typeSystem, targetType, valueReference, implicitState));
+                }
             } else {
                 Parameter parameter = parameters.get(0);
                 String implicitStateName = createImplicitTypeStateLocalName(parameter);
                 CodeTree defaultValue = null;
                 prepareBuilder.declaration(context.getType(int.class), implicitStateName, defaultValue);
                 CodeTree specializeCall = TypeSystemCodeGenerator.implicitSpecializeFlat(typeSystem, targetType, valueReference);
-                checkBuilder.startParantheses();
+                checkBuilder.startParentheses();
                 checkBuilder.string(implicitStateName, " = ").tree(specializeCall);
                 checkBuilder.end();
                 checkBuilder.string(" != 0");

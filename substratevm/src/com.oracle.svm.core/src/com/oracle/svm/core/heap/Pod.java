@@ -37,25 +37,25 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.Hybrid;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Disallowed;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.ImageHeapMap;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.guest.staging.util.ImageHeapMap;
+import com.oracle.svm.shared.util.UnsignedUtils;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.BarrieredAccess;
+import org.graalvm.word.impl.BarrieredAccess;
 import jdk.vm.ci.meta.JavaKind;
 
 /**
@@ -174,7 +174,7 @@ public final class Pod<T> {
             }
 
             JavaKind kind = JavaKind.fromJavaClass(type);
-            int size = ConfigurationValues.getObjectLayout().sizeInBytes(kind);
+            int size = ObjectLayout.singleton().sizeInBytes(kind);
             Field f = new Field(size, kind.isObject());
             fields.add(f);
             return f;
@@ -284,7 +284,7 @@ public final class Pod<T> {
         }
     }
 
-    @SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Disallowed.class)
+    @SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
     public static final class RuntimeSupport {
         @Fold
         public static boolean isPresent() {
@@ -355,7 +355,7 @@ public final class Pod<T> {
 
     private static final class ReferenceMapEncoder {
         private final BitSet bitset = new BitSet();
-        private final int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        private final int referenceSize = ObjectLayout.singleton().getReferenceSize();
 
         ReferenceMapEncoder(byte[] referenceMap) {
             if (referenceMap != null) {

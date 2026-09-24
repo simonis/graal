@@ -24,28 +24,21 @@
  */
 package com.oracle.svm.driver;
 
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 
-import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.OptionUtils;
+import com.oracle.svm.core.imagelayer.LayeredImageOptions;
 import com.oracle.svm.driver.NativeImage.ArgumentQueue;
 import com.oracle.svm.hosted.driver.IncludeOptionsSupport;
 import com.oracle.svm.hosted.driver.IncludeOptionsSupport.ExtendedOption;
 import com.oracle.svm.hosted.driver.LayerOptionsSupport.LayerOption;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.OptionUtils;
+import com.oracle.svm.shared.util.LogUtils;
 
 class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
-
-    private static final String requireValidJarFileMessage = "-jar requires a valid jarfile";
-    private static final String newStyleClasspathOptionName = "--class-path";
-
     static final String addModulesOption = "--add-modules";
     static final String limitModulesOption = "--limit-modules";
+    static final String sunMiscUnsafeMemoryAccessOption = "--sun-misc-unsafe-memory-access=";
     private static final String moduleSetModifierOptionErrorMessage = " requires modules to be specified";
 
     static final String ADD_ENV_VAR_OPTION = "-E";
@@ -60,26 +53,12 @@ class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
     @Override
     public boolean consume(ArgumentQueue args) {
         String headArg = args.peek();
+        DriverPathOptions.Match pathOption = DriverPathOptions.matchDefault(args);
+        if (pathOption != null) {
+            pathOption.consume(nativeImage);
+            return true;
+        }
         switch (headArg) {
-            case "-cp":
-            case "-classpath":
-            case newStyleClasspathOptionName:
-                args.poll();
-                String cpArgs = args.poll();
-                if (cpArgs == null) {
-                    NativeImage.showError(headArg + " requires class path specification");
-                }
-                processClasspathArgs(cpArgs);
-                return true;
-            case "-p":
-            case "--module-path":
-                args.poll();
-                String mpArgs = args.poll();
-                if (mpArgs == null) {
-                    NativeImage.showError(headArg + " requires module path specification");
-                }
-                processModulePathArgs(mpArgs);
-                return true;
             case "-m":
             case "--module":
                 args.poll();
@@ -92,7 +71,7 @@ class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
                     nativeImage.addPlainImageBuilderArg(nativeImage.oHClass + mainClassModuleArgParts[1], OptionOrigin.originDriver);
                 }
                 nativeImage.addPlainImageBuilderArg(nativeImage.oHModule + mainClassModuleArgParts[0], OptionOrigin.originDriver);
-                nativeImage.setModuleOptionMode(true);
+                nativeImage.enableModuleOption();
                 return true;
             case addModulesOption:
                 args.poll();
@@ -109,15 +88,6 @@ class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
                     NativeImage.showError(headArg + moduleSetModifierOptionErrorMessage);
                 }
                 nativeImage.addLimitedModules(limitModulesArgs);
-                return true;
-            case "-jar":
-                args.poll();
-                String jarFilePathStr = args.poll();
-                if (jarFilePathStr == null) {
-                    NativeImage.showError(requireValidJarFileMessage);
-                }
-                handleJarFileArg(nativeImage.canonicalize(Paths.get(jarFilePathStr)));
-                nativeImage.setJarOptionMode(true);
                 return true;
             case "--diagnostics-mode":
                 args.poll();
@@ -136,19 +106,10 @@ class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
                 return true;
         }
 
-        String singleArgClasspathPrefix = newStyleClasspathOptionName + "=";
-        if (headArg.startsWith(singleArgClasspathPrefix)) {
-            String cpArgs = args.poll().substring(singleArgClasspathPrefix.length());
-            if (cpArgs.isEmpty()) {
-                NativeImage.showError(headArg + " requires class path specification");
-            }
-            processClasspathArgs(cpArgs);
-            return true;
-        }
         if (headArg.startsWith(nativeImage.oHLayerCreate)) {
             String rawLayerCreateValue = headArg.substring(nativeImage.oHLayerCreate.length());
             if (!rawLayerCreateValue.isEmpty()) {
-                List<String> layerCreateValue = OptionUtils.resolveOptionValuesRedirection(SubstrateOptions.LayerCreate, rawLayerCreateValue, OptionOrigin.from(args.argumentOrigin));
+                List<String> layerCreateValue = OptionUtils.resolveOptionValuesRedirection(LayeredImageOptions.LayerCreate, rawLayerCreateValue, OptionOrigin.from(args.argumentOrigin));
                 LayerOption layerOption = LayerOption.parse(layerCreateValue);
                 for (ExtendedOption option : layerOption.extendedOptions()) {
                     var packageOptionValue = IncludeOptionsSupport.PackageOptionValue.from(option);
@@ -233,43 +194,10 @@ class DefaultOptionHandler extends NativeImage.OptionHandler<NativeImage> {
             nativeImage.addLimitedModules(limitModulesArgs);
             return true;
         }
+        if (headArg.startsWith(sunMiscUnsafeMemoryAccessOption)) {
+            nativeImage.addCustomJavaArgs(args.poll());
+            return true;
+        }
         return false;
-    }
-
-    private void processClasspathArgs(String cpArgs) {
-        for (String cp : cpArgs.split(File.pathSeparator, Integer.MAX_VALUE)) {
-            /* Conform to `java` command empty cp entry handling. */
-            String cpEntry = cp.isEmpty() ? "." : cp;
-            nativeImage.addCustomImageClasspath(cpEntry);
-        }
-    }
-
-    private void processModulePathArgs(String mpArgs) {
-        for (String mpEntry : mpArgs.split(File.pathSeparator, Integer.MAX_VALUE)) {
-            nativeImage.addImageModulePath(Paths.get(mpEntry), false, true);
-        }
-    }
-
-    private void handleJarFileArg(Path jarFilePath) {
-        if (Files.isDirectory(jarFilePath)) {
-            NativeImage.showError(jarFilePath + " is a directory. (" + requireValidJarFileMessage + ")");
-        }
-        String jarFileName = jarFilePath.getFileName().toString();
-        String jarSuffix = ".jar";
-        String jarFileNameBase;
-        if (jarFileName.endsWith(jarSuffix)) {
-            jarFileNameBase = jarFileName.substring(0, jarFileName.length() - jarSuffix.length());
-        } else {
-            jarFileNameBase = jarFileName;
-        }
-        if (!jarFileNameBase.isEmpty()) {
-            String origin = "manifest from " + jarFilePath.toUri();
-            nativeImage.addPlainImageBuilderArg(nativeImage.oHName + jarFileNameBase, origin, false);
-        }
-        Path finalFilePath = nativeImage.useBundle() ? nativeImage.bundleSupport.substituteClassPath(jarFilePath) : jarFilePath;
-        if (!NativeImage.processJarManifestMainAttributes(finalFilePath, nativeImage::handleManifestFileAttributes)) {
-            NativeImage.showError("No manifest in " + finalFilePath);
-        }
-        nativeImage.addCustomImageClasspath(finalFilePath);
     }
 }

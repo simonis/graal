@@ -267,6 +267,7 @@ import com.oracle.truffle.espresso.classfile.descriptors.Type;
 import com.oracle.truffle.espresso.classfile.descriptors.TypeSymbols;
 import com.oracle.truffle.espresso.classfile.descriptors.Validation;
 import com.oracle.truffle.espresso.classfile.descriptors.ValidationException;
+import com.oracle.truffle.espresso.shared.lookup.LookupSuccessInvocationFailure;
 import com.oracle.truffle.espresso.shared.meta.FieldAccess;
 import com.oracle.truffle.espresso.shared.meta.KnownTypes;
 import com.oracle.truffle.espresso.shared.meta.MemberAccess;
@@ -1980,9 +1981,10 @@ final class MethodVerifier<R extends RuntimeAccess<C, M, F>, C extends TypeAcces
         int methodIndex = code.readCPI(bci);
         validateMethodRefIndex(methodIndex);
 
+        boolean isInterfaceMethodTarget = pool.tagAt(methodIndex) == INTERFACE_METHOD_REF;
         // Checks versioning
         if (version51OrEarlier()) {
-            verifyGuarantee(pool.tagAt(methodIndex) != INTERFACE_METHOD_REF, "invokeSpecial refers to an interface method with classfile version " + majorVersion);
+            verifyGuarantee(!isInterfaceMethodTarget, "invokeSpecial refers to an interface method with classfile version " + majorVersion);
         }
         Symbol<Name> calledMethodName = pool.methodName(methodIndex);
 
@@ -2026,7 +2028,7 @@ final class MethodVerifier<R extends RuntimeAccess<C, M, F>, C extends TypeAcces
 
             checkProtectedMember(stackOp, methodHolder, methodIndex, true);
         } else {
-            verifyGuarantee(checkMethodSpecialAccess(methodHolderOp), "invokespecial must specify a method in this class or a super class");
+            checkMethodSpecialAccess(methodHolderOp, isInterfaceMethodTarget);
             Operand<R, C, M, F> stackOp = checkInit(stack.popRef(methodHolderOp));
             /*
              * 4.10.1.9.invokespecial:
@@ -2161,19 +2163,50 @@ final class MethodVerifier<R extends RuntimeAccess<C, M, F>, C extends TypeAcces
         return stackOp.compliesWith(thisOperand, this) || isMagicAccessor() || checkReceiverHostAccess(stackOp);
     }
 
+    private void checkMethodSpecialAccess(Operand<R, C, M, F> methodHolder, boolean isInterfaceMethodTarget) {
+        if (isMagicAccessor() || checkHostAccess(methodHolder)) {
+            return;
+        }
+
+        // Note: These two shortcuts taken from HotSpot will actually let through "interface methods"
+        // that refer to this concrete class or its super type. This will get caught at runtime
+        // later, during resolution with an IncompatibleClassChangeError.
+
+        if (thisOperand.getType() == methodHolder.getType()) {
+            // Same klass as holder -> trivial success
+            return;
+        }
+        if (thisKlass.getSuperClass().getSymbolicType() == methodHolder.getType()) {
+            // Direct superclass -> success.
+            return;
+        }
+
+        // Note: This check always passes for interface methods, as interfaces are erased to
+        // Object.
+        if (!thisOperand.compliesWith(methodHolder, this)) {
+            throw failVerify("Bad invokespecial instruction: current class isn't assignable to reference class.");
+        }
+
+        if (isInterfaceMethodTarget) {
+            // Holder must be in the direct superinterfaces.
+            for (C intf : thisKlass.getSuperInterfacesList()) {
+                if (intf.getSymbolicType() == methodHolder.getType()) {
+                    return;
+                }
+            }
+            throw failVerify("Bad invokespecial instruction: interface method to invoke is not in a direct superinterface.");
+        }
+    }
+
+    private boolean isMagicAccessor() {
+        return thisKlass.isMagicAccessor();
+    }
+
     private boolean checkReceiverHostAccess(Operand<R, C, M, F> stackOp) {
         if (thisKlass.getHostType() != null) {
             return thisKlass.getHostType().isAssignableFrom(stackOp.getKlass(this));
         }
         return false;
-    }
-
-    private boolean checkMethodSpecialAccess(Operand<R, C, M, F> methodHolder) {
-        return thisOperand.compliesWith(methodHolder, this) || isMagicAccessor() || checkHostAccess(methodHolder);
-    }
-
-    private boolean isMagicAccessor() {
-        return thisKlass.isMagicAccessor();
     }
 
     /**
@@ -2188,7 +2221,6 @@ final class MethodVerifier<R extends RuntimeAccess<C, M, F>, C extends TypeAcces
     }
 
     // Helper methods
-
     private void checkProtectedMember(Operand<R, C, M, F> stackOp, Symbol<Type> holderType, int memberIndex, boolean method) {
         /*
          * 4.10.1.8.
@@ -2214,7 +2246,12 @@ final class MethodVerifier<R extends RuntimeAccess<C, M, F>, C extends TypeAcces
                     /* Non-failing method lookup. */
                     Symbol<Name> name = pool.methodName(memberIndex);
                     Symbol<Signature> methodSignature = pool.methodSignature(memberIndex);
-                    member = holderOp.getKlass(this).lookupMethod(name, methodSignature);
+                    try {
+                        member = holderOp.getKlass(this).lookupMethod(name, methodSignature);
+                    } catch (LookupSuccessInvocationFailure e) {
+                        // We are not planning to invoke, so we can safely ignore that hint.
+                        member = e.<M> getResult();
+                    }
                 } else {
                     /* Non-failing field lookup. */
                     Symbol<Name> fieldName = pool.fieldName(memberIndex);

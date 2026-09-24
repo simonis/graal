@@ -85,6 +85,7 @@ final class LanguageAccessor extends Accessor {
     static final RuntimeSupport RUNTIME = ACCESSOR.runtimeSupport();
     static final ExceptionSupport EXCEPTIONS = ACCESSOR.exceptionSupport();
     static final HostSupport HOST = ACCESSOR.hostSupport();
+    static final PolyglotIsolateSupport ISOLATE = ACCESSOR.polyglotIsolateSupport();
 
     private LanguageAccessor() {
     }
@@ -133,6 +134,16 @@ final class LanguageAccessor extends Accessor {
         @Override
         public Throwable getOrCreateLazyStackTrace(Throwable t) {
             return TruffleStackTrace.getOrCreateLazyStackTrace(t);
+        }
+
+        @Override
+        public boolean isEmptyStackTrace(Throwable t) {
+            if (t instanceof TruffleStackTrace.LazyStackTrace lazyStackTrace) {
+                return lazyStackTrace.getInternalStackTrace() == TruffleStackTrace.EMPTY;
+            } else {
+                throw new IllegalArgumentException(t);
+            }
+
         }
 
         @Override
@@ -201,7 +212,7 @@ final class LanguageAccessor extends Accessor {
             } else {
                 Object result = env.getSpi().getLanguageView(c, value);
                 if (result == null) {
-                    return LanguageAccessor.engineAccess().getDefaultLanguageView(env.spi, value);
+                    return LanguageAccessor.engineAccess().getDefaultLanguageView(env.polyglotLanguageContext, value);
                 } else {
                     return result;
                 }
@@ -588,8 +599,8 @@ final class LanguageAccessor extends Accessor {
         }
 
         @Override
-        public InternalResource.Env createInternalResourceEnv(InternalResource resource, BooleanSupplier contextPreinitializationCheck) {
-            return new InternalResource.Env(resource, contextPreinitializationCheck);
+        public InternalResource.Env createInternalResourceEnv(InternalResource resource, BooleanSupplier contextPreinitializationCheck, boolean forNativeImageBuild) {
+            return new InternalResource.Env(resource, contextPreinitializationCheck, forNativeImageBuild);
         }
     }
 

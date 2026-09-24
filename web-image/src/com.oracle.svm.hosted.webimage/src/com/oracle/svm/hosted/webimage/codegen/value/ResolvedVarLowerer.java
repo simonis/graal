@@ -26,9 +26,9 @@ package com.oracle.svm.hosted.webimage.codegen.value;
 
 import org.graalvm.collections.EconomicSet;
 
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.webimage.JSCodeBuffer;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
+import com.oracle.svm.shared.option.HostedOptionValues;
 import com.oracle.svm.webimage.hightiercodegen.CodeGenTool;
 import com.oracle.svm.webimage.hightiercodegen.variables.ResolvedVar;
 
@@ -46,7 +46,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 public class ResolvedVarLowerer {
 
     public static void lower(ResolvedVar var, CodeGenTool codeGenTool) {
-        if (WebImageOptions.GenerateSourceMap.getValue(HostedOptionValues.singleton())) {
+        if (WebImageOptions.GenerateSourceMap.getValue(HostedOptionValues.singleton().get())) {
             ((JSCodeBuffer) codeGenTool.getCodeBuffer()).markSymbol(getVarName(var.getOrig(), ((ValueNode) var.getOrig()).graph().method(), var.getName()));
         }
         codeGenTool.genResolvedVarAccess(var.getName());

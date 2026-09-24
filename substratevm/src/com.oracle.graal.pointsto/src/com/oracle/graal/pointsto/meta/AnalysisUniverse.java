@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,8 +37,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.hosted.Feature.DuringAnalysisAccess;
-import org.graalvm.nativeimage.impl.AnnotationExtractor;
 import org.graalvm.word.WordBase;
 
 import com.oracle.graal.pointsto.AnalysisPolicy;
@@ -48,11 +48,11 @@ import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.api.ImageLayerLoader;
 import com.oracle.graal.pointsto.api.ImageLayerWriter;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
+import com.oracle.graal.pointsto.constraints.UnsupportedPlatformException;
 import com.oracle.graal.pointsto.heap.HeapSnapshotVerifier;
 import com.oracle.graal.pointsto.heap.HostedValuesProvider;
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.infrastructure.ResolvedSignature;
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
 import com.oracle.graal.pointsto.infrastructure.Universe;
@@ -61,6 +61,7 @@ import com.oracle.graal.pointsto.infrastructure.WrappedJavaType;
 import com.oracle.graal.pointsto.meta.AnalysisElement.MethodOverrideReachableNotification;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.ConcurrentLightHashSet;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
@@ -79,6 +80,9 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 
+/**
+ * See javadoc for {@code HostedUniverse}.
+ */
 public class AnalysisUniverse implements Universe {
 
     protected final HostVM hostVM;
@@ -105,8 +109,8 @@ public class AnalysisUniverse implements Universe {
 
     protected final SubstitutionProcessor substitutions;
 
-    private Function<Object, Object>[] objectReplacers;
-    private Function<Object, ImageHeapConstant>[] objectToConstantReplacers;
+    private Function<JavaConstant, JavaConstant>[] objectReplacers;
+    private Function<JavaConstant, ImageHeapConstant>[] objectToConstantSnapshotReplacers;
     private Consumer<AnalysisType>[] onTypeCreatedCallbacks;
 
     private SubstitutionProcessor[] featureSubstitutions;
@@ -114,8 +118,6 @@ public class AnalysisUniverse implements Universe {
 
     private final MetaAccessProvider originalMetaAccess;
     private final AnalysisFactory analysisFactory;
-    private final AnnotationExtractor annotationExtractor;
-
     private final AtomicInteger numReachableTypes = new AtomicInteger();
 
     private AnalysisType objectClass;
@@ -137,18 +139,17 @@ public class AnalysisUniverse implements Universe {
 
     @SuppressWarnings("unchecked")
     public AnalysisUniverse(HostVM hostVM, JavaKind wordKind, AnalysisPolicy analysisPolicy, SubstitutionProcessor substitutions, MetaAccessProvider originalMetaAccess,
-                    AnalysisFactory analysisFactory, AnnotationExtractor annotationExtractor) {
+                    AnalysisFactory analysisFactory) {
         this.hostVM = hostVM;
         this.wordKind = wordKind;
         this.analysisPolicy = analysisPolicy;
         this.substitutions = substitutions;
         this.originalMetaAccess = originalMetaAccess;
         this.analysisFactory = analysisFactory;
-        this.annotationExtractor = annotationExtractor;
 
         sealed = false;
-        objectReplacers = (Function<Object, Object>[]) new Function<?, ?>[0];
-        objectToConstantReplacers = (Function<Object, ImageHeapConstant>[]) new Function<?, ?>[0];
+        objectReplacers = (Function<JavaConstant, JavaConstant>[]) new Function<?, ?>[0];
+        objectToConstantSnapshotReplacers = (Function<JavaConstant, ImageHeapConstant>[]) new Function<?, ?>[0];
         onTypeCreatedCallbacks = (Consumer<AnalysisType>[]) new Consumer<?>[0];
         featureSubstitutions = new SubstitutionProcessor[0];
         featureNativeSubstitutions = new SubstitutionProcessor[0];
@@ -158,10 +159,6 @@ public class AnalysisUniverse implements Universe {
     @Override
     public HostVM hostVM() {
         return hostVM;
-    }
-
-    protected AnnotationExtractor getAnnotationExtractor() {
-        return annotationExtractor;
     }
 
     public int getNextTypeId() {
@@ -219,7 +216,7 @@ public class AnalysisUniverse implements Universe {
         AnalysisType result = optionalLookup(type);
         if (result == null) {
             result = createType(type);
-            if (hostVM.buildingExtensionLayer() && result.isInBaseLayer()) {
+            if (hostVM.buildingExtensionLayer() && result.isInSharedLayer()) {
                 imageLayerLoader.initializeBaseLayerType(result);
             }
         }
@@ -230,7 +227,7 @@ public class AnalysisUniverse implements Universe {
     @SuppressFBWarnings(value = {"ES_COMPARING_STRINGS_WITH_EQ"}, justification = "Bug in findbugs")
     private AnalysisType createType(ResolvedJavaType type) {
         if (!hostVM.platformSupported(type)) {
-            throw new UnsupportedFeatureException("Type is not available in this platform: " + type.toJavaName(true));
+            throw new UnsupportedPlatformException("Type is not available in this platform: " + type.toJavaName(true));
         }
         if (sealed && !type.isArray()) {
             /*
@@ -263,7 +260,7 @@ public class AnalysisUniverse implements Universe {
                     if (result == null) {
                         /*
                          * The other thread gave up, probably because of an exception. Re-try to
-                         * create the type ourself. Probably we are going to fail and throw an
+                         * create the type our self. Probably we are going to fail and throw an
                          * exception too, but that is OK.
                          */
                         continue retry;
@@ -379,21 +376,21 @@ public class AnalysisUniverse implements Universe {
 
     private AnalysisField createField(ResolvedJavaField field) {
         if (!hostVM.platformSupported(field)) {
-            throw new UnsupportedFeatureException("Field is not available in this platform: " + field.format("%H.%n"));
+            throw new UnsupportedPlatformException("Field is not available in this platform: " + field.format("%H.%n"));
         }
         if (sealed) {
             return null;
         }
         AnalysisField newValue = analysisFactory.createField(this, field);
         AnalysisField result = fields.computeIfAbsent(field, f -> {
-            if (newValue.isInBaseLayer()) {
+            if (newValue.isInSharedLayer()) {
                 getImageLayerLoader().addBaseLayerField(newValue);
             }
             return newValue;
         });
 
         if (result.equals(newValue)) {
-            if (newValue.isInBaseLayer()) {
+            if (newValue.isInSharedLayer()) {
                 getImageLayerLoader().initializeBaseLayerField(newValue);
             }
         }
@@ -418,12 +415,11 @@ public class AnalysisUniverse implements Universe {
         if (rawMethod == null) {
             return null;
         }
-        if (!(rawMethod instanceof ResolvedJavaMethod)) {
+        if (!(rawMethod instanceof ResolvedJavaMethod method)) {
             return rawMethod;
         }
         assert !(rawMethod instanceof AnalysisMethod) : rawMethod;
 
-        ResolvedJavaMethod method = (ResolvedJavaMethod) rawMethod;
         method = substitutions.lookup(method);
         AnalysisMethod result = methods.get(method);
         if (result == null) {
@@ -434,14 +430,14 @@ public class AnalysisUniverse implements Universe {
 
     private AnalysisMethod createMethod(ResolvedJavaMethod method) {
         if (!hostVM.platformSupported(method)) {
-            throw new UnsupportedFeatureException("Method " + method.format("%H.%n(%p)" + " is not available in this platform."));
+            throw new UnsupportedPlatformException("Method " + method.format("%H.%n(%p)" + " is not available in this platform."));
         }
         if (sealed) {
             return null;
         }
         AnalysisMethod newValue = analysisFactory.createMethod(this, method);
         AnalysisMethod result = methods.computeIfAbsent(method, m -> {
-            if (newValue.isInBaseLayer()) {
+            if (newValue.isInSharedLayer()) {
                 getImageLayerLoader().addBaseLayerMethod(newValue);
             }
             return newValue;
@@ -470,11 +466,34 @@ public class AnalysisUniverse implements Universe {
         }
     }
 
+    public AnalysisType[] lookup(ResolvedJavaType[] inputs) {
+        List<AnalysisType> result = new ArrayList<>(inputs.length);
+        for (ResolvedJavaType type : inputs) {
+            if (hostVM.platformSupported(type)) {
+                AnalysisType aType = null;
+                try {
+                    aType = lookup(type);
+                } catch (UnsupportedFeatureException ignored) {
+                    /* Unsupported elements should not prevent querying other members of the type */
+                }
+                if (aType != null) {
+                    result.add(aType);
+                }
+            }
+        }
+        return result.toArray(AnalysisType.EMPTY_ARRAY);
+    }
+
     public AnalysisMethod[] lookup(JavaMethod[] inputs) {
         List<AnalysisMethod> result = new ArrayList<>(inputs.length);
         for (JavaMethod method : inputs) {
             if (hostVM.platformSupported((ResolvedJavaMethod) method)) {
-                AnalysisMethod aMethod = lookup(method);
+                AnalysisMethod aMethod = null;
+                try {
+                    aMethod = lookup(method);
+                } catch (UnsupportedFeatureException ignored) {
+                    /* Unsupported elements should not prevent querying other members of the type */
+                }
                 if (aMethod != null) {
                     result.add(aMethod);
                 }
@@ -618,16 +637,16 @@ public class AnalysisUniverse implements Universe {
         return unsafeAccessedStaticFields.keySet();
     }
 
-    public void registerObjectReplacer(Function<Object, Object> replacer) {
+    public void registerObjectReplacer(Function<JavaConstant, JavaConstant> replacer) {
         assert replacer != null;
         objectReplacers = Arrays.copyOf(objectReplacers, objectReplacers.length + 1);
         objectReplacers[objectReplacers.length - 1] = replacer;
     }
 
-    public void registerObjectToConstantReplacer(Function<Object, ImageHeapConstant> replacer) {
+    public void registerObjectToConstantReplacer(Function<JavaConstant, ImageHeapConstant> replacer) {
         assert replacer != null;
-        objectToConstantReplacers = Arrays.copyOf(objectToConstantReplacers, objectToConstantReplacers.length + 1);
-        objectToConstantReplacers[objectToConstantReplacers.length - 1] = replacer;
+        objectToConstantSnapshotReplacers = Arrays.copyOf(objectToConstantSnapshotReplacers, objectToConstantSnapshotReplacers.length + 1);
+        objectToConstantSnapshotReplacers[objectToConstantSnapshotReplacers.length - 1] = replacer;
     }
 
     public void registerOnTypeCreatedCallback(Consumer<AnalysisType> consumer) {
@@ -659,60 +678,60 @@ public class AnalysisUniverse implements Universe {
         return featureNativeSubstitutions;
     }
 
-    public Object replaceObject(Object source) {
-        return replaceObject0(source, false);
-    }
-
-    public JavaConstant replaceObjectWithConstant(Object source) {
-        return replaceObjectWithConstant(source, getHostedValuesProvider()::forObject);
-    }
-
-    public JavaConstant replaceObjectWithConstant(Object source, Function<Object, JavaConstant> converter) {
-        assert !(source instanceof ImageHeapConstant) : source;
-
-        var replacedObject = replaceObject0(source, true);
-        if (replacedObject instanceof ImageHeapConstant constant) {
-            return constant;
-        }
-
-        return converter.apply(replacedObject);
+    /**
+     * Applies all registered ordinary and object-to-constant replacers to {@code source}.
+     *
+     * @return the replaced constant, or {@code source} if no replacer changes it
+     */
+    public JavaConstant replaceConstantWithAllReplacers(JavaConstant source) {
+        return replaceConstant(source, true);
     }
 
     /**
-     * Invokes all registered object replacers and "object to constant" replacers for an object.>
+     * Applies all registered ordinary replacers to {@code source}. Object-to-constant replacers are
+     * also evaluated, but a matching one triggers an error because this method only supports an
+     * ordinary constant result.
      *
-     * <p>
-     * The "object to constant" replacer is allowed to successfully complete only when
-     * {@code allowObjectToConstantReplacement} is true. When
-     * {@code allowObjectToConstantReplacement} is false, if any "object to constant" replacer is
-     * triggered we throw an error.
-     *
-     * @param source The source object
-     * @param allowObjectToConstantReplacement whether object to constant replacement is supported
-     * @return The replaced object or the original source, if the source is not replaced by any
-     *         registered replacer.
+     * @return the replaced constant, or {@code source} if no replacer changes it
      */
-    private Object replaceObject0(Object source, boolean allowObjectToConstantReplacement) {
-        if (source == null) {
-            return null;
+    public JavaConstant replaceConstantWithOrdinaryReplacers(JavaConstant source) {
+        return replaceConstant(source, false);
+    }
+
+    /**
+     * Applies registered object replacers to {@code source}. Replacers that do not support a
+     * provider-specific constant leave it unchanged. Ordinary results are canonicalized by the
+     * hosted-values provider. The result is either the final ordinary constant or the
+     * {@link ImageHeapConstant} returned by an object-to-constant replacer.
+     */
+    private JavaConstant replaceConstant(JavaConstant source, boolean allowObjectToConstantReplacement) {
+        assert !(source instanceof ImageHeapConstant) : "ImageHeapConstants were already processed and must not reach object replacement again: " + source;
+        if (source == null || source.getJavaKind() != JavaKind.Object || source.isNull()) {
+            return source;
         }
 
-        Object destination = source;
-        for (Function<Object, Object> replacer : objectReplacers) {
-            destination = replacer.apply(destination);
+        JavaConstant destination = source;
+        for (Function<JavaConstant, JavaConstant> replacer : objectReplacers) {
+            destination = Objects.requireNonNull(replacer.apply(destination));
+            assert destination.getJavaKind() == JavaKind.Object : destination;
         }
 
-        ImageHeapConstant ihc = null;
-        for (Function<Object, ImageHeapConstant> replacer : objectToConstantReplacers) {
-            var result = replacer.apply(destination);
+        ImageHeapConstant imageHeapConstant = null;
+        for (Function<JavaConstant, ImageHeapConstant> replacer : objectToConstantSnapshotReplacers) {
+            ImageHeapConstant result = replacer.apply(destination);
             if (result != null) {
                 AnalysisError.guarantee(allowObjectToConstantReplacement, "Object to constant replacement has been triggered from an unsupported location");
-                AnalysisError.guarantee(ihc == null, "Multiple object to constant replacers have been trigger on a single object %s %s %s", destination, ihc, result);
-                ihc = result;
+                AnalysisError.guarantee(imageHeapConstant == null, "Multiple object to constant replacers have been triggered on a single object %s %s %s", destination, imageHeapConstant, result);
+                imageHeapConstant = result;
             }
         }
 
-        return ihc == null ? destination : ihc;
+        if (imageHeapConstant != null) {
+            return imageHeapConstant;
+        }
+        JavaConstant canonicalResult = Objects.requireNonNull(getHostedValuesProvider().canonicalizeReplacedConstant(destination));
+        AnalysisError.guarantee(!(canonicalResult instanceof ImageHeapConstant), "Ordinary object replacers must not produce an ImageHeapConstant: %s", canonicalResult);
+        return canonicalResult;
     }
 
     public void notifyBigBangInitialized() {
@@ -776,8 +795,8 @@ public class AnalysisUniverse implements Universe {
      * Since the sub-types are updated continuously as the universe is expanded this method may
      * return different results on each call, until the analysis universe reaches a stable state.
      */
-    public static Set<AnalysisType> reachableSubtypes(AnalysisType baseType) {
-        Set<AnalysisType> result = baseType.getAllSubtypes();
+    public static EconomicSet<AnalysisType> reachableSubtypes(AnalysisType baseType) {
+        EconomicSet<AnalysisType> result = baseType.getAllSubtypes();
         result.removeIf(t -> !t.isReachable());
         return result;
     }

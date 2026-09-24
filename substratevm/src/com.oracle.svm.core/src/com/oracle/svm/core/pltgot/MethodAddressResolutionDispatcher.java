@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.pltgot;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.thread.JavaSpinLockUtils;
 
 import jdk.internal.misc.Unsafe;
@@ -49,7 +49,7 @@ public class MethodAddressResolutionDispatcher {
             JavaSpinLockUtils.unlock(dispatcher, LOCK_OFFSET);
         }
 
-        long resolvedMethodAddress = PLTGOTConfiguration.singleton().getMethodAddressResolver().resolveMethodWithGotEntry(gotEntry);
+        long resolvedMethodAddress = PLTGOTConfiguration.singleton().getMethodAddressResolver().resolveMethodWithGOTEntry(gotEntry);
 
         try {
             JavaSpinLockUtils.lockNoTransition(dispatcher, LOCK_OFFSET);

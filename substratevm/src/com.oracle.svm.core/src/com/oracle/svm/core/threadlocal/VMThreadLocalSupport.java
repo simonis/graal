@@ -30,19 +30,20 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 
-import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.BuildPhaseProvider.ReadyForCompilation;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.heap.InstanceReferenceMapDecoder;
 import com.oracle.svm.core.heap.InstanceReferenceMapDecoder.InstanceReferenceMap;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
-import com.oracle.svm.core.heap.UnknownObjectField;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
-import com.oracle.svm.core.traits.SingletonTraits;
+import com.oracle.svm.guest.staging.core.heap.UnknownObjectField;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
@@ -59,6 +60,19 @@ public class VMThreadLocalSupport {
     @Fold
     public static VMThreadLocalSupport singleton() {
         return ImageSingletons.lookup(VMThreadLocalSupport.class);
+    }
+
+    @AlwaysInline("Must be reduced to a constant")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public int sizeOfIsolateThread() {
+        /* At the moment, the IsolateThread only contains the thread-locals. */
+        return sizeOfThreadLocals();
+    }
+
+    @AlwaysInline("Must be reduced to a constant")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public int sizeOfThreadLocals() {
+        return vmThreadSize;
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)

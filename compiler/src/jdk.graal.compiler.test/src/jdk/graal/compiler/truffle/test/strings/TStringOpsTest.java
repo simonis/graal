@@ -77,7 +77,7 @@ public abstract class TStringOpsTest<T extends Node> extends TStringTest {
         return Unsafe.ARRAY_INT_BASE_OFFSET;
     }
 
-    private static long getBufferAddress(ByteBuffer buffer) {
+    protected static long getBufferAddress(ByteBuffer buffer) {
         return UNSAFE.getLong(buffer, byteBufferAddressOffset);
     }
 
@@ -169,14 +169,14 @@ public abstract class TStringOpsTest<T extends Node> extends TStringTest {
                         byte[].class, long.class, int.class);
     }
 
-    protected ResolvedJavaMethod getMemcmpWithStrideIntl() {
-        return getTStringOpsMethod("memcmpWithStrideIntl",
+    protected ResolvedJavaMethod getMemcmpWithStride() {
+        return getTStringOpsMethod("memcmpWithStride",
                         byte[].class, long.class, int.class,
                         byte[].class, long.class, int.class, int.class);
     }
 
-    protected ResolvedJavaMethod getRegionEqualsWithOrMaskWithStrideIntl() {
-        return getTStringOpsMethod("regionEqualsWithOrMaskWithStrideIntl",
+    protected ResolvedJavaMethod getRegionEqualsWithOrMaskWithStride() {
+        return getTStringOpsMethod("regionEqualsWithOrMaskWithStride",
                         byte[].class, long.class, int.class, int.class, int.class,
                         byte[].class, long.class, int.class, int.class, int.class, byte[].class, int.class);
     }
@@ -201,14 +201,54 @@ public abstract class TStringOpsTest<T extends Node> extends TStringTest {
                         byte[].class, long.class, int.class, int.class, int.class, int[].class);
     }
 
+    protected ResolvedJavaMethod getIndexOfAnyIntRangeForeignEndianIntl() {
+        return getTStringOpsMethod("indexOfAnyIntRangeForeignEndianIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, int[].class);
+    }
+
     protected ResolvedJavaMethod getIndexOfTableIntl() {
         return getTStringOpsMethod("indexOfTableIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOfTableForeignEndianIntl() {
+        return getTStringOpsMethod("indexOfTableForeignEndianIntl",
                         byte[].class, long.class, int.class, int.class, int.class, byte[].class);
     }
 
     protected ResolvedJavaMethod getIndexOf2ConsecutiveWithStrideIntl() {
         return getTStringOpsMethod("indexOf2ConsecutiveWithStrideIntl",
                         byte[].class, long.class, int.class, int.class, int.class, int.class, int.class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf2ConsecutiveTablesIntl() {
+        return getTStringOpsMethod("indexOf2ConsecutiveTablesIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf2ConsecutiveTablesForeignEndianIntl() {
+        return getTStringOpsMethod("indexOf2ConsecutiveTablesForeignEndianIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf3ConsecutiveTablesIntl() {
+        return getTStringOpsMethod("indexOf3ConsecutiveTablesIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf3ConsecutiveTablesForeignEndianIntl() {
+        return getTStringOpsMethod("indexOf3ConsecutiveTablesForeignEndianIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf4ConsecutiveTablesIntl() {
+        return getTStringOpsMethod("indexOf4ConsecutiveTablesIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
+    }
+
+    protected ResolvedJavaMethod getIndexOf4ConsecutiveTablesForeignEndianIntl() {
+        return getTStringOpsMethod("indexOf4ConsecutiveTablesForeignEndianIntl",
+                        byte[].class, long.class, int.class, int.class, int.class, byte[].class);
     }
 
     protected InstalledCode cacheInstalledCodeConstantStride(ResolvedJavaMethod installedCodeOwner, StructuredGraph graph, OptionValues options, ResolvedJavaMethod expectedMethod,

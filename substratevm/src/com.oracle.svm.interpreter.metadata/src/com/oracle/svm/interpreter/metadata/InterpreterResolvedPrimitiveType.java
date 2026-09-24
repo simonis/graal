@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,10 @@
 package com.oracle.svm.interpreter.metadata;
 
 import java.lang.reflect.Modifier;
+import java.util.Collections;
 import java.util.List;
 
+import com.oracle.svm.core.hub.crema.CremaResolvedJavaRecordComponent;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
 import com.oracle.svm.espresso.classfile.ConstantPool;
 import com.oracle.svm.espresso.classfile.descriptors.ByteSequence;
@@ -37,13 +39,35 @@ import com.oracle.svm.espresso.classfile.descriptors.Signature;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
 
+import jdk.vm.ci.meta.Assumptions;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
+import jdk.vm.ci.common.JVMCIError;
 import jdk.vm.ci.meta.ResolvedJavaField;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+/**
+ * The interpreter's representation of primitive types. Reference types are represented by
+ * {@link InterpreterResolvedObjectType}.
+ */
 public final class InterpreterResolvedPrimitiveType extends InterpreterResolvedJavaType {
     private final JavaKind kind;
+
+    @Override
+    public ResolvedJavaType getSingleImplementor() {
+        throw new JVMCIError("Cannot call getSingleImplementor() on a non-interface type: %s", this);
+    }
+
+    @Override
+    public Assumptions.AssumptionResult<ResolvedJavaType> findLeafConcreteSubtype() {
+        return new Assumptions.AssumptionResult<>(this);
+    }
+
+    @Override
+    public Assumptions.AssumptionResult<ResolvedJavaMethod> findUniqueConcreteMethod(ResolvedJavaMethod method) {
+        return null;
+    }
 
     private InterpreterResolvedPrimitiveType(Symbol<Type> type, JavaKind kind) {
         super(type, kind.toJavaClass());
@@ -106,6 +130,11 @@ public final class InterpreterResolvedPrimitiveType extends InterpreterResolvedJ
     }
 
     @Override
+    public List<? extends CremaResolvedJavaRecordComponent> getRecordComponents() {
+        return null;
+    }
+
+    @Override
     public JavaKind getJavaKind() {
         return kind;
     }
@@ -121,8 +150,13 @@ public final class InterpreterResolvedPrimitiveType extends InterpreterResolvedJ
     }
 
     @Override
-    public ResolvedJavaType[] getInterfaces() {
-        return new ResolvedJavaType[0];
+    public InterpreterResolvedJavaType[] getInterfaces() {
+        return InterpreterResolvedJavaType.EMPTY_ARRAY;
+    }
+
+    @Override
+    public List<InterpreterResolvedJavaType> getSuperInterfacesList() {
+        return Collections.emptyList();
     }
 
     @Override
@@ -133,6 +167,21 @@ public final class InterpreterResolvedPrimitiveType extends InterpreterResolvedJ
     @Override
     public InterpreterResolvedJavaMethod[] getDeclaredMethods(boolean link) {
         return InterpreterResolvedJavaMethod.EMPTY_ARRAY;
+    }
+
+    @Override
+    public InterpreterResolvedJavaMethod[] getDeclaredConstructors(boolean forceLink) {
+        return InterpreterResolvedJavaMethod.EMPTY_ARRAY;
+    }
+
+    @Override
+    public List<InterpreterResolvedJavaMethod> getDeclaredMethodsList() {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<InterpreterResolvedJavaMethod> getImplicitInterfaceMethodsList() {
+        return null;
     }
 
     @Override
@@ -195,6 +244,11 @@ public final class InterpreterResolvedPrimitiveType extends InterpreterResolvedJ
 
     @Override
     public InterpreterResolvedJavaMethod lookupInterfaceMethod(Symbol<Name> name, Symbol<Signature> signature) {
+        return null;
+    }
+
+    @Override
+    public InterpreterResolvedJavaMethod lookupDeclaredSignaturePolymorphicMethod(Symbol<Name> name) {
         return null;
     }
 

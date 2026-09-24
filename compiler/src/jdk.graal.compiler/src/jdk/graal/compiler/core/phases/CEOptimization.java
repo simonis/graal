@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,10 @@
 package jdk.graal.compiler.core.phases;
 
 import jdk.graal.compiler.core.common.GraalOptions;
+import jdk.graal.compiler.duplication.phases.PullThroughPhiPhase;
+import jdk.graal.compiler.duplication.phases.simulation.DuplicationPhase;
 import jdk.graal.compiler.graph.Node.ValueNumberable;
+import jdk.graal.compiler.guards.optimistic.memory.OptimisticAliasingAnalysisPhase;
 import jdk.graal.compiler.loop.phases.ConvertDeoptimizeToGuardPhase;
 import jdk.graal.compiler.loop.phases.LoopFullUnrollPhase;
 import jdk.graal.compiler.loop.phases.LoopPartialUnrollPhase;
@@ -47,11 +50,30 @@ import jdk.graal.compiler.phases.common.ConditionalEliminationPhase;
 import jdk.graal.compiler.phases.common.DeadCodeEliminationPhase;
 import jdk.graal.compiler.phases.common.DeoptimizationGroupingPhase;
 import jdk.graal.compiler.phases.common.FloatingReadPhase;
+import jdk.graal.compiler.phases.common.LateLockEliminationPhase;
 import jdk.graal.compiler.phases.common.LockEliminationPhase;
+import jdk.graal.compiler.phases.common.OptimizeDivPhase;
 import jdk.graal.compiler.phases.common.ReassociationPhase;
 import jdk.graal.compiler.phases.common.UseTrappingNullChecksPhase;
 import jdk.graal.compiler.phases.common.inlining.InliningPhase;
+import jdk.graal.compiler.phases.common.priorityinline.PriorityInliningPhase;
+import jdk.graal.compiler.phases.constantblinding.ConstantBlindingPhase;
+import jdk.graal.compiler.phases.constantblinding.ConstantBlindingPhase.Options;
 import jdk.graal.compiler.phases.schedule.SchedulePhase;
+import jdk.graal.compiler.vector.nodes.SimplifiableVectorNode;
+import jdk.graal.compiler.vector.nodes.SimplifiableVectorNode.VectorSimplifier;
+import jdk.graal.compiler.vector.nodes.consumer.VectorConsumer;
+import jdk.graal.compiler.vector.phases.ConditionalMoveOptimizationPhase;
+import jdk.graal.compiler.vector.phases.LoopVectorizationPhase;
+import jdk.graal.compiler.vector.phases.NodeVectorizationPhase;
+import jdk.graal.compiler.vector.phases.OptimizeAddressesInLoopsPhase;
+import jdk.graal.compiler.vector.phases.RemoveEmptyLoopsPhase;
+import jdk.graal.compiler.vector.phases.SimdifyVectorPhase;
+import jdk.graal.compiler.vector.phases.VectorConsumerPhase;
+import jdk.graal.compiler.vector.phases.VectorLoweringPhase;
+import jdk.graal.compiler.vector.phases.VectorMaterializationPhase;
+import jdk.graal.compiler.vector.phases.VectorSimplificationPhase;
+import jdk.graal.compiler.vector.replacements.VectorIntrinsics;
 import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIExpansionPhase;
 import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIIntrinsics;
 import jdk.graal.compiler.virtual.phases.ea.PartialEscapePhase;
@@ -81,12 +103,27 @@ public enum CEOptimization {
      */
     Canonicalization(null, CanonicalizerPhase.class),
 
-    /**
-     * {@link InliningPhase} is Graal CE's implementation of a traditional inlining algorithm.
-     *
-     * This phase is enabled by default and can be disabled with {@link HighTier.Options#Inline}.
-     */
+    /// [PriorityInliningPhase] explores the call tree in priority order and is the default
+    /// inlining algorithm.
+    PriorityInlining(PriorityInliningPhase.Options.UsePriorityInlining, PriorityInliningPhase.class),
+
+    /// [InliningPhase] is a less aggressive inlining algorithm used when priority
+    /// inlining is disabled. Inlining as a whole can be disabled with [HighTier.Options#Inline].
     Inlining(HighTier.Options.Inline, InliningPhase.class),
+
+    /// [PullThroughPhiPhase] heuristically duplicates floating operations at control flow merges.
+    /// The duplicated operations can then be specialized based on the types and values of the
+    /// preceding branches.
+    ///
+    /// This phase is enabled by default and can be disabled with
+    /// [PullThroughPhiPhase.Options#OptPullThroughPhi].
+    PullThroughPhi(PullThroughPhiPhase.Options.OptPullThroughPhi, PullThroughPhiPhase.class),
+
+    /// [DuplicationPhase] uses simulation to evaluate the optimization effects of tail
+    /// duplication while balancing the expected performance benefit against the code size cost.
+    ///
+    /// This phase is enabled by default and can be disabled with [GraalOptions#OptDuplication].
+    Duplication(GraalOptions.OptDuplication, DuplicationPhase.class),
 
     /**
      * {@link DeadCodeEliminationPhase} tries to remove unused (i.e., "dead") code from a program.
@@ -150,9 +187,9 @@ public enum CEOptimization {
     FloatingReads(GraalOptions.OptFloatingReads, FloatingReadPhase.class),
 
     /**
-     * {@link ReadEliminationPhase} tries to remove redundant memory access operations (e.g.,
-     * successive reads of the same Java field are redundant). Its uses a control-flow sensitive
-     * analysis.
+     * {@link ReadEliminationPhase} removes redundant memory access operations using a control-flow
+     * sensitive analysis. In addition to field reads, it handles indexed array accesses, reads from
+     * initialized arrays, and array clone operations.
      *
      * This phase is enabled by default and can be disabled with
      * {@link GraalOptions#OptReadElimination}.
@@ -178,16 +215,25 @@ public enum CEOptimization {
     PartialEscapeAnalysis(GraalOptions.PartialEscapeAnalysis, PartialEscapePhase.class),
 
     /**
-     * {@link LockEliminationPhase} tries to reduce Java monitor enter/exit overhead of an
-     * application. Java {@code synchronized} blocks mark critical regions which can only be entered
-     * if a thread acquires an object monitor (enter operation). A monitor is held until the region
-     * is exited (monitor exit). Lock elimination (also known as lock coarsening) tries to merge
-     * adjacent synchronized regions into larger ones by removing enters that are directly followed
-     * by exits on the same locked object. It thus removes redundant unlock-lock operations.
+     * {@link LockEliminationPhase} and {@link LateLockEliminationPhase} try to reduce Java monitor
+     * enter/exit overhead of an application. Java {@code synchronized} blocks mark critical regions
+     * which can only be entered if a thread acquires an object monitor (enter operation). A monitor
+     * is held until the region is exited (monitor exit). Lock elimination (also known as lock
+     * coarsening) tries to merge synchronized regions into larger ones by removing redundant
+     * unlock-lock operations. The late phase can coarsen locks across simple control flow and
+     * eliminate nested locking of the same object.
      *
      * This phase is unconditionally enabled.
      */
     LockElimination(null, LockEliminationPhase.class),
+
+    /**
+     * {@link OptimizeDivPhase} tries to simplify expensive division operations.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link GraalOptions#OptimizeDiv}.
+     */
+    DivisionOptimization(GraalOptions.OptimizeDiv, OptimizeDivPhase.class),
 
     /**
      * {@link LoopSafepointEliminationPhase} tries to reduce the number of safepoint checks in the
@@ -315,13 +361,138 @@ public enum CEOptimization {
     BoxNodeOptimization(null, BoxNodeOptimizationPhase.class),
 
     /**
+     * {@link OptimisticAliasingAnalysisPhase} analyzes whether memory operations alias with each
+     * other, i.e., whether dynamic read and write operations access the same underlying heap memory
+     * areas. This information can improve performance by enabling memory optimizations including
+     * loop vectorization. The alias analysis can run in either a speculative or a non-speculative
+     * mode, delivering its benefits to both JIT and AOT compilations.
+     *
+     * This phase is enabled by default if
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization} is
+     * enabled and can be disabled with {@link MidTier.Options#OptimisticAliasingAnalysis}.
+     */
+    AliasAnalysis(MidTier.Options.OptimisticAliasingAnalysis, OptimisticAliasingAnalysisPhase.class),
+
+    /**
+     * {@link OptimizeAddressesInLoopsPhase} tries to prepare loops for vectorization and alias
+     * analysis. It does so by modifying loop induction variables to fit into a predefined pattern.
+     *
+     * This phase is enabled by default if
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization} is
+     * enabled and can be disabled with {@link MidTier.Options#OptimisticAliasingAnalysis}.
+     */
+    LoopAddress(MidTier.Options.OptimisticAliasingAnalysis, OptimizeAddressesInLoopsPhase.class),
+
+    /**
+     * {@link NodeVectorizationPhase} is a vectorization optimization that transforms operations
+     * with an equivalent vectorized representation, like array allocation and initialization
+     * operations, into a vectorized form. This can improve performance as the emitted code for
+     * these forms can utilize CPU SIMD instructions.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    NodeVectorization(VectorIntrinsics.Options.Vectorization, NodeVectorizationPhase.class),
+
+    /**
+     * {@link ConditionalMoveOptimizationPhase} tries to transform {@code if} statements to
+     * conditional moves. This has a positive impact on code patterns where branch prediction is
+     * difficult and can thus improve performance.
+     *
+     * In the community mid tier, this phase is enabled by default if
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization} is
+     * enabled and can be disabled with
+     * {@link jdk.graal.compiler.vector.phases.ConditionalMoveOptimizationPhase.Options#OptConditionalMoves}.
+     */
+    ConditionalMoveTransformation(ConditionalMoveOptimizationPhase.Options.OptConditionalMoves, ConditionalMoveOptimizationPhase.class),
+
+    /**
+     * {@link LoopVectorizationPhase} detects code patterns in loops that can take advantage of
+     * <a href="https://en.wikipedia.org/wiki/SIMD">SIMD</a> (single instruction multiple data)
+     * instructions for increased throughput. Loop vectorization transforms loops into a form that
+     * exploits such operations to perform the computations from multiple independent loop
+     * iterations in parallel. This can greatly improve the performance of the generated code.
+     *
+     * This phase is enabled by default if
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization} is
+     * enabled and can be disabled with
+     * {@link jdk.graal.compiler.vector.phases.LoopVectorizationPhase.Options#VectorizeLoops}.
+     */
+    LoopVectorization(LoopVectorizationPhase.Options.VectorizeLoops, LoopVectorizationPhase.class),
+
+    /**
+     * {@link RemoveEmptyLoopsPhase} tries to remove loops which do nothing apart from modifying
+     * values from outside the loop where the net result of the modification can be determined by
+     * the compiler and applied in one simple operation.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    EmptyLoopRemoval(VectorIntrinsics.Options.Vectorization, RemoveEmptyLoopsPhase.class),
+
+    /**
+     * {@link VectorMaterializationPhase} combines array allocations and operations on arrays in a
+     * vectorized form as produced by {@link NodeVectorizationPhase} and
+     * {@link LoopVectorizationPhase}. It recognizes and eliminates useless array initializations
+     * and operations on temporary arrays.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    VectorMaterialization(VectorIntrinsics.Options.Vectorization, VectorMaterializationPhase.class),
+
+    /**
+     * {@link VectorSimplificationPhase} simplifies the representation of vector operations by
+     * calling nodes' {@link VectorConsumer#simplifyTree(VectorSimplifier)} and
+     * {@link SimplifiableVectorNode#simplify(VectorSimplifier)} methods.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    VectorSimplification(VectorIntrinsics.Options.Vectorization, VectorSimplificationPhase.class),
+
+    /**
+     * {@link VectorLoweringPhase} computes the target specific vector lengths for vector
+     * operations.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    VectorLowering(VectorIntrinsics.Options.Vectorization, VectorLoweringPhase.class),
+
+    /**
+     * {@link VectorConsumerPhase} expands placeholder nodes inserted by
+     * {@link VectorLoweringPhase} to the corresponding vector operations.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    VectorConsumer(VectorIntrinsics.Options.Vectorization, VectorConsumerPhase.class),
+
+    /**
+     * {@link SimdifyVectorPhase} transforms vector operations into SIMD form.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.vector.replacements.VectorIntrinsics.Options#Vectorization}.
+     */
+    VectorSIMDIFY(VectorIntrinsics.Options.Vectorization, SimdifyVectorPhase.class),
+
+    /**
      * {@link VectorAPIExpansionPhase} lowers Java Vector API (JEP 338) operations to corresponding
      * SIMD code for more efficent execution.
      *
      * This phase is enabled by default and can be disabled with
      * {@link jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIIntrinsics.Options#OptimizeVectorAPI}.
      */
-    VectorAPIOptimization(VectorAPIIntrinsics.Options.OptimizeVectorAPI, VectorAPIExpansionPhase.class);
+    VectorAPIOptimization(VectorAPIIntrinsics.Options.OptimizeVectorAPI, VectorAPIExpansionPhase.class),
+
+    /**
+     * {@link ConstantBlindingPhase} is a security feature that prevents user-controlled constants
+     * from appearing verbatim in generated machine code.
+     *
+     * This phase is disabled by default and can be enabled with {@link Options#BlindConstants}.
+     */
+    ConstantBlinding(ConstantBlindingPhase.Options.BlindConstants, ConstantBlindingPhase.class);
 
     private final OptionKey<?> option;
     private final Class<? extends BasePhase<?>> optimization;

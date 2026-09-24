@@ -55,6 +55,7 @@ import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
+import com.oracle.truffle.espresso.shared.lookup.LookupMode;
 import com.oracle.truffle.espresso.threads.ThreadState;
 import com.oracle.truffle.espresso.threads.Transition;
 import com.oracle.truffle.espresso.vm.VM;
@@ -156,28 +157,29 @@ public class PolyglotTypeMappings {
             warn(current);
         }
 
-        // primitive array types
-        converters.put("byte[]", new BuiltinArrayTypeConverter(meta._byte_array));
-        converters.put("boolean[]", new BuiltinArrayTypeConverter(meta._boolean_array));
-        converters.put("char[]", new BuiltinArrayTypeConverter(meta._char_array));
-        converters.put("short[]", new BuiltinArrayTypeConverter(meta._short_array));
-        converters.put("int[]", new BuiltinArrayTypeConverter(meta._int_array));
-        converters.put("long[]", new BuiltinArrayTypeConverter(meta._long_array));
-        converters.put("float[]", new BuiltinArrayTypeConverter(meta._float_array));
-        converters.put("double[]", new BuiltinArrayTypeConverter(meta._double_array));
+        if (meta.getLanguage().isImplicitInteropEnabled()) {
+            converters.put("byte[]", new BuiltinArrayTypeConverter(meta._byte_array));
+            converters.put("boolean[]", new BuiltinArrayTypeConverter(meta._boolean_array));
+            converters.put("char[]", new BuiltinArrayTypeConverter(meta._char_array));
+            converters.put("short[]", new BuiltinArrayTypeConverter(meta._short_array));
+            converters.put("int[]", new BuiltinArrayTypeConverter(meta._int_array));
+            converters.put("long[]", new BuiltinArrayTypeConverter(meta._long_array));
+            converters.put("float[]", new BuiltinArrayTypeConverter(meta._float_array));
+            converters.put("double[]", new BuiltinArrayTypeConverter(meta._double_array));
 
-        // boxed primitives
-        converters.put("java.lang.Byte[]", new BuiltinArrayTypeConverter(meta.java_lang_Byte.array()));
-        converters.put("java.lang.Boolean[]", new BuiltinArrayTypeConverter(meta.java_lang_Boolean.array()));
-        converters.put("java.lang.Character[]", new BuiltinArrayTypeConverter(meta.java_lang_Character.array()));
-        converters.put("java.lang.Short[]", new BuiltinArrayTypeConverter(meta.java_lang_Short.array()));
-        converters.put("java.lang.Integer[]", new BuiltinArrayTypeConverter(meta.java_lang_Integer.array()));
-        converters.put("java.lang.Long[]", new BuiltinArrayTypeConverter(meta.java_lang_Long.array()));
-        converters.put("java.lang.Float[]", new BuiltinArrayTypeConverter(meta.java_lang_Float.array()));
-        converters.put("java.lang.Double[]", new BuiltinArrayTypeConverter(meta.java_lang_Double.array()));
+            // boxed primitives
+            converters.put("java.lang.Byte[]", new BuiltinArrayTypeConverter(meta.java_lang_Byte.array()));
+            converters.put("java.lang.Boolean[]", new BuiltinArrayTypeConverter(meta.java_lang_Boolean.array()));
+            converters.put("java.lang.Character[]", new BuiltinArrayTypeConverter(meta.java_lang_Character.array()));
+            converters.put("java.lang.Short[]", new BuiltinArrayTypeConverter(meta.java_lang_Short.array()));
+            converters.put("java.lang.Integer[]", new BuiltinArrayTypeConverter(meta.java_lang_Integer.array()));
+            converters.put("java.lang.Long[]", new BuiltinArrayTypeConverter(meta.java_lang_Long.array()));
+            converters.put("java.lang.Float[]", new BuiltinArrayTypeConverter(meta.java_lang_Float.array()));
+            converters.put("java.lang.Double[]", new BuiltinArrayTypeConverter(meta.java_lang_Double.array()));
 
-        // String array type
-        converters.put("java.lang.String[]", new BuiltinArrayTypeConverter(meta.java_lang_String_array));
+            // String array type
+            converters.put("java.lang.String[]", new BuiltinArrayTypeConverter(meta.java_lang_String_array));
+        }
 
         // common java.* exception types where only exception message is expected to be transferred
         converters.put("java.lang.ClassCastException", new BuiltinExceptionTypeConverter(meta.java_lang_ClassCastException));
@@ -372,7 +374,7 @@ public class PolyglotTypeMappings {
                     return guestOptional;
                 }
             } catch (UnsupportedTypeException e) {
-                throw new ClassCastException();
+                throw e;
             } catch (InteropException e) {
                 throw UnsupportedTypeException.create(new Object[]{value}, "Could not cast foreign object to Optional", e);
             }
@@ -421,15 +423,18 @@ public class PolyglotTypeMappings {
         @Override
         public StaticObject convertInternal(InteropLibrary interop, Object value, Meta meta, ToReference.DynamicToReference toEspresso, EspressoType espressoType) throws UnsupportedTypeException {
             if (!interop.hasArrayElements(value)) {
-                boundaryThrow(value);
+                boundaryThrow(value, "foreign object has no array elements");
+            }
+            if (!meta.getLanguage().isImplicitInteropEnabled()) {
+                boundaryThrow(value, "implicit interop is disabled");
             }
             return StaticObject.createForeign(toEspresso.getLanguage(), klass, value, interop);
         }
 
         @TruffleBoundary
-        private void boundaryThrow(Object value) throws UnsupportedTypeException {
+        private void boundaryThrow(Object value, String reason) throws UnsupportedTypeException {
             throw UnsupportedTypeException.create(new Object[]{value},
-                            EspressoError.format("Could not cast foreign object to %s: %s", klass.getNameAsString(), "foreign object has no array elements"));
+                            EspressoError.format("Could not cast foreign object to %s: %s", klass.getNameAsString(), reason));
         }
     }
 
@@ -440,7 +445,7 @@ public class PolyglotTypeMappings {
 
         public BuiltinExceptionTypeConverter(ObjectKlass klass) {
             this.exceptionKlass = klass;
-            this.messageConstructor = klass.lookupDeclaredMethod(Names._init_, Signatures._void_String, Klass.LookupMode.INSTANCE_ONLY);
+            this.messageConstructor = klass.lookupDeclaredMethod(Names._init_, Signatures._void_String, LookupMode.INSTANCE_ONLY);
         }
 
         @Override
@@ -480,7 +485,7 @@ public class PolyglotTypeMappings {
                 meta.java_lang_Throwable_depth.setInt(result, meta.java_lang_Throwable_depth.getInt(foreignException));
             }
             meta.java_lang_Throwable_stackTrace.setObject(result, StaticObject.NULL);
-            meta.HIDDEN_FRAMES.setHiddenObject(result, VM.StackTrace.FOREIGN_MARKER_STACK_TRACE);
+            meta.java_lang_Throwable_0frames.setHiddenObject(result, VM.StackTrace.FOREIGN_MARKER_STACK_TRACE);
 
             return result;
         }

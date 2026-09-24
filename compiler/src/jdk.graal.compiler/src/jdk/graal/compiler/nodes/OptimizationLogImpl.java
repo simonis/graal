@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -697,7 +697,7 @@ public class OptimizationLogImpl implements OptimizationLog {
         if (!printToStdout && !printToFile) {
             return;
         }
-        StableMethodNameFormatter methodNameFormatter = new StableMethodNameFormatter(true);
+        StableMethodNameFormatter methodNameFormatter = new StableMethodNameFormatter();
         String json = JsonFormatter.formatJson(asJSONMap(methodNameFormatter));
         if (printToStdout) {
             TTY.out().println(json);
@@ -755,7 +755,7 @@ public class OptimizationLogImpl implements OptimizationLog {
      * @return a unique compilation identifier
      */
     private String parseCompilationID() {
-        String fullCompilationId = graph.compilationId().toString(CompilationIdentifier.Verbosity.ID);
+        String fullCompilationId = graph.compilationId().getRootCompilationIdentifier().toString(CompilationIdentifier.Verbosity.ID);
         int dash = fullCompilationId.indexOf('-');
         if (dash == -1) {
             return fullCompilationId;
@@ -841,7 +841,7 @@ public class OptimizationLogImpl implements OptimizationLog {
         if (callsite.getParent() == null || callsite.getParent().getTarget() == null) {
             return null;
         }
-        ProfilingInfo profilingInfo = graph.getProfileProvider().getProfilingInfo(callsite.getParent().getTarget());
+        ProfilingInfo profilingInfo = graph.getProfileProvider().getProfilingInfo(null, callsite.getParent().getTarget());
         if (profilingInfo == null) {
             return null;
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -51,9 +51,8 @@ import org.graalvm.nativeimage.Platforms;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.util.AnalysisError;
-import com.oracle.svm.core.meta.MethodPointer;
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.interpreter.classfile.ConstantPoolBuilder;
@@ -65,6 +64,7 @@ import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedObjectType;
 import com.oracle.svm.interpreter.metadata.ReferenceConstant;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.vm.ci.meta.ConstantPool;
 import jdk.vm.ci.meta.ExceptionHandler;
@@ -323,15 +323,16 @@ final class BuildTimeConstantPool {
         processLDC(allDeclaredMethods);
 
         for (InterpreterResolvedJavaMethod method : allDeclaredMethods) {
-            ResolvedJavaMethod originalMethod = method.getOriginalMethod();
+            AnalysisMethod originalMethod = method.getOriginalMethod();
             method.setExceptionHandlers(processExceptionHandlers(originalMethod.getExceptionHandlers()));
 
-            LocalVariableTable hostLocalVariableTable = method.getOriginalMethod().getLocalVariableTable();
+            LocalVariableTable hostLocalVariableTable = originalMethod.getLocalVariableTable();
             if (hostLocalVariableTable != null) {
                 method.setLocalVariableTable(BuildTimeInterpreterUniverse.processLocalVariableTable(hostLocalVariableTable));
             }
-
-            if (!method.needsMethodBody()) {
+            boolean needsMethodBody = method.needsMethodBody();
+            method.setLineNumberTable(needsMethodBody ? originalMethod.getLineNumberTable() : null);
+            if (!needsMethodBody) {
                 VMError.guarantee(method.getInterpretedCode() == null);
             }
 
@@ -430,9 +431,9 @@ final class BuildTimeConstantPool {
                         // error at runtime.
                         if (originalJavaMethod != null) {
                             JavaMethod interpreterMethod = BuildTimeInterpreterUniverse.singleton().methodOrUnresolved(originalJavaMethod);
-                            if (interpreterMethod instanceof InterpreterResolvedJavaMethod) {
-                                ((InterpreterResolvedJavaMethod) interpreterMethod).setNativeEntryPoint(new MethodPointer((ResolvedJavaMethod) originalJavaMethod));
-                                InterpreterUtil.log("[hydrate] setting method pointer for %s", interpreterMethod);
+                            if (interpreterMethod instanceof InterpreterResolvedJavaMethod iMethod) {
+                                iMethod.setNativeEntryPoint(InterpreterResolvedJavaMethod.createMethodRef((ResolvedJavaMethod) originalJavaMethod));
+                                InterpreterUtil.log("[hydrate] setting method ref for %s", interpreterMethod);
                             }
                             newCPI = method(interpreterMethod);
                         }
@@ -448,7 +449,7 @@ final class BuildTimeConstantPool {
                                 // in the CP.
                                 newAppendixCPI = appendixConstant(JavaConstant.NULL_POINTER);
                             }
-                            BytecodeStream.patchAppendixCPI(code, bci, newAppendixCPI);
+                            BytecodeStream.patchIndyExtraCPI(code, bci, newAppendixCPI);
                         }
 
                         BytecodeStream.patchCPI(code, bci, newCPI);

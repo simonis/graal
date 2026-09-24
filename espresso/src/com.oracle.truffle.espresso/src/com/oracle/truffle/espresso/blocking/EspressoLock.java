@@ -203,9 +203,9 @@ public interface EspressoLock {
      * <p>
      * If the current thread:
      * <ul>
-     * <li>is {@linkplain GuestInterrupter#guestInterrupt(Thread, Object) guest interrupted} on
-     * entry to this method; or
-     * <li>is {@linkplain GuestInterrupter#guestInterrupt(Thread, Object) guest interrupted} while
+     * <li>is {@linkplain BlockingSupport#guestInterrupt(Thread, Object) guest interrupted} on entry
+     * to this method; or
+     * <li>is {@linkplain BlockingSupport#guestInterrupt(Thread, Object) guest interrupted} while
      * waiting,
      * </ul>
      * then {@link GuestInterruptedException} is thrown. It is not specified, in the first case,
@@ -434,7 +434,7 @@ final class EspressoLockImpl extends ReentrantLock implements EspressoLock {
         int holdCount = 0;
         try {
             if (enableManagement) {
-                meta.HIDDEN_THREAD_WAITING_MONITOR.setHiddenObject(interruptible.thread, interruptible.obj);
+                meta.java_lang_Thread_0waitingMonitor.setHiddenObject(interruptible.thread, interruptible.obj);
             }
             while (isHeldByCurrentThread()) {
                 unlock();
@@ -470,7 +470,7 @@ final class EspressoLockImpl extends ReentrantLock implements EspressoLock {
             throw e;
         } finally {
             if (enableManagement) {
-                meta.HIDDEN_THREAD_WAITING_MONITOR.setHiddenObject(interruptible.thread, StaticObject.NULL);
+                meta.java_lang_Thread_0waitingMonitor.setHiddenObject(interruptible.thread, StaticObject.NULL);
             }
             waiters--;
             waitLock.unlock();
@@ -479,14 +479,14 @@ final class EspressoLockImpl extends ReentrantLock implements EspressoLock {
             if (!tryLock()) {
                 if (enableManagement) {
                     // Locks bookkeeping.
-                    meta.HIDDEN_THREAD_PENDING_MONITOR.setHiddenObject(interruptible.thread, interruptible.obj);
+                    meta.java_lang_Thread_0pendingMonitor.setHiddenObject(interruptible.thread, interruptible.obj);
                 }
                 try {
                     lock();
                 } finally {
                     if (enableManagement) {
                         // Locks bookkeeping.
-                        meta.HIDDEN_THREAD_PENDING_MONITOR.setHiddenObject(interruptible.thread, null);
+                        meta.java_lang_Thread_0pendingMonitor.setHiddenObject(interruptible.thread, null);
                     }
                 }
             }

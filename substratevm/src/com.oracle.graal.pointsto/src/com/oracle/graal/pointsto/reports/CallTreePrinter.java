@@ -28,8 +28,6 @@ import static com.oracle.graal.pointsto.reports.ReportUtils.CHILD;
 import static com.oracle.graal.pointsto.reports.ReportUtils.CONNECTING_INDENT;
 import static com.oracle.graal.pointsto.reports.ReportUtils.EMPTY_INDENT;
 import static com.oracle.graal.pointsto.reports.ReportUtils.LAST_CHILD;
-import static com.oracle.graal.pointsto.reports.ReportUtils.invokeInfoComparator;
-import static com.oracle.graal.pointsto.reports.ReportUtils.methodComparator;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -66,6 +64,7 @@ import com.oracle.graal.pointsto.util.AnalysisError;
 import jdk.graal.compiler.java.LambdaUtils;
 import jdk.vm.ci.code.BytecodePosition;
 import jdk.vm.ci.meta.JavaKind;
+import org.graalvm.collections.EconomicSet;
 
 public final class CallTreePrinter {
 
@@ -110,7 +109,8 @@ public final class CallTreePrinter {
 
         @Override
         public String format() {
-            return ReportUtils.loaderName(methodNode.method.getDeclaringClass()) + ':' + methodNode.method.format(METHOD_FORMAT) + " id-ref=" + methodNode.id;
+            var hostVM = methodNode.method.getUniverse().hostVM();
+            return hostVM.loaderName(methodNode.method.getDeclaringClass()) + ':' + methodNode.method.format(METHOD_FORMAT) + " id-ref=" + methodNode.id;
         }
 
     }
@@ -140,7 +140,7 @@ public final class CallTreePrinter {
 
         @Override
         public String format() {
-            return ReportUtils.loaderName(method.getDeclaringClass()) + ':' + method.format(METHOD_FORMAT) + " id=" + id;
+            return method.getUniverse().hostVM().loaderName(method.getDeclaringClass()) + ':' + method.format(METHOD_FORMAT) + " id=" + id;
         }
     }
 
@@ -187,7 +187,7 @@ public final class CallTreePrinter {
         /* Add all the roots to the tree. */
         List<AnalysisMethod> roots = AnalysisUniverse.getCallTreeRoots(bb.getUniverse());
 
-        roots.sort(methodComparator);
+        roots.sort(ReportUtils.methodComparator());
         for (AnalysisMethod m : roots) {
             methodToNode.put(m, new MethodNode(m, true));
         }
@@ -213,7 +213,7 @@ public final class CallTreePrinter {
              * In order to have deterministic order of invokes we sort them by position and names.
              * In case of Lambda names we avoid the non-deterministic hash part while sorting.
              */
-            invokeInfos.sort(invokeInfoComparator);
+            invokeInfos.sort(ReportUtils.invokeInfoComparator());
 
             for (var invokeInfo : invokeInfos) {
                 processInvoke(invokeInfo, node, workList);
@@ -227,7 +227,7 @@ public final class CallTreePrinter {
         InvokeNode invokeNode = new InvokeNode(invokeInfo.getTargetMethod(), invokeInfo.isDirectInvoke(), sourceReference(invokeInfo.getPosition()));
         callerNode.addInvoke(invokeNode);
 
-        invokeInfo.getAllCallees().stream().sorted(methodComparator).forEach(callee -> {
+        invokeInfo.getAllCallees().stream().sorted(ReportUtils.methodComparator()).forEach(callee -> {
             if (methodToNode.containsKey(callee)) {
                 MethodNodeReference calleeNode = new MethodNodeReference(methodToNode.get(callee));
                 invokeNode.addCallee(calleeNode);
@@ -307,7 +307,7 @@ public final class CallTreePrinter {
     private void printUsedMethods(PrintWriter out) {
         List<String> methodsList = new ArrayList<>();
         for (AnalysisMethod method : methodToNode.keySet()) {
-            methodsList.add(ReportUtils.loaderName(method.getDeclaringClass()) + ':' + method.format(METHOD_FORMAT));
+            methodsList.add(method.getUniverse().hostVM().loaderName(method.getDeclaringClass()) + ':' + method.format(METHOD_FORMAT));
         }
         methodsList.sort(null);
         for (String name : methodsList) {
@@ -324,7 +324,7 @@ public final class CallTreePrinter {
     }
 
     public Set<String> classesSet(boolean packageNameOnly) {
-        Set<String> classSet = new HashSet<>();
+        Set<String> classSet = new HashSet<>(); // noEconomicSet(temp)
         for (AnalysisType type : usedAnalysisTypes()) {
             String name = type.toJavaName(true);
             if (packageNameOnly) {
@@ -334,13 +334,14 @@ public final class CallTreePrinter {
                     name = packagePrefix(name);
                 }
             }
-            classSet.add(ReportUtils.loaderName(type) + ':' + name);
+
+            classSet.add(type.getUniverse().hostVM().loaderName(type) + ':' + name);
         }
         return classSet;
     }
 
-    public Set<AnalysisType> usedAnalysisTypes() {
-        Set<AnalysisType> classSet = new HashSet<>();
+    public Iterable<AnalysisType> usedAnalysisTypes() {
+        EconomicSet<AnalysisType> classSet = EconomicSet.create();
         for (AnalysisMethod method : methodToNode.keySet()) {
             classSet.add(method.getDeclaringClass());
         }

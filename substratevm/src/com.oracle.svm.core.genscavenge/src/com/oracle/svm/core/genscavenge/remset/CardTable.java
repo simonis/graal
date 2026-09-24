@@ -24,15 +24,16 @@
  */
 package com.oracle.svm.core.genscavenge.remset;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.lang.ref.Reference;
 
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.HeapImpl;
 import com.oracle.svm.core.genscavenge.SerialGCOptions;
@@ -43,15 +44,14 @@ import com.oracle.svm.core.heap.ReferenceInternals;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.InteriorObjRefWalker;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.shared.util.UnsignedUtils;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.nodes.extended.BranchProbabilityNode;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.word.Word;
 
 /**
  * A card table is a remembered set that summarizes pointer stores into a region. A card is "dirty"
@@ -178,7 +178,7 @@ final class CardTable {
                     success &= CARD_TABLE_VERIFICATION_VISITOR.success;
                     CARD_TABLE_VERIFICATION_VISITOR.reset();
 
-                    DynamicHub hub = KnownIntrinsics.readHub(obj);
+                    DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
                     if (hub.isReferenceInstanceClass()) {
                         // The referent field of java.lang.Reference is excluded from the reference
                         // map, so we need to verify it separately.
@@ -277,6 +277,15 @@ final class CardTable {
         private void visitObjectReference(Pointer reference, boolean compressed) {
             Pointer referencedObject = ReferenceAccess.singleton().readObjectAsUntrackedPointer(reference, compressed);
             success &= verifyReference(parentObject, cardTableStart, objectsStart, reference, referencedObject, precise);
+        }
+
+        @Override
+        public void visitDerivedReference(Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+            /*
+             * The default visitDerivedReferenceBase verifies the base object reference through
+             * visitObjectReferences. The derived slot is an interior address, not an additional
+             * object reference that needs card-table verification.
+             */
         }
     }
 }

@@ -31,7 +31,6 @@ import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.mmap;
 import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.shm_open;
 import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.shm_unlink;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.CCharPointer;
@@ -40,11 +39,9 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.SignedWord;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
 import com.oracle.svm.core.os.VirtualMemoryProvider.Access;
@@ -53,7 +50,15 @@ import com.oracle.svm.core.posix.headers.Errno;
 import com.oracle.svm.core.posix.headers.Fcntl;
 import com.oracle.svm.core.posix.headers.Unistd;
 import com.oracle.svm.core.thread.VMThreads;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class LinuxGOTHeapSupport extends GOTHeapSupport {
 
     private static final String FILE_NAME_PREFIX = "/ni-got-";
@@ -105,7 +110,7 @@ public class LinuxGOTHeapSupport extends GOTHeapSupport {
             return CEntryPointErrors.DYNAMIC_METHOD_ADDRESS_RESOLUTION_GOT_UNIQUE_FILE_CREATE_FAILED;
         }
 
-        UnsignedWord gotPageAlignedSize = getPageAlignedGotSize();
+        UnsignedWord gotPageAlignedSize = getPageAlignedGOTSize();
 
         if (Unistd.NoTransitions.ftruncate(fd, Word.signed(gotPageAlignedSize.rawValue())) != 0) {
             Unistd.NoTransitions.close(fd);
@@ -118,8 +123,8 @@ public class LinuxGOTHeapSupport extends GOTHeapSupport {
             return CEntryPointErrors.DYNAMIC_METHOD_ADDRESS_RESOLUTION_GOT_FD_MAP_FAILED;
         }
 
-        Pointer gotStartInMemory = gotMemory.add(getGotOffsetFromStartOfMapping());
-        LibC.memcpy(gotStartInMemory, IMAGE_GOT_BEGIN.get(), getGotSectionSize());
+        Pointer gotStartInMemory = gotMemory.add(getGOTOffsetFromStartOfMapping());
+        LibC.memcpy(gotStartInMemory, IMAGE_GOT_BEGIN.get(), getGOTSectionSize());
 
         /* Keep the initial GOT mapping for writing. */
 
@@ -131,7 +136,7 @@ public class LinuxGOTHeapSupport extends GOTHeapSupport {
 
     @Override
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public int mapGot(Pointer start) {
+    public int mapGOT(Pointer start) {
         SignedWord memViewFd = memoryViewFd.get().read();
         if (memViewFd.lessThan(0)) {
             return CEntryPointErrors.DYNAMIC_METHOD_ADDRESS_RESOLUTION_GOT_FD_INVALID;
@@ -139,7 +144,7 @@ public class LinuxGOTHeapSupport extends GOTHeapSupport {
 
         Pointer mappedAddress = VirtualMemoryProvider.get().mapFile(
                         start,
-                        getPageAlignedGotSize(),
+                        getPageAlignedGOTSize(),
                         memViewFd,
                         Word.zero(),
                         Access.READ);

@@ -19,7 +19,6 @@
   // mx gate build config
   local mxgate(tags) = os_arch_jdk_mixin + sg.mxgate(tags, suite="substratevm", suite_short="svm") + task_spec(common.deps.svm),
 
-  local eclipse = task_spec(common.deps.eclipse),
   local spotbugs = task_spec(common.deps.spotbugs),
   local jdt = task_spec(common.deps.jdt),
   local gate = sg.gate,
@@ -62,6 +61,15 @@
     },
   }),
 
+  local terminus = task_spec({
+    mxgate_dy+: ["/espresso-compiler-stub"],
+    mxgate_extra_args+: ["-B=--targets=GRAALVM"],
+  }),
+
+  local standalone_pointsto_deps = task_spec({
+    mxgate_dy+: ["/espresso-compiler-stub"],
+  }),
+
   // JDKs
   local jdk_name_to_dict = {
     "jdk21"+: common.labsjdk21,
@@ -74,7 +82,6 @@
       "aarch64"+: common.linux_aarch64,
     },
     "darwin"+: {
-      "amd64"+: common.darwin_amd64,
       "aarch64"+: common.darwin_aarch64,
     },
     "windows"+:{
@@ -90,6 +97,7 @@
   })),
 
   local all_jobs = {
+    "darwin:amd64"+: exclude,
     "windows:aarch64"+: exclude,
     "*:*:jdk19"+: exclude,
   },
@@ -123,15 +131,15 @@
 
   // START MAIN BUILD DEFINITION
   local task_dict = {
-    "style-fullbuild": mxgate("fullbuild,style,nativeimagehelp,check_libcontainer_annotations,check_libcontainer_namespace") + eclipse + jdt + spotbugs + maven + mx_build_exploded + gdb("14.2") + platform_spec(no_jobs) + platform_spec({
+    "style-fullbuild": mxgate("fullbuild,style,nativeimagehelp,check_libcontainer_annotations,check_libcontainer_namespace") + jdt + spotbugs + maven + mx_build_exploded + gdb("14.2") + platform_spec(no_jobs) + platform_spec({
       "linux:amd64:jdk-latest": tier1 + t("30:00"),
     }),
-    "basics": mxgate("build,helloworld,native_unittests,standalone_pointsto_unittests,truffle_unittests,debuginfotest,hellomodule,java_agent,condconfig") + maven + jsonschema + platform_spec(no_jobs) + platform_spec({
+    "basics": mxgate("build,helloworld,all_native_unittests,check_svm_invariants,truffle_unittests,debuginfotest,hellomodule,java_agent,condconfig,java_desktop_integration") + maven + jsonschema + platform_spec(no_jobs) + platform_spec({
       "linux:amd64:jdk-latest": tier2 + partial(2) + gdb("14.2") + t("40:00"),
-      "windows:amd64:jdk-latest": tier3 + t("1:30:00"),
+      "windows:amd64:jdk-latest": tier3 + partial(2) + t("1:00:00"),
     }) + variants({
       "optlevel:quickbuild": {
-        "windows:amd64:jdk-latest": tier3 + t("1:30:00"),
+        "windows:amd64:jdk-latest": sg.daily + task_spec({ notify_groups+: ["native_image_other"] }) + t("2:00:00"),
       },
       "libc:musl_static": {
         "linux:amd64:jdk-latest": tier3 + gdb("14.2") + t("55:00"),
@@ -139,6 +147,12 @@
       "java-compiler:ecj": {
         "linux:amd64:jdk-latest": tier2 + partial(2) + gdb("14.2") + t("40:00"),
       },
+    }),
+    "standalone-pointsto-unittests": mxgate("build,standalone_pointsto_unittests") + standalone_pointsto_deps + platform_spec(no_jobs) + platform_spec({
+      "linux:amd64:jdk-latest": tier2 + t("20:00"),
+    }),
+    "terminus": mxgate("build,terminus") + terminus + platform_spec(no_jobs) + platform_spec({
+      "linux:amd64:jdk-latest": tier1 + t("30:00"),
     }),
   },
   // END MAIN BUILD DEFINITION

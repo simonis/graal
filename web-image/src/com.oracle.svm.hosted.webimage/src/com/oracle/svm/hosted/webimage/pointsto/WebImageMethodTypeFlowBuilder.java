@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,15 +52,12 @@ public class WebImageMethodTypeFlowBuilder extends SVMMethodTypeFlowBuilder {
 
     @Override
     protected boolean delegateNodeProcessing(FixedNode n, TypeFlowsOfNodes state) {
-        super.delegateNodeProcessing(n, state);
-        return processWebImageNodes(bb, method, typeFlowGraphBuilder, n, state, this.flowsGraph);
+        return super.delegateNodeProcessing(n, state) || processWebImageNodes(bb, method, typeFlowGraphBuilder, n, state, this.flowsGraph);
     }
 
     public static boolean processWebImageNodes(PointsToAnalysis bb, PointsToAnalysisMethod method, TypeFlowGraphBuilder typeFlowGraphBuilder, FixedNode n, TypeFlowsOfNodes state,
                     MethodFlowsGraph flowsGraph) {
-        if (n instanceof InterceptJSInvokeNode) {
-            InterceptJSInvokeNode node = (InterceptJSInvokeNode) n;
-
+        if (n instanceof InterceptJSInvokeNode node) {
             TypeFlowBuilder<?>[] argumentBuilders = new TypeFlowBuilder<?>[node.arguments().size()];
             for (int i = 0; i < argumentBuilders.length; i++) {
                 final ValueNode argument = node.arguments().get(i);
@@ -87,10 +84,10 @@ public class WebImageMethodTypeFlowBuilder extends SVMMethodTypeFlowBuilder {
                 return intercept;
             });
 
-            for (int i = 0; i < argumentBuilders.length; i++) {
-                if (argumentBuilders[i] != null) {
-                    interceptBuilder.addUseDependency(argumentBuilders[i]);
-                    interceptBuilder.addObserverDependency(argumentBuilders[i]);
+            for (TypeFlowBuilder<?> argumentBuilder : argumentBuilders) {
+                if (argumentBuilder != null) {
+                    interceptBuilder.addUseDependency(argumentBuilder);
+                    interceptBuilder.addObserverDependency(argumentBuilder);
                 }
             }
 

@@ -24,13 +24,15 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.heap.UninterruptibleObjectVisitor;
 import com.oracle.svm.core.hub.InteriorObjRefWalker;
+import com.oracle.svm.shared.Uninterruptible;
 
 /**
  * Run an ObjectReferenceVisitor ({@link GreyToBlackObjRefVisitor}) over any interior object
@@ -52,5 +54,10 @@ public final class GreyToBlackObjectVisitor implements UninterruptibleObjectVisi
     public void visitObject(Object o) {
         ReferenceObjectProcessing.discoverIfReference(o, objRefVisitor);
         InteriorObjRefWalker.walkObjectInline(o, objRefVisitor);
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public void visitObjectArrayRange(Object o, int firstIndex, int count) {
+        InteriorObjRefWalker.walkObjectArrayRangeInline(o, firstIndex, count, objRefVisitor);
     }
 }

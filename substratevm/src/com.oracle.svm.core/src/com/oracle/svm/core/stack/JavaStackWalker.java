@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.stack;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
@@ -36,31 +36,32 @@ import org.graalvm.nativeimage.c.function.CFunction.Transition;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.FrameAccess;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.SubstrateDiagnostics;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoTable;
 import com.oracle.svm.core.code.UntetheredCodeInfo;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.deopt.DeoptimizationSlotPacking;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
 import com.oracle.svm.core.deopt.Deoptimizer;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
 import com.oracle.svm.core.jfr.JfrStackWalker;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.thread.ContinuationSupport;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Provides methods to iterate over the physical Java stack frames of a thread (native stack frames
@@ -110,7 +111,7 @@ public final class JavaStackWalker {
 
     @Fold
     static int getJavaFrameOffset() {
-        return NumUtil.roundUp(SizeOf.get(JavaStackWalkImpl.class), ConfigurationValues.getTarget().wordSize);
+        return NumUtil.roundUp(SizeOf.get(JavaStackWalkImpl.class), SubstrateTarget.getWordSize());
     }
 
     @Fold
@@ -176,6 +177,15 @@ public final class JavaStackWalker {
         initWalk(walk, thread, startSP, Word.nullPointer(), startIP, anchor);
     }
 
+    /**
+     * This method should only be used rarely as it is usually not necessary (and potentially
+     * dangerous) to specify a {@code startIP} for the stack walk.
+     */
+    @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.", callerMustBe = true)
+    public static void initialize(JavaStackWalk walk, IsolateThread thread, Pointer startSP, Pointer endSP, CodePointer startIP, JavaFrameAnchor anchor) {
+        initWalk(walk, thread, startSP, endSP, startIP, anchor);
+    }
+
     @Uninterruptible(reason = "StoredContinuation must not move.", callerMustBe = true)
     public static void initializeForContinuation(JavaStackWalk walk, StoredContinuation continuation) {
         assert continuation != null;
@@ -205,7 +215,8 @@ public final class JavaStackWalker {
     private static void initializeFromFrameAnchor(JavaStackWalk walk, IsolateThread thread, Pointer endSP) {
         assert thread.isNonNull();
         assert thread != CurrentIsolate.getCurrentThread() : "Walking the stack without specifying a start SP is only allowed when walking other threads";
-        assert VMOperation.isInProgressAtSafepoint() : "Walking the stack of another thread is only safe when that thread is stopped at a safepoint";
+        assert VMOperation.isInProgressAtSafepoint() || SubstrateDiagnostics.canUnsafelyWalkOtherThreadStacks() //
+                        : "Walking the stack of another thread is only safe when that thread is stopped at a safepoint";
 
         JavaFrameAnchor frameAnchor = JavaFrameAnchors.getFrameAnchor(thread);
         if (frameAnchor.isNull() || SafepointBehavior.isCrashedThread(thread)) {
@@ -227,7 +238,8 @@ public final class JavaStackWalker {
     @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.", callerMustBe = true)
     private static void initWalk(JavaStackWalk walk, IsolateThread thread, Pointer startSP, Pointer endSP, CodePointer startIP, JavaFrameAnchor anchor) {
         assert thread.isNonNull();
-        assert thread == CurrentIsolate.getCurrentThread() || VMOperation.isInProgressAtSafepoint() : "Walking the stack of another thread is only safe when that thread is stopped at a safepoint";
+        assert thread == CurrentIsolate.getCurrentThread() || VMOperation.isInProgressAtSafepoint() || SubstrateDiagnostics.canUnsafelyWalkOtherThreadStacks() //
+                        : "Walking the stack of another thread is only safe when that thread is stopped at a safepoint";
         assert startSP.isNonNull();
 
         if (SafepointBehavior.isCrashedThread(thread)) {
@@ -238,7 +250,7 @@ public final class JavaStackWalker {
         }
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = "JavaStackWalk must not contain stale values when this method returns.", callerMustBe = true)
     private static void markAsNotWalkable(JavaStackWalk walk) {
         initWalk0(walk, Word.nullPointer(), Word.nullPointer(), Word.nullPointer(), Word.nullPointer());
     }
@@ -348,7 +360,7 @@ public final class JavaStackWalker {
                     return true;
                 }
             }
-        } else if (JavaFrames.isInterpreterLeaveStub(frame)) {
+        } else if (JavaFrames.isAnyInterpreterLeaveStub(frame)) {
             long totalFrameSize = JavaFrames.getTotalFrameSize(frame).rawValue();
 
             /*
@@ -444,7 +456,7 @@ public final class JavaStackWalker {
         IsolateThread thread = CurrentIsolate.getCurrentThread();
         JavaStackWalk walk = StackValue.get(JavaStackWalker.sizeOfJavaStackWalk());
         initWalk(walk, thread, startSP, endSP, startIP, JavaFrameAnchors.getFrameAnchor());
-        return doWalk(walk, thread, visitor, data);
+        return doWalkThread(walk, thread, visitor, data);
     }
 
     /**
@@ -463,7 +475,7 @@ public final class JavaStackWalker {
         VMError.guarantee(anchor.isNonNull(), "walkCurrentThreadFromFrameAnchor requires a frame anchor");
         JavaStackWalk walk = StackValue.get(sizeOfJavaStackWalk());
         initWalk0(walk, anchor.getLastJavaSP(), Word.nullPointer(), anchor.getLastJavaIP(), anchor.getPreviousAnchor());
-        return doWalk(walk, thread, visitor, data);
+        return doWalkThread(walk, thread, visitor, data);
     }
 
     @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.")
@@ -480,18 +492,18 @@ public final class JavaStackWalker {
     public static boolean walkThread(IsolateThread thread, Pointer endSP, ParameterizedStackFrameVisitor visitor, Object data) {
         JavaStackWalk walk = StackValue.get(JavaStackWalker.sizeOfJavaStackWalk());
         initializeFromFrameAnchor(walk, thread, endSP);
-        return doWalk(walk, thread, visitor, data);
+        return doWalkThread(walk, thread, visitor, data);
     }
 
     @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.")
     public static void walkThread(IsolateThread thread, Pointer startSP, Pointer endSP, CodePointer startIP, StackFrameVisitor visitor) {
         JavaStackWalk walk = StackValue.get(JavaStackWalker.sizeOfJavaStackWalk());
         initWalk(walk, thread, startSP, endSP, startIP, JavaFrameAnchors.getFrameAnchor(thread));
-        doWalk(walk, thread, visitor, null);
+        doWalkThread(walk, thread, visitor, null);
     }
 
     @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.", callerMustBe = true)
-    static boolean doWalk(JavaStackWalk walk, IsolateThread thread, ParameterizedStackFrameVisitor visitor, Object data) {
+    static boolean doWalkThread(JavaStackWalk walk, IsolateThread thread, ParameterizedStackFrameVisitor visitor, Object data) {
         while (advance(walk, thread)) {
             JavaFrame frame = JavaStackWalker.getCurrentFrame(walk);
             Pointer sp = frame.getSP();
@@ -499,6 +511,14 @@ public final class JavaStackWalker {
 
             if (JavaFrames.isUnknownFrame(frame)) {
                 return visitUnknownFrame(sp, ip, visitor, data);
+            }
+
+            /*
+             * Interpreter leave stubs have no regular stack reference map. Their variable outgoing
+             * argument area is skipped by continueStackWalk before visiting the caller frame.
+             */
+            if (JavaFrames.isAnyInterpreterLeaveStub(frame)) {
+                continue;
             }
 
             DeoptimizedFrame deoptimizedFrame = Deoptimizer.checkEagerDeoptimized(frame);

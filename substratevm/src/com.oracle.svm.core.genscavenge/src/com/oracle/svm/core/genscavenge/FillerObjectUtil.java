@@ -24,24 +24,23 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.replacements.AllocationSnippets.FillContent.WITH_GARBAGE_IF_ASSERTIONS_ENABLED;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatArrayNode;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatObjectNode;
 import com.oracle.svm.core.heap.FillerArray;
 import com.oracle.svm.core.heap.FillerObject;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.shared.util.UnsignedUtils;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.JavaKind;
 
 public class FillerObjectUtil {
@@ -50,28 +49,28 @@ public class FillerObjectUtil {
     private static final int ARRAY_ELEMENT_SIZE = ARRAY_ELEMENT_KIND.getByteCount();
 
     @Fold
-    public static UnsignedWord objectMinSize() {
-        return Word.unsigned(ConfigurationValues.getObjectLayout().getMinImageHeapObjectSize());
+    static int instanceMinSize() {
+        return ObjectLayout.singleton().getMinRuntimeHeapInstanceSize();
     }
 
     @Fold
     static int arrayMinSize() {
-        return NumUtil.safeToInt(ConfigurationValues.getObjectLayout().getArraySize(ARRAY_ELEMENT_KIND, 0, false));
+        return NumUtil.safeToInt(ObjectLayout.singleton().getArraySize(ARRAY_ELEMENT_KIND, 0, false));
     }
 
     @Fold
     static int arrayBaseOffset() {
-        return ConfigurationValues.getObjectLayout().getArrayBaseOffset(ARRAY_ELEMENT_KIND);
+        return ObjectLayout.singleton().getArrayBaseOffset(ARRAY_ELEMENT_KIND);
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public static void writeFillerObjectAt(Pointer p, UnsignedWord size) {
-        assert size.aboveThan(0);
+    public static void writeFillerObjectAt(Pointer p, UnsignedWord size, boolean rememberedSet) {
+        assert size.equal(instanceMinSize()) || size.aboveOrEqual(arrayMinSize());
         if (size.aboveOrEqual(arrayMinSize())) {
             int length = UnsignedUtils.safeToInt(size.subtract(arrayBaseOffset()).unsignedDivide(ARRAY_ELEMENT_SIZE));
-            FormatArrayNode.formatArray(p, ARRAY_CLASS, length, true, false, WITH_GARBAGE_IF_ASSERTIONS_ENABLED, false);
+            FormatArrayNode.formatArray(p, ARRAY_CLASS, length, rememberedSet, false, WITH_GARBAGE_IF_ASSERTIONS_ENABLED, false);
         } else {
-            FormatObjectNode.formatObject(p, FillerObject.class, true, WITH_GARBAGE_IF_ASSERTIONS_ENABLED, false);
+            FormatObjectNode.formatObject(p, FillerObject.class, rememberedSet, WITH_GARBAGE_IF_ASSERTIONS_ENABLED, false);
         }
         assert LayoutEncoding.getSizeFromObjectInGC(p.toObject()).equal(size);
     }

@@ -28,6 +28,7 @@ import com.oracle.svm.espresso.classfile.descriptors.Name;
 import com.oracle.svm.espresso.classfile.descriptors.Signature;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
+import com.oracle.svm.espresso.shared.lookup.LookupSuccessInvocationFailure;
 import com.oracle.svm.espresso.shared.resolver.CallSiteType;
 import com.oracle.svm.espresso.shared.resolver.FieldAccessType;
 import com.oracle.svm.espresso.shared.resolver.LinkResolver;
@@ -35,6 +36,7 @@ import com.oracle.svm.espresso.shared.resolver.ResolvedCall;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaField;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.shared.util.VMError;
 
 public final class CremaLinkResolver {
     private CremaLinkResolver() {
@@ -58,6 +60,11 @@ public final class CremaLinkResolver {
         LinkResolver.checkFieldAccessOrThrow(runtime, symbolicResolution, fieldAccessType, currentClass, currentMethod);
     }
 
+    public static void checkFieldAccessOrThrow(CremaRuntimeAccess runtime, InterpreterResolvedJavaField symbolicResolution, int opcode, InterpreterResolvedJavaType currentClass,
+                    InterpreterResolvedJavaMethod currentMethod) {
+        checkFieldAccessOrThrow(runtime, symbolicResolution, FieldAccessType.fromOpCode(opcode), currentClass, currentMethod);
+    }
+
     public static boolean checkFieldAccess(CremaRuntimeAccess runtime, InterpreterResolvedJavaField symbolicResolution, FieldAccessType fieldAccessType, InterpreterResolvedJavaType currentClass,
                     InterpreterResolvedJavaMethod currentMethod) {
         return LinkResolver.checkFieldAccess(runtime, symbolicResolution, fieldAccessType, currentClass, currentMethod);
@@ -67,14 +74,22 @@ public final class CremaLinkResolver {
                     Symbol<Name> name, Symbol<Signature> signature, InterpreterResolvedJavaType symbolicHolder,
                     boolean interfaceLookup,
                     boolean accessCheck, boolean loadingConstraints) {
-        return LinkResolver.resolveMethodSymbol(runtime, accessingClass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints);
+        try {
+            return LinkResolver.resolveMethodSymbol(runtime, accessingClass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints);
+        } catch (LookupSuccessInvocationFailure e) {
+            throw VMError.shouldNotReachHere("Should be a synthetic method");
+        }
     }
 
     public static InterpreterResolvedJavaMethod resolveMethodSymbolOrNull(CremaRuntimeAccess runtime, InterpreterResolvedJavaType accessingClass,
                     Symbol<Name> name, Symbol<Signature> signature, InterpreterResolvedJavaType symbolicHolder,
                     boolean interfaceLookup,
                     boolean accessCheck, boolean loadingConstraints) {
-        return LinkResolver.resolveMethodSymbolOrNull(runtime, accessingClass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints);
+        try {
+            return LinkResolver.resolveMethodSymbolOrNull(runtime, accessingClass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints);
+        } catch (LookupSuccessInvocationFailure e) {
+            throw VMError.shouldNotReachHere("Should be a synthetic method");
+        }
     }
 
     public static ResolvedCall<InterpreterResolvedJavaType, InterpreterResolvedJavaMethod, InterpreterResolvedJavaField> resolveCallSiteOrThrow(

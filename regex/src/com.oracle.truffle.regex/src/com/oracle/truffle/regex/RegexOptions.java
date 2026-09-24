@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -64,7 +64,7 @@ import com.oracle.truffle.regex.result.RegexResult;
 import com.oracle.truffle.regex.tregex.TRegexOptions;
 import com.oracle.truffle.regex.tregex.parser.MatchingMode;
 import com.oracle.truffle.regex.tregex.parser.RegexFlavor;
-import com.oracle.truffle.regex.tregex.string.Encodings;
+import com.oracle.truffle.regex.tregex.string.Encoding;
 
 /**
  * These options define how TRegex should interpret a given parsing request.
@@ -234,9 +234,9 @@ public final class RegexOptions {
 
     public static final String ENCODING_NAME = "Encoding";
 
-    @Option(category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Input string encoding.", usageSyntax = "UTF-8|UTF-16|UTF-16-RAW|UTF-32|BYTES|LATIN-1") //
-    public static final OptionKey<Encodings.Encoding> Encoding = new OptionKey<>(Encodings.UTF_16_RAW, new OptionType<>("Encoding", name -> {
-        Encodings.Encoding enc = Encodings.getEncoding(name);
+    @Option(name = "Encoding", category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Input string encoding.", usageSyntax = "UTF-8|UTF-16|UTF-16-RAW|UTF-32|BYTES|LATIN-1") //
+    public static final OptionKey<Encoding> EncodingOption = new OptionKey<>(Encoding.UTF_16_RAW, new OptionType<>("Encoding", name -> {
+        Encoding enc = Encoding.getEncoding(name);
         if (enc == null) {
             throw new IllegalArgumentException(String.format("unknown encoding '%s'. Supported encodings are: UTF-8,UTF-16,UTF-16-RAW,UTF-32,BYTES,LATIN-1", name));
         }
@@ -279,6 +279,11 @@ public final class RegexOptions {
     @Option(category = OptionCategory.EXPERT, stability = OptionStability.STABLE, help = "Backtracker JIT compilation bailout threshold.") //
     public static final OptionKey<Integer> MaxBackTrackerJITSize = new OptionKey<>(TRegexOptions.TRegexMaxBackTrackerMergeExplodeSize);
 
+    public static final String MAX_PARSER_TREE_SIZE_NAME = "MaxParserTreeSize";
+
+    @Option(category = OptionCategory.EXPERT, stability = OptionStability.STABLE, help = "Parser tree bailout threshold.") //
+    public static final OptionKey<Integer> MaxParserTreeSize = new OptionKey<>(TRegexOptions.TRegexParserTreeMaxSize);
+
     @Option(category = OptionCategory.EXPERT, stability = OptionStability.STABLE, help = "Single character class quantifier unroll limit.") //
     public static final OptionKey<Integer> QuantifierUnrollLimitSingleCC = new OptionKey<>(TRegexOptions.TRegexQuantifierUnrollLimitSingleCC);
 
@@ -295,7 +300,8 @@ public final class RegexOptions {
                     (short) TRegexOptions.TRegexMaxDFATransitions,
                     (short) TRegexOptions.TRegexMaxBackTrackerMergeExplodeSize,
                     getDefaultFlavor(),
-                    Encodings.UTF_16_RAW, null, null, JAVA_JDK_VERSION_DEFAULT,
+                    Encoding.UTF_16_RAW, null, null, JAVA_JDK_VERSION_DEFAULT,
+                    TRegexOptions.TRegexParserTreeMaxSize,
                     (short) TRegexOptions.TRegexQuantifierUnrollLimitSingleCC,
                     (short) TRegexOptions.TRegexQuantifierUnrollLimitGroup);
 
@@ -303,10 +309,11 @@ public final class RegexOptions {
     private final short maxDFASize;
     private final short maxBackTrackerCompileSize;
     private final RegexFlavor flavor;
-    private final Encodings.Encoding encoding;
+    private final Encoding encoding;
     private final MatchingMode matchingMode;
     private final String pythonLocale;
     private final short javaJDKVersion;
+    private final int maxParserTreeSize;
     public final short quantifierUnrollLimitSingleCC;
     public final short quantifierUnrollLimitGroup;
 
@@ -315,10 +322,11 @@ public final class RegexOptions {
                     short maxDFASize,
                     short maxBackTrackerCompileSize,
                     RegexFlavor flavor,
-                    Encodings.Encoding encoding,
+                    Encoding encoding,
                     MatchingMode matchingMode,
                     String pythonLocale,
                     short javaJDKVersion,
+                    int maxParserTreeSize,
                     short quantifierUnrollLimitSingleCC,
                     short quantifierUnrollLimitGroup) {
         this.options = options;
@@ -329,6 +337,7 @@ public final class RegexOptions {
         this.matchingMode = matchingMode;
         this.pythonLocale = pythonLocale;
         this.javaJDKVersion = javaJDKVersion;
+        this.maxParserTreeSize = maxParserTreeSize;
         this.quantifierUnrollLimitSingleCC = quantifierUnrollLimitSingleCC;
         this.quantifierUnrollLimitGroup = quantifierUnrollLimitGroup;
     }
@@ -460,7 +469,7 @@ public final class RegexOptions {
         return flavor;
     }
 
-    public Encodings.Encoding getEncoding() {
+    public Encoding getEncoding() {
         return encoding;
     }
 
@@ -479,14 +488,21 @@ public final class RegexOptions {
         return javaJDKVersion;
     }
 
+    /**
+     * Parser tree bailout threshold.
+     */
+    public int getMaxParserTreeSize() {
+        return maxParserTreeSize;
+    }
+
     public RegexOptions withBooleanMatch() {
-        return new RegexOptions(options | BOOLEAN_MATCH, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, quantifierUnrollLimitSingleCC,
-                        quantifierUnrollLimitGroup);
+        return new RegexOptions(options | BOOLEAN_MATCH, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, maxParserTreeSize,
+                        quantifierUnrollLimitSingleCC, quantifierUnrollLimitGroup);
     }
 
     public RegexOptions withoutBooleanMatch() {
-        return new RegexOptions(options & ~BOOLEAN_MATCH, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, quantifierUnrollLimitSingleCC,
-                        quantifierUnrollLimitGroup);
+        return new RegexOptions(options & ~BOOLEAN_MATCH, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, maxParserTreeSize,
+                        quantifierUnrollLimitSingleCC, quantifierUnrollLimitGroup);
     }
 
     @Override
@@ -500,6 +516,7 @@ public final class RegexOptions {
         hash = prime * hash + Objects.hashCode(matchingMode);
         hash = prime * hash + Objects.hashCode(pythonLocale);
         hash = prime * hash + Objects.hashCode(javaJDKVersion);
+        hash = prime * hash + Objects.hashCode(maxParserTreeSize);
         hash = prime * hash + Objects.hashCode(quantifierUnrollLimitSingleCC);
         hash = prime * hash + Objects.hashCode(quantifierUnrollLimitGroup);
         return hash;
@@ -521,6 +538,7 @@ public final class RegexOptions {
                         this.matchingMode == other.matchingMode &&
                         this.pythonLocale.equals(other.pythonLocale) &&
                         this.javaJDKVersion == other.javaJDKVersion &&
+                        this.maxParserTreeSize == other.maxParserTreeSize &&
                         this.quantifierUnrollLimitSingleCC == other.quantifierUnrollLimitSingleCC &&
                         this.quantifierUnrollLimitGroup == other.quantifierUnrollLimitGroup;
 
@@ -534,6 +552,9 @@ public final class RegexOptions {
         }
         if (maxBackTrackerCompileSize != TRegexOptions.TRegexMaxBackTrackerMergeExplodeSize) {
             sb.append(MAX_BACK_TRACKER_SIZE_NAME + "=").append(maxBackTrackerCompileSize).append(',');
+        }
+        if (maxParserTreeSize != TRegexOptions.TRegexParserTreeMaxSize) {
+            sb.append(MAX_PARSER_TREE_SIZE_NAME + "=").append(maxParserTreeSize).append(',');
         }
         if (isU180EWhitespace()) {
             sb.append(U180E_WHITESPACE_NAME + "=true,");
@@ -599,10 +620,11 @@ public final class RegexOptions {
         private short maxDFASize = TRegexOptions.TRegexMaxDFATransitions;
         private short maxBackTrackerCompileSize = TRegexOptions.TRegexMaxBackTrackerMergeExplodeSize;
         private RegexFlavor flavor;
-        private Encodings.Encoding encoding = Encodings.UTF_16_RAW;
+        private Encoding encoding = Encoding.UTF_16_RAW;
         private MatchingMode matchingMode;
         private String pythonLocale;
         private short javaJDKVersion = JAVA_JDK_VERSION_DEFAULT;
+        private int maxParserTreeSize = TRegexOptions.TRegexParserTreeMaxSize;
         private short quantifierUnrollThresholdSingleCC;
         private short quantifierUnrollThresholdGroup;
 
@@ -632,12 +654,13 @@ public final class RegexOptions {
                 parseBooleanSrcOption(GenerateInput, GENERATE_INPUT);
                 parseBooleanSrcOption(ForceLinearExecution, FORCE_LINEAR_EXECUTION);
                 flavor = optionValues.get(Flavor).get();
-                encoding = optionValues.get(Encoding);
+                encoding = optionValues.get(EncodingOption);
                 matchingMode = optionValues.get(MatchingMode);
                 pythonLocale = optionValues.get(PythonLocale);
                 javaJDKVersion = parseShortSrcOption("JavaJDKVersion", JavaJDKVersion, JAVA_JDK_VERSION_MIN);
                 maxDFASize = parseShortSrcOption("MaxDFASize", MaxDFASize, 0);
                 maxBackTrackerCompileSize = parseShortSrcOption("MaxBackTrackerJITSize", MaxBackTrackerJITSize, 0);
+                maxParserTreeSize = parseIntSrcOption(MAX_PARSER_TREE_SIZE_NAME, MaxParserTreeSize, 1);
                 quantifierUnrollThresholdSingleCC = parseShortSrcOption("QuantifierUnrollLimitSingleCC", QuantifierUnrollLimitSingleCC, 1);
                 quantifierUnrollThresholdGroup = parseShortSrcOption("QuantifierUnrollLimitGroup", QuantifierUnrollLimitGroup, 1);
                 return 0;
@@ -763,6 +786,14 @@ public final class RegexOptions {
             return (short) value;
         }
 
+        private int parseIntSrcOption(String optionName, OptionKey<Integer> key, int min) {
+            int value = optionValues.get(key);
+            if (value < min) {
+                throw optionsSyntaxErrorUnexpectedValueMsg("value of " + optionName + " must be greater or equal to " + min);
+            }
+            return value;
+        }
+
         private char lookAheadInKey(int offset) {
             if (Integer.compareUnsigned(i + offset, src.length()) >= 0) {
                 throw optionsSyntaxErrorUnexpectedKey();
@@ -855,36 +886,42 @@ public final class RegexOptions {
             }
         }
 
-        private Encodings.Encoding parseEncoding() throws RegexSyntaxException {
+        private Encoding parseEncoding() throws RegexSyntaxException {
             expectOptionName(ENCODING_NAME);
             if (i >= src.length()) {
-                throw optionsSyntaxErrorUnexpectedValue(Encodings.ALL_NAMES);
+                throw optionsSyntaxErrorUnexpectedValue(Encoding.ALL_NAMES);
             }
             switch (src.charAt(i)) {
                 case 'A':
-                    return expectEncodingValue(Encodings.ASCII);
+                    return expectEncodingValue(Encoding.ASCII);
                 case 'B':
-                    return expectValue(Encodings.BYTES, "BYTES", Encodings.ALL_NAMES);
+                    return expectValue(Encoding.BYTES, "BYTES", Encoding.ALL_NAMES);
                 case 'L':
-                    return expectEncodingValue(Encodings.LATIN_1);
+                    return expectEncodingValue(Encoding.LATIN_1);
                 case 'U':
                     switch (lookAheadInKey(4)) {
                         case '8':
-                            return expectEncodingValue(Encodings.UTF_8);
+                            return expectEncodingValue(Encoding.UTF_8);
                         case '1':
-                            return expectEncodingValue(Encodings.UTF_16);
+                            if (lookAheadInKey(6) == 'B') {
+                                return expectEncodingValue(Encoding.UTF_16BE);
+                            }
+                            return expectEncodingValue(Encoding.UTF_16);
                         case '3':
-                            return expectEncodingValue(Encodings.UTF_32);
+                            if (lookAheadInKey(6) == 'B') {
+                                return expectEncodingValue(Encoding.UTF_32BE);
+                            }
+                            return expectEncodingValue(Encoding.UTF_32);
                         default:
-                            throw optionsSyntaxErrorUnexpectedValue(Encodings.ALL_NAMES);
+                            throw optionsSyntaxErrorUnexpectedValue(Encoding.ALL_NAMES);
                     }
                 default:
-                    throw optionsSyntaxErrorUnexpectedValue(Encodings.ALL_NAMES);
+                    throw optionsSyntaxErrorUnexpectedValue(Encoding.ALL_NAMES);
             }
         }
 
-        private Encodings.Encoding expectEncodingValue(Encodings.Encoding enc) {
-            return expectValue(enc, enc.getName(), Encodings.ALL_NAMES);
+        private Encoding expectEncodingValue(Encoding enc) {
+            return expectValue(enc, enc.getName(), Encoding.ALL_NAMES);
         }
 
         private MatchingMode parseMatchingMode(String optionName) throws RegexSyntaxException {
@@ -944,18 +981,18 @@ public final class RegexOptions {
             return flavor;
         }
 
-        public Builder encoding(@SuppressWarnings("hiding") Encodings.Encoding encoding) {
+        public Builder encoding(@SuppressWarnings("hiding") Encoding encoding) {
             this.encoding = encoding;
             return this;
         }
 
-        public Encodings.Encoding getEncoding() {
+        public Encoding getEncoding() {
             return encoding;
         }
 
         public RegexOptions build() {
-            return new RegexOptions(flags, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, quantifierUnrollThresholdSingleCC,
-                            quantifierUnrollThresholdGroup);
+            return new RegexOptions(flags, maxDFASize, maxBackTrackerCompileSize, flavor, encoding, matchingMode, pythonLocale, javaJDKVersion, maxParserTreeSize,
+                            quantifierUnrollThresholdSingleCC, quantifierUnrollThresholdGroup);
         }
     }
 }

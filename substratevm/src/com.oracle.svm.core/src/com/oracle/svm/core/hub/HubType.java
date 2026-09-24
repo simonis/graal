@@ -24,8 +24,8 @@
  */
 package com.oracle.svm.core.hub;
 
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
+import com.oracle.svm.shared.Uninterruptible;
 
 @DuplicatedInNativeCode
 public class HubType {

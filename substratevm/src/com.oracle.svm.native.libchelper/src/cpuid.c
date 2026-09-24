@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -44,6 +44,8 @@
 #if defined(__x86_64__) || defined(_WIN64)
 #include "amd64cpufeatures.h"
 #include "amd64hotspotcpuinfo.h"
+
+static int supports_avx512_simd_sort;
 
 #ifndef _WIN64
 #include <cpuid.h>
@@ -315,11 +317,17 @@ static void initialize_cpuinfo(CpuidInfo *_cpuid_info)
     _cpuid_info->sefsl1_cpuid7_edx.value = edx;
   }
 
-  if (max_level >= 24)
+  if (max_level >= 0x24)
   {
-    get_cpuid(24, &eax, &ebx, &ecx, &edx);
+    get_cpuid(0x24, &eax, &ebx, &ecx, &edx);
     _cpuid_info->std_cpuid24_eax.value = eax;
     _cpuid_info->std_cpuid24_ebx.value = ebx;
+  }
+
+  if (max_level >= 0x29)
+  {
+    get_cpuid(0x29, &eax, &ebx, &ecx, &edx);
+    _cpuid_info->std_cpuid29_ebx.value = ebx;
   }
 
   // topology
@@ -559,7 +567,8 @@ NO_INLINE static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_i
   if (_cpuid_info->sef_cpuid7_ecx.bits.rdpid != 0)
     features->fRDPID = 1;
   if (_cpuid_info->sefsl1_cpuid7_edx.bits.apx_f != 0 &&
-      _cpuid_info->xem_xcr0_eax.bits.apx_f != 0)
+      _cpuid_info->xem_xcr0_eax.bits.apx_f != 0 &&
+      _cpuid_info->std_cpuid29_ebx.bits.apx_nci_ndd_nf != 0)
     features->fAPX_F = 1;
 
   // AMD|Hygon additional features.
@@ -653,6 +662,13 @@ void determineCPUFeatures(CPUFeatures *features)
       features->fAVX512_IFMA = 0;
     }
   }
+
+  supports_avx512_simd_sort = features->fAVX512DQ && !(is_amd(_cpuid_info) && cpu_family(_cpuid_info) == 0x19);
+}
+
+int supportsAvx512SimdSort(void)
+{
+  return supports_avx512_simd_sort;
 }
 
 #elif defined(__aarch64__)
@@ -699,7 +715,8 @@ void determineCPUFeatures(CPUFeatures* features) {
   features->fSTXR_PREFETCH = 0;
   features->fA53MAC = 0;
   features->fDMB_ATOMICS = 0;
-  features->fPACA = 0;
+  // PAC is currently not supported by HotSpot on Darwin/AArch64.
+  features->fPACA = !!(cpu_has("hw.optional.arm.FEAT_PAuth"));
 }
 
 /*

@@ -83,6 +83,8 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMConvertOp.VCVTSI
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMConvertOp.VCVTSQ2SD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMConvertOp.VCVTSQ2SS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMConvertOp.VCVTSS2SD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.VROUNDSD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.VROUNDSS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VADDPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VADDPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VANDPD;
@@ -122,6 +124,7 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPMULHUW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPMULHW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPMULLD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPMULLW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPMULUDQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPOR;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPSUBB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VPSUBD;
@@ -145,7 +148,6 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexShiftOp.VPSRLW;
 import static jdk.graal.compiler.lir.LIRValueUtil.asJavaConstant;
 import static jdk.graal.compiler.lir.LIRValueUtil.isJavaConstant;
 import static jdk.graal.compiler.vector.lir.amd64.AMD64VectorNodeMatchRules.getRegisterSize;
-import static jdk.vm.ci.amd64.AMD64.xmm0;
 
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -188,13 +190,13 @@ import jdk.graal.compiler.lir.amd64.vector.AMD64VectorGather;
 import jdk.graal.compiler.lir.amd64.vector.AMD64VectorMove;
 import jdk.graal.compiler.lir.amd64.vector.AMD64VectorShuffle;
 import jdk.graal.compiler.lir.amd64.vector.AMD64VectorUnary;
+import jdk.graal.compiler.lir.amd64.vector.AVXByteCompress;
 import jdk.graal.compiler.lir.asm.ArrayDataPointerConstant;
 import jdk.graal.compiler.vector.nodes.simd.SimdConstant;
 import jdk.graal.compiler.vector.nodes.simd.SimdStamp;
 import jdk.vm.ci.amd64.AMD64.CPUFeature;
 import jdk.vm.ci.amd64.AMD64Kind;
 import jdk.vm.ci.code.CodeUtil;
-import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.JavaConstant;
@@ -258,7 +260,7 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                 case BYTE -> throw GraalError.shouldNotReachHere("AVX/AVX2 does not support VPMULLB"); // ExcludeFromJacocoGeneratedReport
                 case WORD -> emitVectorBinary(VPMULLW, a, b);
                 case DWORD -> emitVectorBinary(VPMULLD, a, b);
-                case QWORD -> throw GraalError.shouldNotReachHere("AVX/AVX2 does not support VPMULLQ"); // ExcludeFromJacocoGeneratedReport
+                case QWORD -> emitQwordMulViaDwordOps(a, b);
                 case SINGLE -> emitVectorBinary(VMULPS, a, b);
                 case DOUBLE -> emitVectorBinary(VMULPD, a, b);
                 default -> throw GraalError.shouldNotReachHereUnexpectedValue(kind.getScalar()); // ExcludeFromJacocoGeneratedReport
@@ -266,6 +268,33 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
         } else {
             return super.emitMul(a, b, setFlags);
         }
+    }
+
+    /**
+     * AVX/AVX2 has no packed 64-bit integer multiply. This reconstructs low 64-bit lane products
+     * from 32-bit pieces:
+     *
+     * <pre>
+     * (x_lo U* y_lo) + ((x_hi * y_lo + x_lo * y_hi) << 32)
+     * </pre>
+     *
+     * The low-low product is an unsigned limb multiplication: its high 32 bits contribute to the
+     * final 64-bit result. The cross-products only contribute their low 32 bits, where signed and
+     * unsigned multiplication are equivalent.
+     */
+    private Variable emitQwordMulViaDwordOps(Value a, Value b) {
+        LIRKind kind = LIRKind.combine(a, b);
+        Variable swappedA = getLIRGen().newVariable(kind);
+        getLIRGen().append(new AMD64VectorShuffle.ShuffleWordOp(VPSHUFD, swappedA, asAllocatable(a), 0xB1));
+
+        Variable crossProducts = emitVectorBinary(kind, VPMULLD, swappedA, b);
+        Variable swappedCrossProducts = getLIRGen().newVariable(kind);
+        getLIRGen().append(new AMD64VectorShuffle.ShuffleWordOp(VPSHUFD, swappedCrossProducts, crossProducts, 0xB1));
+        Variable crossSums = emitVectorBinary(kind, VPADDD, crossProducts, swappedCrossProducts);
+        Value shiftAmount = new ConstantValue(LIRKind.value(AMD64Kind.DWORD), JavaConstant.forInt(Integer.SIZE));
+        Variable shiftedCrossSums = emitShift(VPSLLQ, crossSums, shiftAmount);
+        Variable lowProducts = emitVectorBinary(kind, VPMULUDQ, a, b);
+        return emitVectorBinary(kind, VPADDQ, lowProducts, shiftedCrossSums);
     }
 
     @Override
@@ -521,6 +550,11 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     public Value emitFloatConvert(FloatConvert op, Value inputVal, boolean canBeNaN, boolean canOverflow) {
         AMD64Kind kind = (AMD64Kind) inputVal.getPlatformKind();
         int length = kind.getVectorLength();
+        /*
+         * If narrow == true, the conversion operation must be encoded with the input size rather
+         * than the result size.
+         */
+        boolean narrow = op.isNarrowing();
         if (length > 1) {
             AMD64Kind baseKind = kind.getScalar();
 
@@ -529,10 +563,10 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                     assert baseKind == AMD64Kind.DOUBLE : baseKind;
                     // when input length is 4 doubles or less we store the result in a 128
                     // bit/XMM register otherwise we use a YMM register
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.SINGLE, Math.max(length, 4)), VCVTPD2PS, inputVal, true);
+                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.SINGLE, Math.max(length, 4)), VCVTPD2PS, inputVal, narrow);
                 case D2I:
                     assert baseKind == AMD64Kind.DOUBLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DWORD, length), VCVTTPD2DQ, inputVal, true);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.DWORD, length), VCVTTPD2DQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case D2L:
                     throw GraalError.shouldNotReachHere("AVX/AVX2 does not support VCVTTPD2QQ");
                 case F2D:
@@ -540,7 +574,7 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                     return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DOUBLE, length), VCVTPS2PD, inputVal);
                 case F2I:
                     assert baseKind == AMD64Kind.SINGLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DWORD, length), VCVTTPS2DQ, inputVal);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.DWORD, length), VCVTTPS2DQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case F2L:
                     throw GraalError.shouldNotReachHere("AVX/AVX2 does not support VCVTTPS2QQ");
                 case I2D:
@@ -557,7 +591,6 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                     throw GraalError.unimplemented("unsupported vectorized convert " + op); // ExcludeFromJacocoGeneratedReport
             }
         } else {
-            boolean narrow = false;
             switch (op) {
                 case D2F:
                     assert kind == AMD64Kind.DOUBLE : kind;
@@ -567,7 +600,6 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                 case D2UI:
                     assert kind == AMD64Kind.DOUBLE : kind;
                     // extract into normal register
-                    narrow = true;
                     return emitFloatConvertWithFixup(AMD64Kind.DWORD, VCVTTSD2SI, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case D2L:
                 case D2UL:
@@ -954,6 +986,21 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     }
 
     @Override
+    public Value emitRound(Value value, RoundingMode mode) {
+        if (value.getPlatformKind() == AMD64Kind.SINGLE) {
+            Variable result = getLIRGen().newVariable(LIRKind.combine(value));
+            getLIRGen().append(new AMD64VectorBinary.AVXBinaryImmOp(VROUNDSS, AVXSize.XMM, result, asAllocatable(value), asAllocatable(value), mode.encoding));
+            return result;
+        } else if (value.getPlatformKind() == AMD64Kind.DOUBLE) {
+            Variable result = getLIRGen().newVariable(LIRKind.combine(value));
+            getLIRGen().append(new AMD64VectorBinary.AVXBinaryImmOp(VROUNDSD, AVXSize.XMM, result, asAllocatable(value), asAllocatable(value), mode.encoding));
+            return result;
+        } else {
+            return super.emitRound(value, mode);
+        }
+    }
+
+    @Override
     protected void emitVectorBroadcast(AMD64Kind elementKind, Variable result, Value input) {
         ValueKind<?> singleValueKind = input.getValueKind();
         switch (elementKind) {
@@ -993,7 +1040,7 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     }
 
     @Override
-    public Value emitVectorToBitMask(LIRKind resultKind, Value vector) {
+    public Value emitVectorToBitMask(LIRKind resultKind, Value vector, boolean inputIsMask) {
         Variable result = getLIRGen().newVariable(resultKind);
         AMD64Kind vKind = (AMD64Kind) vector.getPlatformKind();
         AMD64Kind eKind = vKind.getScalar();
@@ -1048,9 +1095,8 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
 
         // Make an all-ones mask, meaning that we want to gather all elements. More general
         // masked gathers are not supported yet. We must construct this mask immediately
-        // before the gather instruction because it clobbers it. It must also be a fixed
-        // register for the Use+Temp trick to work.
-        RegisterValue mask = xmm0.asValue(offsets.getValueKind());
+        // before the gather instruction because it clobbers it.
+        Variable mask = getLIRGen().newVariable(offsets.getValueKind());
         PrimitiveConstant allBits = (offsetKind == AMD64Kind.DWORD
                         ? JavaConstant.forInt(-1)
                         : JavaConstant.forLong(-1));
@@ -1443,6 +1489,15 @@ public class AMD64SSEAVXArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
 
     @Override
     public Variable emitVectorCompress(LIRKind resultKind, Value source, Value mask) {
+        AMD64Kind kind = (AMD64Kind) resultKind.getPlatformKind();
+        AVXSize size = AVXKind.getRegisterSize(kind);
+        if (kind.getScalar() == AMD64Kind.BYTE && supports(CPUFeature.AVX2) && supports(CPUFeature.POPCNT) && (size == AVXSize.XMM || size == AVXSize.YMM)) {
+            Variable result = getLIRGen().newVariable(resultKind);
+            Variable scalarMask = getLIRGen().newVariable(LIRKind.value(AMD64Kind.DWORD));
+            getLIRGen().append(new AMD64VectorUnary.AVXUnaryRROp(VPMOVMSKB, size, scalarMask, asAllocatable(mask)));
+            getLIRGen().append(new AVXByteCompress.CompressBytesWithMaskOp(getLIRGen(), asAllocatable(result), asAllocatable(source), asAllocatable(scalarMask)));
+            return result;
+        }
         throw GraalError.shouldNotReachHere("AVX/AVX2 does not support compress/expand");
     }
 

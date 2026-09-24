@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,11 +41,16 @@
 package org.graalvm.truffle.benchmark.tstring;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.interop.HeapIsolationException;
+import com.oracle.truffle.api.interop.InteropLibrary;
+import com.oracle.truffle.api.interop.UnsupportedMessageException;
+import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.strings.TruffleString;
@@ -115,6 +120,17 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
                     public Object execute(VirtualFrame frame) {
                         Object[] args = frame.getArguments();
                         return benchNode.execute(args[0], args[1]);
+                    }
+                };
+            case "byteIndexOfStringSetTString":
+                return new RootNode(this) {
+
+                    @Child ByteIndexOfStringSetTStringNode benchNode = TStringBenchDummyLanguageFactory.ByteIndexOfStringSetTStringNodeGen.create();
+
+                    @Override
+                    public Object execute(VirtualFrame frame) {
+                        Object[] args = frame.getArguments();
+                        return benchNode.execute(args[0], args[1], args[2], args[3]);
                     }
                 };
             case "codePointIndexToByteIndexUTF8":
@@ -236,9 +252,9 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         public abstract int execute(Object input);
 
-        @Specialization
-        int bench(Object hostObject) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+        @Specialization(limit = "3")
+        int bench(Object hostObject, @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             int ret = 0;
             for (int i = 0; i < input.length; i++) {
                 ret += Byte.toUnsignedInt(input[i]);
@@ -308,6 +324,31 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
         }
     }
 
+    abstract static class ByteIndexOfStringSetTStringNode extends Node {
+
+        abstract long execute(Object haystack, Object fromByteIndex, Object toByteIndex, Object stringSet);
+
+        @Specialization(limit = "1")
+        long benchCached(TruffleString haystack, int fromByteIndex, int toByteIndex, Object stringSetHostObject,
+                        @CachedLibrary("stringSetHostObject") InteropLibrary interop,
+                        @Cached ByteIndexOfStringSetTStringCacheNode cacheNode) {
+            TruffleString.StringSet stringSet = (TruffleString.StringSet) asHostObject(stringSetHostObject, interop);
+            return cacheNode.execute(haystack, fromByteIndex, toByteIndex, stringSet);
+        }
+    }
+
+    abstract static class ByteIndexOfStringSetTStringCacheNode extends Node {
+
+        abstract long execute(TruffleString haystack, int fromByteIndex, int toByteIndex, TruffleString.StringSet stringSet);
+
+        @Specialization(guards = "stringSet == cachedStringSet", limit = "1")
+        long benchCached(TruffleString haystack, int fromByteIndex, int toByteIndex, TruffleString.StringSet stringSet,
+                        @Cached("stringSet") TruffleString.StringSet cachedStringSet,
+                        @Cached TruffleString.ByteIndexOfStringSetNode node) {
+            return node.execute(haystack, fromByteIndex, toByteIndex, cachedStringSet);
+        }
+    }
+
     abstract static class CodePointIndexToByteIndexBenchNode extends Node {
 
         abstract int execute(Object a, Object offset, Object index, Object encoding);
@@ -323,10 +364,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_8, false);
         }
     }
@@ -335,10 +377,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_16, false);
         }
     }
@@ -347,10 +390,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_16, true);
         }
     }
@@ -359,10 +403,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_32, true);
         }
     }
@@ -371,10 +416,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_16BE, false);
         }
     }
@@ -383,11 +429,12 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
                         @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
-                        @Cached TruffleString.SwitchEncodingNode switchEncodingNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.SwitchEncodingNode switchEncodingNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return switchEncodingNode.execute(fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_16BE, false), TruffleString.Encoding.UTF_16);
         }
     }
@@ -396,10 +443,11 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
-                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_32BE, false);
         }
     }
@@ -408,11 +456,12 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         abstract TruffleString execute(Object hostObject, int length);
 
-        @Specialization
+        @Specialization(limit = "3")
         TruffleString bench(Object hostObject, int length,
                         @Cached TruffleString.FromByteArrayNode fromByteArrayNode,
-                        @Cached TruffleString.SwitchEncodingNode switchEncodingNode) {
-            byte[] input = (byte[]) DummyLanguageContext.get(this).getEnv().asHostObject(hostObject);
+                        @Cached TruffleString.SwitchEncodingNode switchEncodingNode,
+                        @CachedLibrary("hostObject") InteropLibrary interop) {
+            byte[] input = (byte[]) asHostObject(hostObject, interop);
             return switchEncodingNode.execute(fromByteArrayNode.execute(input, 0, length, TruffleString.Encoding.UTF_32BE, false), TruffleString.Encoding.UTF_32);
         }
     }
@@ -453,6 +502,14 @@ public class TStringBenchDummyLanguage extends TruffleLanguage<TStringBenchDummy
 
         public static DummyLanguageContext get(Node node) {
             return REFERENCE.get(node);
+        }
+    }
+
+    static Object asHostObject(Object guestObject, InteropLibrary interop) {
+        try {
+            return interop.asHostObject(guestObject);
+        } catch (UnsupportedMessageException | HeapIsolationException e) {
+            throw CompilerDirectives.shouldNotReachHere(e);
         }
     }
 }

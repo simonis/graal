@@ -24,20 +24,20 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CORE_GC_CODE;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.genscavenge.remset.RememberedSet;
+import com.oracle.svm.core.heap.DerivedReferenceSupport;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.UninterruptibleObjectReferenceVisitor;
-import com.oracle.svm.core.log.Log;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.shared.Uninterruptible;
 
 /**
  * This visitor is handed <em>Pointers to Object references</em> and if necessary it promotes the
@@ -50,6 +50,7 @@ import jdk.graal.compiler.word.Word;
  */
 public final class GreyToBlackObjRefVisitor implements UninterruptibleObjectReferenceVisitor {
     private final Counters counters;
+    private final DerivedReferenceUpdater derivedRefUpdater = new DerivedReferenceUpdater();
 
     @Platforms(Platform.HOSTED_ONLY.class)
     GreyToBlackObjRefVisitor() {
@@ -62,7 +63,7 @@ public final class GreyToBlackObjRefVisitor implements UninterruptibleObjectRefe
 
     @Override
     @AlwaysInline("GC performance")
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE, mayBeInlined = true)
     public void visitObjectReferences(Pointer firstObjRef, boolean compressed, int referenceSize, Object holderObject, int count) {
         Pointer pos = firstObjRef;
         Pointer end = firstObjRef.add(Word.unsigned(count).multiply(referenceSize));
@@ -73,7 +74,7 @@ public final class GreyToBlackObjRefVisitor implements UninterruptibleObjectRefe
     }
 
     @AlwaysInline("GC performance")
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE, mayBeInlined = true)
     private void visitObjectReference(Pointer objRef, boolean compressed, Object holderObject) {
         assert !objRef.isNull();
         counters.noteObjRef();
@@ -89,28 +90,28 @@ public final class GreyToBlackObjRefVisitor implements UninterruptibleObjectRefe
             return;
         }
 
-        // This is the most expensive check as it accesses the heap fairly randomly, which results
-        // in a lot of cache misses.
+        // This is the most expensive access as it is fairly random, resulting in many cache misses.
         ObjectHeaderImpl ohi = ObjectHeaderImpl.getObjectHeaderImpl();
         Word header = ohi.readHeaderFromPointer(p);
-        if (GCImpl.getGCImpl().isCompleteCollection() || !RememberedSet.get().hasRememberedSet(header)) {
 
+        if (ObjectHeaderImpl.isMarkedHeader(header)) {
+            // Note that marking is also used in copying collections for pinned objects.
+            RememberedSet.get().dirtyCardIfNecessaryInGC(holderObject, p.toObjectNonNull(), objRef);
+            return;
+        }
+
+        if (GCImpl.getGCImpl().isCompleteCollection() || !RememberedSet.get().hasRememberedSet(header)) {
             if (ObjectHeaderImpl.isForwardedHeader(header)) {
                 counters.noteForwardedReferent();
                 // Update the reference to point to the forwarded Object.
                 Object obj = ohi.getForwardedObject(p, header);
                 ReferenceAccess.singleton().writeObjectAt(objRef, obj, compressed);
-                RememberedSet.get().dirtyCardIfNecessary(holderObject, obj, objRef);
-                return;
-            }
-
-            Object obj = p.toObjectNonNull();
-            if (SerialGCOptions.useCompactingOldGen() && ObjectHeaderImpl.isMarkedHeader(header)) {
-                RememberedSet.get().dirtyCardIfNecessary(holderObject, obj, objRef);
+                RememberedSet.get().dirtyCardIfNecessaryInGC(holderObject, obj, objRef);
                 return;
             }
 
             // Promote the Object if necessary, making it at least grey, and ...
+            Object obj = p.toObjectNonNull();
             Object copy = GCImpl.getGCImpl().promoteObject(obj, header);
             if (copy != obj) {
                 // ... update the reference to point to the copy, making the reference black.
@@ -120,10 +121,29 @@ public final class GreyToBlackObjRefVisitor implements UninterruptibleObjectRefe
                 counters.noteUnmodifiedReference();
             }
 
-            // The reference will not be updated if a whole chunk is promoted. However, we still
-            // might have to dirty the card.
-            RememberedSet.get().dirtyCardIfNecessary(holderObject, copy, objRef);
+            /*
+             * The reference will not be updated if a whole chunk is promoted or the object is
+             * pinned. However, we still might have to dirty the card.
+             */
+            RememberedSet.get().dirtyCardIfNecessaryInGC(holderObject, copy, objRef);
         }
+    }
+
+    @Override
+    @AlwaysInline("GC performance")
+    @Uninterruptible(reason = CORE_GC_CODE, mayBeInlined = true)
+    public void visitDerivedReferenceBase(Pointer baseObjRef, boolean compressed, int referenceSize, Object holderObject) {
+        derivedRefUpdater.captureBaseBeforeUpdate(baseObjRef, compressed);
+        visitObjectReference(baseObjRef, compressed, holderObject);
+        derivedRefUpdater.captureBaseAfterUpdate(baseObjRef, compressed);
+    }
+
+    @Override
+    @AlwaysInline("GC performance")
+    @Uninterruptible(reason = CORE_GC_CODE, mayBeInlined = true)
+    public void visitDerivedReference(Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+        Pointer derivedBefore = DerivedReferenceSupport.readReferenceAsPointer(derivedObjRef, compressed);
+        derivedRefUpdater.updateDerivedReference(derivedObjRef, compressed, derivedBefore);
     }
 
     public Counters openCounters() {

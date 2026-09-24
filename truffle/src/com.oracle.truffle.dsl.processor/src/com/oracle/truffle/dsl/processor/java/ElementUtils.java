@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -105,24 +105,36 @@ import com.oracle.truffle.dsl.processor.model.SpecializationData.Idempotence;
  */
 public class ElementUtils {
 
-    public static ExecutableElement findMethod(Class<?> type, String methodName) {
-        ProcessorContext context = ProcessorContext.getInstance();
-        DeclaredType typeElement = context.getDeclaredType(type);
-        return findMethod(typeElement, methodName);
+    public static ExecutableElement findMethod(DeclaredType type, String methodName) {
+        return findMethod(type, methodName, null, null);
     }
 
-    public static ExecutableElement findMethod(DeclaredType type, String methodName) {
-        ProcessorContext context = ProcessorContext.getInstance();
-        return findMethod(context.getTypeElement(type), methodName);
+    public static ExecutableElement findMethod(DeclaredType type, String methodName, TypeMirror[] parameterTypes, TypeMirror returnType) {
+        return findMethod(ProcessorContext.getInstance().getTypeElement(type), methodName, parameterTypes, returnType);
     }
 
     public static ExecutableElement findMethod(TypeElement typeElement, String methodName) {
-        for (ExecutableElement method : ElementFilter.methodsIn(typeElement.getEnclosedElements())) {
-            if (method.getSimpleName().contentEquals(methodName)) {
-                return method;
-            }
+        return findMethod(typeElement, methodName, null, null);
+    }
+
+    public static ExecutableElement findMethod(TypeElement typeElement, String methodName, TypeMirror[] parameterTypes, TypeMirror returnType) {
+        List<ExecutableElement> methods = findMethods(typeElement, methodName, parameterTypes, returnType);
+        if (methods.isEmpty()) {
+            return null;
+        } else if (methods.size() != 1) {
+            String parameterTypesString = parameterTypes == null ? "null" : Arrays.stream(parameterTypes).map(ElementUtils::getSimpleName).collect(Collectors.joining(",", "[", "]"));
+            String returnTypesString = returnType == null ? "null" : getSimpleName(returnType);
+            throw new AssertionError("Found multiple methods with name %s, parameter types %s, return type %s: %s".formatted(methodName, parameterTypesString, returnTypesString, methods));
         }
-        return null;
+        return methods.getFirst();
+    }
+
+    public static List<ExecutableElement> findMethods(TypeElement typeElement, String methodName, TypeMirror[] parameterTypes, TypeMirror returnType) {
+        return ElementFilter.methodsIn(typeElement.getEnclosedElements()).stream() //
+                        .filter(method -> methodName == null || method.getSimpleName().contentEquals(methodName)) //
+                        .filter(method -> parameterTypes == null || parametersMatch(parameterTypes, method)) //
+                        .filter(method -> returnType == null || typeEquals(returnType, method.getReturnType())) //
+                        .collect(Collectors.toList());
     }
 
     /**
@@ -133,18 +145,29 @@ public class ElementUtils {
      * can be null, in which case the parameter type is not checked.
      */
     public static ExecutableElement findInstanceMethod(TypeElement typeElement, String methodName, TypeMirror[] parameterTypes) {
-        List<ExecutableElement> matches = ElementFilter.methodsIn(typeElement.getEnclosedElements()).stream() //
-                        .filter(method -> method.getSimpleName().toString().equals(methodName)) //
-                        .filter(method -> !method.getModifiers().contains(STATIC)) //
-                        .filter(method -> parametersMatch(parameterTypes, method)) //
-                        .collect(Collectors.toList());
-        if (matches.isEmpty()) {
+        ExecutableElement method = findMethod(typeElement, methodName, parameterTypes, null);
+        if (method == null || method.getModifiers().contains(STATIC)) {
             return null;
         }
-        if (matches.size() > 1) {
-            throw new AssertionError(String.format("Type %s defines more than one method named %s (parameter types: %s)", typeElement.getSimpleName(), methodName, parameterTypes));
+        return method;
+    }
+
+    public static ExecutableElement findStaticMethod(TypeElement typeElement, String methodName) {
+        ExecutableElement method = findMethod(typeElement, methodName, null, null);
+        if (method == null || !method.getModifiers().contains(STATIC)) {
+            return null;
         }
-        return matches.getFirst();
+        return method;
+    }
+
+    public static boolean hasStaticMethod(TypeElement typeElement, String methodName) {
+        List<ExecutableElement> methods = findMethods(typeElement, methodName, null, null);
+        for (ExecutableElement method : methods) {
+            if (method.getModifiers().contains(STATIC)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean parametersMatch(TypeMirror[] parameterTypes, ExecutableElement method) {
@@ -167,15 +190,8 @@ public class ElementUtils {
     }
 
     public static List<ExecutableElement> findAllPublicMethods(DeclaredType type, String methodName) {
-        ProcessorContext context = ProcessorContext.getInstance();
-        List<ExecutableElement> methods = new ArrayList<>();
-        TypeElement typeElement = context.getTypeElement(type);
-        for (ExecutableElement method : ElementFilter.methodsIn(typeElement.getEnclosedElements())) {
-            if (method.getModifiers().contains(Modifier.PUBLIC) && method.getSimpleName().toString().equals(methodName)) {
-                methods.add(method);
-            }
-        }
-        return methods;
+        return findMethods(ProcessorContext.getInstance().getTypeElement(type), methodName, null, null).stream() //
+                        .filter(m -> m.getModifiers().contains(Modifier.PUBLIC)).toList();
     }
 
     public static List<Element> getEnumValues(TypeElement type) {
@@ -193,15 +209,6 @@ public class ElementUtils {
         TypeElement typeElement = context.getTypeElement(type);
         for (ExecutableElement method : ElementFilter.methodsIn(typeElement.getEnclosedElements())) {
             if (method.getParameters().size() == parameterCount && method.getSimpleName().contentEquals(methodName)) {
-                return method;
-            }
-        }
-        return null;
-    }
-
-    public static ExecutableElement findStaticMethod(TypeElement type, String methodName) {
-        for (ExecutableElement method : ElementFilter.methodsIn(type.getEnclosedElements())) {
-            if (method.getModifiers().contains(Modifier.STATIC) && method.getSimpleName().contentEquals(methodName)) {
                 return method;
             }
         }
@@ -1104,6 +1111,9 @@ public class ElementUtils {
 
     public static String getEnclosedQualifiedName(DeclaredType mirror) {
         Element e = ((TypeElement) mirror.asElement()).getEnclosingElement();
+        if (e == null) {
+            throw new IllegalAccessError("Mirror does not contain an element " + mirror);
+        }
         if (e.getKind() == ElementKind.PACKAGE) {
             return ((PackageElement) e).getQualifiedName().toString();
         } else if (e.getKind().isInterface() || e.getKind().isClass()) {
@@ -1773,14 +1783,56 @@ public class ElementUtils {
         if (!nameEquals(e1.getSimpleName(), e2.getSimpleName())) {
             return false;
         }
-        if (e1.getParameters().size() != e2.getParameters().size()) {
-            return false;
-        }
         if (!typeEquals(e1.getReturnType(), e2.getReturnType())) {
             return false;
         }
-        for (int i = 0; i < e1.getParameters().size(); i++) {
+        return parameterTypesEquals(e1, e2);
+    }
+
+    public static boolean parameterTypesEquals(ExecutableElement e1, ExecutableElement e2) {
+        int numParams1 = e1.getParameters().size();
+        if (numParams1 != e2.getParameters().size()) {
+            return false;
+        }
+        for (int i = 0; i < numParams1; i++) {
             if (!typeEquals(e1.getParameters().get(i).asType(), e2.getParameters().get(i).asType())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static boolean thrownTypesEquals(ExecutableElement e1, ExecutableElement e2) {
+        List<TypeMirror> types1 = (List<TypeMirror>) e1.getThrownTypes();
+        List<TypeMirror> types2 = (List<TypeMirror>) e2.getThrownTypes();
+        int size = types1.size();
+        if (size != types2.size()) {
+            return false;
+        }
+        if (size > 1) {
+            // The thrown types can be in an arbitrary order.
+            // Sort them to be able to compare them in a linear pass.
+            types1 = new ArrayList<>(types1);
+            sortTypes(types1, false);
+            types2 = new ArrayList<>(types2);
+            sortTypes(types2, false);
+        }
+        for (int i = 0; i < size; i++) {
+            if (!typeEquals(types1.get(i), types2.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static boolean parametersEquals(ExecutableElement e1, ExecutableElement e2) {
+        int numParams1 = e1.getParameters().size();
+        if (numParams1 != e2.getParameters().size()) {
+            return false;
+        }
+        for (int i = 0; i < numParams1; i++) {
+            if (!variableEquals(e1.getParameters().get(i), e2.getParameters().get(i))) {
                 return false;
             }
         }
@@ -1800,6 +1852,27 @@ public class ElementUtils {
     public static boolean isOverridable(ExecutableElement ex) {
         Set<Modifier> mods = ex.getModifiers();
         return !mods.contains(FINAL) && !mods.contains(STATIC) && (mods.contains(PUBLIC) || mods.contains(PROTECTED));
+    }
+
+    public static boolean isFinal(ExecutableElement ex) {
+        Set<Modifier> mods = ex.getModifiers();
+        if (mods.contains(STATIC) || mods.contains(FINAL) || mods.contains(Modifier.PRIVATE)) {
+            return true;
+        }
+        if (ex.getKind() != ElementKind.METHOD) {
+            // only methods are overridable, constructors are not
+            return true;
+        }
+        Element enclosing = ex.getEnclosingElement();
+        if (enclosing != null) {
+            if (enclosing.getKind() == ElementKind.INTERFACE) {
+                return false;
+            }
+            if (enclosing.getModifiers().contains(Modifier.FINAL) || enclosing.getKind() == ElementKind.RECORD) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static List<ExecutableElement> getOverridableMethods(TypeElement t) {
@@ -2207,12 +2280,30 @@ public class ElementUtils {
         return workaround;
     }
 
+    /**
+     * Searches the superclass hierarchy of {@code type} for an override of {@code method}, which
+     * belongs to the base class. Returns {@code null} if the resolved override is the original
+     * method.
+     */
     public static ExecutableElement findOverride(ExecutableElement method, TypeElement type) {
+        ExecutableElement override = findMethodInClassHierarchy(method, type);
+        if (override != null && !elementEquals(method, override)) {
+            return override;
+        }
+        return null;
+    }
+
+    /**
+     * Searches the superclass hierarchy of {@code type} for the most concrete implementation of
+     * {@code method}.
+     */
+    public static ExecutableElement findMethodInClassHierarchy(ExecutableElement method, TypeElement type) {
         TypeElement searchType = type;
-        while (searchType != null && !elementEquals(method.getEnclosingElement(), searchType)) {
-            ExecutableElement override = findInstanceMethod(searchType, method.getSimpleName().toString(), method.getParameters().stream().map(VariableElement::asType).toArray(TypeMirror[]::new));
-            if (override != null) {
-                return override;
+        while (searchType != null) {
+            ExecutableElement instanceMethod = findInstanceMethod(searchType, method.getSimpleName().toString(),
+                            method.getParameters().stream().map(VariableElement::asType).toArray(TypeMirror[]::new));
+            if (instanceMethod != null) {
+                return instanceMethod;
             }
             searchType = castTypeElement(searchType.getSuperclass());
         }

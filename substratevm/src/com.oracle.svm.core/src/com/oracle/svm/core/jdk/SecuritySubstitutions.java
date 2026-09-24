@@ -24,8 +24,6 @@
  */
 package com.oracle.svm.core.jdk;
 
-import static com.oracle.svm.core.snippets.KnownIntrinsics.readCallerStackPointer;
-
 import java.lang.ref.ReferenceQueue;
 import java.lang.reflect.Constructor;
 import java.net.URL;
@@ -48,10 +46,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 import org.graalvm.nativeimage.impl.InternalPlatform;
-import org.graalvm.word.Pointer;
 
-import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
@@ -59,27 +54,16 @@ import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.thread.Target_java_lang_ThreadLocal;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import sun.security.util.SecurityConstants;
 
 /*
  * All security checks are disabled.
  */
-
-@TargetClass(SecurityManager.class)
-@Platforms(InternalPlatform.NATIVE_ONLY.class)
-@SuppressWarnings({"static-method", "unused"})
-final class Target_java_lang_SecurityManager {
-    @Substitute
-    @NeverInline("Starting a stack walk in the caller frame")
-    protected Class<?>[] getClassContext() {
-        final Pointer startSP = readCallerStackPointer();
-        return StackTraceUtils.getClassContext(0, startSP);
-    }
-}
 
 @TargetClass(className = "javax.crypto.JceSecurityManager")
 @SuppressWarnings({"static-method", "unused"})
@@ -251,7 +235,7 @@ class ProviderVerifierJavaHomeAccessors {
  * support.
  */
 @TargetClass(className = "javax.crypto.JceSecurity", onlyWith = SecurityProvidersInitializedAtBuildTime.class)
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+27/src/java.base/share/classes/javax/crypto/JceSecurity.java.template")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+27/src/java.base/share/classes/javax/crypto/JceSecurity.java.template")
 @SuppressWarnings({"unused"})
 final class Target_javax_crypto_JceSecurity {
 
@@ -296,10 +280,11 @@ final class Target_javax_crypto_JceSecurity {
          * supported in Native Image, so we need to fail. We could either fail here or substitute
          * getCodeBase() and fail there, but handling it here is a cleaner approach.
          */
+        String providerFQN = p.getClass().getName();
         throw new SecurityException(
-                        "Attempted to verify a provider that was not registered at build time: " + p + ". " +
+                        "Attempted to verify a provider that was not registered at build time: " + providerFQN + ". " +
                                         "All security providers must be registered and verified during native image generation. " +
-                                        "Try adding the option: -H:AdditionalSecurityProviders=" + p + " and rebuild the image.");
+                                        "Try adding the option: -H:AdditionalSecurityProviders=" + providerFQN + " and rebuild the image.");
     }
 }
 
@@ -316,7 +301,7 @@ final class Target_javax_crypto_JceSecurity_WeakIdentityWrapper {
  * JDK 8 has the class `javax.crypto.JarVerifier`, but in JDK 11 and later that class is only
  * available in Oracle builds, and not in OpenJDK builds.
  */
-@TargetClass(className = "javax.crypto.JarVerifier", onlyWith = PlatformHasClass.class)
+@TargetClass(className = "javax.crypto.JarVerifier", onlyWith = {PlatformHasClass.class, OracleJDK.class})
 @SuppressWarnings({"static-method", "unused"})
 final class Target_javax_crypto_JarVerifier {
 

@@ -26,15 +26,17 @@ package com.oracle.svm.hosted;
 
 import java.util.Set;
 
+import org.graalvm.collections.UnmodifiableEconomicSet;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.option.GCOptionValue;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.util.StringUtil;
+import com.oracle.svm.shared.util.StringUtil;
 
 /**
  * The normal option validation cannot be used for {@link SubstrateOptions#SupportedGCs} as that
@@ -42,6 +44,11 @@ import com.oracle.svm.util.StringUtil;
  */
 @AutomaticallyRegisteredFeature
 public class ValidateGCOptionFeature implements InternalFeature {
+
+    @Override
+    public boolean isInConfiguration(IsInConfigurationAccess access) {
+        return ImageLayerBuildingSupport.firstImageBuild();
+    }
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
@@ -56,7 +63,7 @@ public class ValidateGCOptionFeature implements InternalFeature {
             return;
         }
 
-        Set<String> possibleValues = GCOptionValue.possibleValues();
+        UnmodifiableEconomicSet<String> possibleValues = GCOptionValue.possibleValues();
         if (values.isEmpty()) {
             throw UserError.abort("Invalid option '--gc'. No GC specified. %s", getGCErrorReason(possibleValues));
         }
@@ -75,7 +82,7 @@ public class ValidateGCOptionFeature implements InternalFeature {
         }
     }
 
-    private static String getGCErrorReason(Set<String> values) {
+    private static String getGCErrorReason(UnmodifiableEconomicSet<String> values) {
         return "Accepted values are " + StringUtil.joinSingleQuoted(values) + ".";
     }
 

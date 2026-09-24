@@ -27,9 +27,7 @@
 package com.oracle.objectfile.elf.dwarf;
 
 import java.lang.reflect.Modifier;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import com.oracle.objectfile.debugentry.ArrayTypeEntry;
 import com.oracle.objectfile.debugentry.ClassEntry;
@@ -59,6 +57,7 @@ import com.oracle.objectfile.elf.dwarf.constants.DwarfUnitHeader;
 import com.oracle.objectfile.elf.dwarf.constants.DwarfVersion;
 
 import jdk.graal.compiler.debug.DebugContext;
+import org.graalvm.collections.EconomicSet;
 
 /**
  * Section generator for debug_info section.
@@ -630,9 +629,7 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
                 pos = writeClassLayoutTypeUnit(context, (ClassEntry) typeEntry, buffer, pos);
             }
             pos = writePointerTypeUnit(context, typeEntry, buffer, pos);
-            if (dwarfSections.useHeapBase()) {
-                pos = writePointerTypeUnitForCompressed(context, typeEntry, buffer, pos);
-            }
+            pos = writePointerTypeUnitForCompressed(context, typeEntry, buffer, pos);
         }
         return pos;
     }
@@ -2048,7 +2045,7 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
     }
 
     private int writeAbstractInlineMethods(DebugContext context, ClassEntry classEntry, byte[] buffer, int p) {
-        Set<MethodEntry> inlinedMethods = collectInlinedMethods(context, classEntry, p);
+        Iterable<MethodEntry> inlinedMethods = collectInlinedMethods(context, classEntry, p);
         int pos = p;
         for (MethodEntry methodEntry : inlinedMethods) {
             // n.b. class entry used to index the method belongs to the inlining method
@@ -2063,13 +2060,13 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
         return pos;
     }
 
-    private Set<MethodEntry> collectInlinedMethods(DebugContext context, ClassEntry classEntry, int p) {
-        final HashSet<MethodEntry> methods = new HashSet<>();
+    private Iterable<MethodEntry> collectInlinedMethods(DebugContext context, ClassEntry classEntry, int p) {
+        final EconomicSet<MethodEntry> methods = EconomicSet.create();
         classEntry.compiledMethods().forEach(compiledMethod -> addInlinedMethods(context, compiledMethod, compiledMethod.primary(), methods, p));
         return methods;
     }
 
-    private void addInlinedMethods(DebugContext context, CompiledMethodEntry compiledEntry, Range primary, HashSet<MethodEntry> hashSet, int p) {
+    private void addInlinedMethods(DebugContext context, CompiledMethodEntry compiledEntry, Range primary, EconomicSet<MethodEntry> set, int p) {
         if (primary.isLeaf()) {
             return;
         }
@@ -2082,7 +2079,7 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
             // identify the inlined method by looking at the first callee
             Range callee = subrange.getCallees().getFirst();
             MethodEntry methodEntry = callee.getMethodEntry();
-            if (hashSet.add(methodEntry)) {
+            if (set.add(methodEntry)) {
                 verboseLog(context, "  [0x%08x]   add abstract inlined method %s", p, methodEntry.getSymbolName());
             }
         }
@@ -2207,15 +2204,10 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
         /*
          * For an explanation of the conversion rules @see com.oracle.svm.core.heap.ReferenceAccess
          *
-         * n.b.
-         *
-         * The setting for option -H:+/-SpawnIsolates is determined by useHeapBase == true/false.
          * The setting for option -H:+/-UseCompressedReferences is determined by compressionShift >
-         * 0.
-         *
+         * 0. References are always relative to the heap base.
          */
 
-        boolean useHeapBase = dwarfSections.useHeapBase();
         int reservedHubBitsMask = dwarfSections.reservedHubBitsMask();
         int numReservedHubBits = dwarfSections.numReservedHubBits();
         int compressionShift = dwarfSections.compressionShift();
@@ -2241,16 +2233,12 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
          * ... END IF ..............................................................................
          * . END IF ................................................................................
          * END IF ..................................................................................
-         * IF useHeapBase ..........................................................................
-         * . IF compressionShift != 0 ..............................................................
+         * IF compressionShift != 0 ................................................................
          * ... push compressionShift .......................... (1 byte) ..... [offset, comp shift]
          * ... LSHL ........................................... (1 byte) ..... [offset] ............
-         * . END IF ................................................................................
-         * . push rheap+0 ..................................... (2 bytes) .... [offset, rheap] .....
-         * . ADD .............................................. (1 byte) ..... [oop] ...............
-         * ELSE ....................................................................................
-         * ................................................................... [offset == oop] .....
          * END IF ..................................................................................
+         * push rheap+0 ....................................... (2 bytes) .... [offset, rheap] .....
+         * ADD ................................................ (1 byte) ..... [oop] ...............
          * end: .............................................................. [oop] ...............
          */
 
@@ -2275,16 +2263,14 @@ public class DwarfInfoSectionImpl extends DwarfSectionImpl {
                 }
             }
         }
-        if (useHeapBase) {
-            if (compressionShift != 0) {
-                pos = writeExprOpcodeLiteral(compressionShift, buffer, pos);
-                pos = writeExprOpcode(DwarfExpressionOpcode.DW_OP_shl, buffer, pos);
-            }
-            /* add the resulting offset to the heapbase register */
-            pos = writeExprOpcodeBReg(dwarfSections.getHeapbaseRegister(), buffer, pos);
-            pos = writeSLEB(0, buffer, pos); /* 1 byte. */
-            pos = writeExprOpcode(DwarfExpressionOpcode.DW_OP_plus, buffer, pos);
+        if (compressionShift != 0) {
+            pos = writeExprOpcodeLiteral(compressionShift, buffer, pos);
+            pos = writeExprOpcode(DwarfExpressionOpcode.DW_OP_shl, buffer, pos);
         }
+        /* Add the resulting offset to the heap base register. */
+        pos = writeExprOpcodeBReg(dwarfSections.getHeapbaseRegister(), buffer, pos);
+        pos = writeSLEB(0, buffer, pos); /* 1 byte. */
+        pos = writeExprOpcode(DwarfExpressionOpcode.DW_OP_plus, buffer, pos);
 
         int exprSize = pos - exprStart;
         assert (exprSize >> 7) == 0; // expression length field should fit in one byte

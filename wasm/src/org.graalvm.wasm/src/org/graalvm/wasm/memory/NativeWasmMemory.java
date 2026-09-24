@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,8 +51,8 @@ import java.lang.reflect.Field;
 
 import org.graalvm.wasm.MemoryContext;
 import org.graalvm.wasm.WasmMath;
-import org.graalvm.wasm.api.Vector128;
-import org.graalvm.wasm.api.Vector128Ops;
+import org.graalvm.wasm.vector.Vector128;
+import org.graalvm.wasm.vector.Vector128Ops;
 import org.graalvm.wasm.constants.Sizes;
 import org.graalvm.wasm.exception.Failure;
 import org.graalvm.wasm.exception.WasmException;
@@ -101,7 +101,8 @@ public final class NativeWasmMemory extends WasmMemory {
 
     @TruffleBoundary
     NativeWasmMemory(long declaredMinSize, long declaredMaxSize, boolean indexType64, MemoryContext memoryContext) {
-        this(declaredMinSize, declaredMaxSize, declaredMinSize, WasmMath.minUnsigned(declaredMaxSize, MAX_ALLOWED_SIZE), indexType64, memoryContext);
+        this(declaredMinSize, declaredMaxSize, declaredMinSize, WasmMath.minUnsigned(effectiveDeclaredMaxSize(declaredMaxSize, indexType64), MAX_ALLOWED_SIZE), indexType64,
+                        memoryContext);
     }
 
     private static long allocate(long newBufferSize) {

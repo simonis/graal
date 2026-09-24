@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,82 +24,17 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import org.graalvm.nativeimage.Platform;
-import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.heap.GCCause;
 import com.oracle.svm.core.heap.OutOfMemoryUtil;
 import com.oracle.svm.core.heap.PhysicalMemory;
-import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.util.ReflectionUtil;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.Uninterruptible;
 
 /** The interface for a garbage collection policy. All sizes are in bytes. */
 public interface CollectionPolicy {
     UnsignedWord UNDEFINED = Word.unsigned(-1L);
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    static String getInitialPolicyName() {
-        if (SubstrateOptions.useEpsilonGC()) {
-            return "NeverCollect";
-        } else if (!SerialGCOptions.useRememberedSet()) {
-            return "OnlyCompletely";
-        }
-        String name = SerialGCOptions.InitialCollectionPolicy.getValue();
-        String legacyPrefix = "com.oracle.svm.core.genscavenge.CollectionPolicy$";
-        if (name.startsWith(legacyPrefix)) {
-            return name.substring(legacyPrefix.length());
-        }
-        return name;
-    }
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    static CollectionPolicy getInitialPolicy() {
-        String name = getInitialPolicyName();
-        Class<? extends CollectionPolicy> clazz = getPolicyClass(name);
-        return ReflectionUtil.newInstance(clazz);
-    }
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    static Class<? extends CollectionPolicy> getPolicyClass(String name) {
-        switch (name) {
-            case "Adaptive":
-                return AdaptiveCollectionPolicy.class;
-            case "LibGraal":
-                return LibGraalCollectionPolicy.class;
-            case "Proportionate":
-                return ProportionateSpacesPolicy.class;
-            case "BySpaceAndTime":
-                return BasicCollectionPolicies.BySpaceAndTime.class;
-            case "OnlyCompletely":
-                return BasicCollectionPolicies.OnlyCompletely.class;
-            case "OnlyIncrementally":
-                return BasicCollectionPolicies.OnlyIncrementally.class;
-            case "NeverCollect":
-                return BasicCollectionPolicies.NeverCollect.class;
-            case "Dynamic":
-                return DynamicCollectionPolicy.class;
-        }
-        throw UserError.abort("Policy %s does not exist.", name);
-    }
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    static int getMaxSurvivorSpaces(Integer userValue) {
-        String name = getInitialPolicyName();
-        if (BasicCollectionPolicies.BasicPolicy.class.isAssignableFrom(getPolicyClass(name))) {
-            return BasicCollectionPolicies.getMaxSurvivorSpaces(userValue);
-        }
-        return AbstractCollectionPolicy.getMaxSurvivorSpaces(userValue);
-    }
-
-    static boolean shouldCollectYoungGenSeparately(boolean defaultValue) {
-        Boolean optionValue = SerialGCOptions.CollectYoungGenerationSeparately.getValue();
-        return (optionValue != null) ? optionValue : defaultValue;
-    }
 
     String getName();
 
@@ -138,17 +73,26 @@ public interface CollectionPolicy {
      * @param followingIncrementalCollection whether an incremental collection has just finished in
      *            the same safepoint. Implementations would typically decide whether to follow up
      *            with a full collection based on whether enough memory was reclaimed.
+     * @param forcedCompleteCollection whether a complete collection will eventually be forced. The
+     *            policy can still return {@code false} to do an incremental collection first.
      */
-    boolean shouldCollectCompletely(boolean followingIncrementalCollection);
+    boolean shouldCollectCompletely(boolean followingIncrementalCollection, boolean forcedCompleteCollection);
 
     /**
-     * The current limit for the size of the entire heap, which is less than or equal to
-     * {@link #getMaximumHeapSize}.
-     *
-     * NOTE: this can currently be exceeded during a collection while copying objects in the old
-     * generation.
+     * Returns the current heap size target. This is a policy value, not the amount of memory that
+     * is currently committed.
+     * <p>
+     * The size of allocated heap chunks may temporarily exceed the heap size target. A single
+     * allocation or promotion may cross the heap size target before the next collection. During a
+     * collection, copying young objects may require additional chunks because objects can grow or
+     * their new placement may use chunks differently.
+     * <p>
+     * Committed memory may exceed the heap size target because it also includes unused chunks kept
+     * for future allocations, see {@link HeapAccounting#getCommittedBytes}. The heap size target
+     * may also exceed {@link #getMaximumHeapSize} when live objects do not fit within the maximum
+     * heap size.
      */
-    UnsignedWord getCurrentHeapCapacity();
+    UnsignedWord getCurrentHeapSizeTarget();
 
     /** May be {@link #UNDEFINED}. */
     UnsignedWord getInitialEdenSize();
@@ -159,8 +103,7 @@ public interface CollectionPolicy {
      * The hard limit for the size of the entire heap. Exceeding this limit triggers an
      * {@link OutOfMemoryError}.
      *
-     * NOTE: this can currently be exceeded during a collection while copying objects in the old
-     * generation.
+     * NOTE: this can currently be exceeded during a collection with {@link CopyingOldGeneration}.
      */
     UnsignedWord getMaximumHeapSize();
 
@@ -209,13 +152,17 @@ public interface CollectionPolicy {
     int getTenuringAge();
 
     /** Called at the beginning of a collection, in the safepoint operation. */
-    void onCollectionBegin(boolean completeCollection, long requestingNanoTime);
+    void onCollectionBegin(boolean completeCollection, long beginNanoTime);
 
     /** Called before the end of a collection, in the safepoint operation. */
     void onCollectionEnd(boolean completeCollection, GCCause cause);
 
     /** Can be overridden to recover from OOM. */
     default boolean isOutOfMemory(UnsignedWord usedBytes) {
+        /*
+         * GR-72932: collections can tenure objects beyond the old generation's current or maximum
+         * size, and the following allocations can exceed the current or maximum heap size.
+         */
         return usedBytes.aboveThan(getMaximumHeapSize());
     }
 
@@ -225,5 +172,9 @@ public interface CollectionPolicy {
      */
     default void onMaximumHeapSizeExceeded() {
         throw OutOfMemoryUtil.heapSizeExceeded();
+    }
+
+    @Uninterruptible(reason = "Tear-down in progress.")
+    default void tearDown() {
     }
 }

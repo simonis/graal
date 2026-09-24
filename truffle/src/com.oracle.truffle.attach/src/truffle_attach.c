@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,11 +25,25 @@
 
 #include <jni.h>
 #include <jvmti.h>
+#include <stdint.h>
 #include <string.h>
+
+#if defined(__linux__)
+#include <pthread.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
 
 #define EXCEPTION_CHECK(env)                                                                                                                         \
     if ((*env)->ExceptionCheck(env)) {                                                                                                               \
         return;                                                                                                                                      \
+    }
+
+#define EXCEPTION_CHECK_OBJECT(env)                                                                                                                  \
+    if ((*env)->ExceptionCheck(env)) {                                                                                                               \
+        return NULL;                                                                                                                                 \
     }
 
 #define CHECK_NONZERO(cond)                                                                                                                          \
@@ -62,6 +76,32 @@ JNIEXPORT void JNICALL Java_com_oracle_truffle_polyglot_JDKSupport_addExports0(J
 static jobject virtualThreadHooksClass;
 static jmethodID mountMethod;
 static jmethodID unmountMethod;
+static jclass supplierClassGlobal;
+static jmethodID supplierGetMethod;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    JNIEnv *env;
+    if ((*vm)->GetEnv(vm, (void **) &env, JNI_VERSION_21) != JNI_OK) {
+        return JNI_ERR;
+    }
+
+    jclass supplierClass = (*env)->FindClass(env, "java/util/function/Supplier");
+    if (supplierClass == NULL) {
+        return JNI_ERR;
+    }
+
+    supplierClassGlobal = (*env)->NewGlobalRef(env, supplierClass);
+    if (supplierClassGlobal == NULL) {
+        return JNI_ERR;
+    }
+
+    supplierGetMethod = (*env)->GetMethodID(env, supplierClassGlobal, "get", "()Ljava/lang/Object;");
+    if (supplierGetMethod == NULL) {
+        return JNI_ERR;
+    }
+
+    return JNI_VERSION_21;
+}
 
 // Parameters: (jvmtiEnv *jvmti, JNIEnv* env, jthread vthread)
 static void JNICALL mount_callback(jvmtiEnv *jvmti, ...) {
@@ -141,4 +181,43 @@ JNIEXPORT void JNICALL Java_com_oracle_truffle_api_impl_Accessor_00024JavaLangSu
 
     CHECK_ERROR((*jvmti)->SetExtensionEventCallback(jvmti, unmount_event_index, unmount_callback));
     CHECK_ERROR((*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE, unmount_event_index, NULL));
+}
+
+JNIEXPORT jobject JNICALL Java_com_oracle_truffle_api_impl_Accessor_00024JavaLangSupport_runPinned0(JNIEnv *env, jclass clz, jobject action) {
+    return (*env)->CallObjectMethod(env, action, supplierGetMethod);
+}
+
+JNIEXPORT jlong JNICALL Java_com_oracle_truffle_api_impl_DefaultTruffleRuntime_getPlatformStackEnd0(JNIEnv *env, jclass clz) {
+#if defined(__linux__)
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) != 0) {
+        return 0L;
+    }
+    void *bottom = NULL;
+    size_t size = 0;
+    if (pthread_attr_getstack(&attr, &bottom, &size) != 0) {
+        pthread_attr_destroy(&attr);
+        return 0L;
+    }
+    size_t guard_size = 0;
+    if (pthread_attr_getguardsize(&attr, &guard_size) != 0) {
+        pthread_attr_destroy(&attr);
+        return 0L;
+    }
+    pthread_attr_destroy(&attr);
+    return (jlong) ((uintptr_t) bottom + guard_size);
+#elif defined(__APPLE__)
+    pthread_t self = pthread_self();
+    uintptr_t stack_top = (uintptr_t) pthread_get_stackaddr_np(self);
+    size_t stack_size = pthread_get_stacksize_np(self);
+    return (jlong) stack_top - stack_size;
+#elif defined(_WIN32)
+    MEMORY_BASIC_INFORMATION minfo;
+    uintptr_t stack_bottom;
+    size_t stack_size;
+    if (VirtualQuery(&minfo, &minfo, sizeof(minfo)) == 0) {
+        return 0L;
+    }
+    return (jlong) minfo.AllocationBase;
+#endif
 }

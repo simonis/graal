@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,6 +35,7 @@ import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.Equivalence;
 
 import jdk.graal.compiler.core.common.type.IntegerStamp;
+import jdk.graal.compiler.core.common.type.ObjectStamp;
 import jdk.graal.compiler.core.common.type.PrimitiveStamp;
 import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.debug.DebugCloseable;
@@ -47,12 +48,16 @@ import jdk.graal.compiler.graph.NodeStack;
 import jdk.graal.compiler.graph.NodeUnionFind;
 import jdk.graal.compiler.nodes.AbstractBeginNode;
 import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.nodes.FixedGuardNode;
 import jdk.graal.compiler.nodes.FixedNode;
 import jdk.graal.compiler.nodes.FixedWithNextNode;
 import jdk.graal.compiler.nodes.FrameState;
 import jdk.graal.compiler.nodes.GraphState;
 import jdk.graal.compiler.nodes.Invoke;
+import jdk.graal.compiler.nodes.LogicConstantNode;
+import jdk.graal.compiler.nodes.LogicNode;
 import jdk.graal.compiler.nodes.NodeView;
+import jdk.graal.compiler.nodes.PiNode;
 import jdk.graal.compiler.nodes.ReturnNode;
 import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.ValueNode;
@@ -60,6 +65,8 @@ import jdk.graal.compiler.nodes.ValuePhiNode;
 import jdk.graal.compiler.nodes.ValueProxyNode;
 import jdk.graal.compiler.nodes.calc.MinMaxNode;
 import jdk.graal.compiler.nodes.extended.FixedValueAnchorNode;
+import jdk.graal.compiler.nodes.java.InstanceOfNode;
+import jdk.graal.compiler.nodes.java.LoadFieldNode;
 import jdk.graal.compiler.nodes.java.MethodCallTargetNode;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.graal.compiler.nodes.spi.SimplifierTool;
@@ -71,13 +78,19 @@ import jdk.graal.compiler.phases.common.CanonicalizerPhase;
 import jdk.graal.compiler.phases.common.PostRunCanonicalizationPhase;
 import jdk.graal.compiler.phases.tiers.HighTierContext;
 import jdk.graal.compiler.replacements.nodes.MacroWithExceptionNode;
+import jdk.graal.compiler.serviceprovider.SpeculationReasonGroup;
 import jdk.graal.compiler.vector.architecture.VectorArchitecture;
 import jdk.graal.compiler.vector.architecture.VectorLoweringProvider;
 import jdk.graal.compiler.vector.nodes.simd.SimdStamp;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPILoadMaskedNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIMacroNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPISinkNode;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIStoreMaskedNode;
+import jdk.vm.ci.meta.DeoptimizationReason;
 import jdk.vm.ci.meta.JavaKind;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.SpeculationLog;
 
 /**
  * Expands {@link VectorAPIMacroNode}s to SIMD operations if they are supported by the target
@@ -139,6 +152,9 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * produces one new node, or at most a few (e.g., a core operation plus some type conversion).
  */
 public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTierContext> {
+
+    private static final SpeculationReasonGroup FIXED_GUARD_HOISTING_SPECULATIONS = new SpeculationReasonGroup("VectorAPIFixedGuardHoisting", ResolvedJavaMethod.class, int.class,
+                    DeoptimizationReason.class);
 
     public VectorAPIExpansionPhase(CanonicalizerPhase canonicalizer) {
         super(canonicalizer.copyWithCustomSimplification(new VectorAPIExpansionPhase.VectorAPISimplification()));
@@ -258,6 +274,10 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
             return;
         }
 
+        if (graph.getSpeculationLog() != null) {
+            speculativelyHoistGuardsThroughPhis(graph, context);
+        }
+
         /*
          * Canonicalize first. Needed for computing SIMD stamps, since we delay their computation to
          * compile time. We can't generally compute SIMD stamps at the time we build the macro nodes
@@ -279,8 +299,8 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
          */
         EconomicMap<ConstantNode, ValueNode> simdConstantCache = EconomicMap.create();
 
-        NodeUnionFind unionFind = collectNodes(graph, context, flood);
-        Iterable<ConnectedComponent> components = buildConnectedComponents(graph, context, unionFind, flood, simdConstantCache);
+        NodeUnionFind unionFind = collectNodes(graph, context, flood, vectorArch);
+        Iterable<ConnectedComponent> components = buildConnectedComponents(graph, context, unionFind, flood, simdConstantCache, vectorArch);
         checkComponentExpandability(graph, components, vectorArch);
         expandComponents(graph, context, simdConstantCache, components, vectorArch);
     }
@@ -290,7 +310,7 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
      * data structure. Also visit phis and proxies connected to macros and group them accordingly.
      * Exactly the nodes added to the union-find are also marked in {@code flood}.
      */
-    private static NodeUnionFind collectNodes(StructuredGraph graph, CoreProviders providers, NodeFlood flood) {
+    private static NodeUnionFind collectNodes(StructuredGraph graph, CoreProviders providers, NodeFlood flood, VectorArchitecture vectorArch) {
         /*
          * A grouping of nodes in the graph into equivalence classes. Each class will become a
          * connected component.
@@ -299,7 +319,17 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
         /* Connect all macro nodes to their inputs. */
         for (VectorAPIMacroNode macro : graph.getNodes(VectorAPIMacroNode.TYPE)) {
             flood.add(macro);
+            boolean disconnectFromInputs = (macro instanceof VectorAPIStoreMaskedNode storeMasked && shouldUseScalarMaskedFallback(storeMasked, vectorArch, providers)) ||
+                            (macro instanceof VectorAPILoadMaskedNode loadMasked && loadMasked.vectorStamp() != null && shouldUseScalarMaskedFallback(loadMasked, vectorArch, providers));
             for (Node input : macro.vectorInputs()) {
+                if (disconnectFromInputs) {
+                    /*
+                     * Keep unsupported masked load/store operations as scalar macro calls. Their
+                     * vector inputs are boxed at the use site so neighboring SIMD components can
+                     * still expand.
+                     */
+                    continue;
+                }
                 if (input instanceof ValuePhiNode phi && isPhiToBox(phi, providers)) {
                     continue;
                 }
@@ -359,7 +389,7 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
      * the {@code BinaryOp}. This method below will build a component containing all four nodes.
      */
     private static Iterable<ConnectedComponent> buildConnectedComponents(StructuredGraph graph, HighTierContext context, NodeUnionFind unionFind, NodeFlood flood,
-                    EconomicMap<ConstantNode, ValueNode> simdConstantCache) {
+                    EconomicMap<ConstantNode, ValueNode> simdConstantCache, VectorArchitecture vectorArch) {
         /*
          * This map contains the components we build. For each node n in the union find, its
          * component can be found using unionFind.find(n) as the key.
@@ -381,17 +411,35 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
              * properties to determine if the component can still be expanded to SIMD code.
              */
             if (node instanceof VectorAPIMacroNode macro) {
-                component.macros.add(macro);
-                if (macro instanceof VectorAPISinkNode sink) {
-                    component.sinks.add(sink);
-                    isSink = true;
-                }
-                if (macro.vectorStamp() == null) {
-                    node.graph().getDebug().log(DebugContext.DETAILED_LEVEL, "macro %s has null vector stamp %s", macro, macro.vectorStamp());
-                    component.canExpand = false;
-                } else if (component.canExpand) {
-                    component.simdStamps.put(macro, macro.vectorStamp());
-                    propagateStampToUsages(macro, macro.vectorStamp(), component, flood, context);
+                if (macro instanceof VectorAPILoadMaskedNode loadMasked && loadMasked.vectorStamp() != null && shouldUseScalarMaskedFallback(loadMasked, vectorArch, context)) {
+                    /*
+                     * Keep unsupported masked loads as scalar macro calls. The resulting boxed
+                     * vector object is unboxed where used so surrounding SIMD operations can still
+                     * expand.
+                     */
+                    VectorAPIType unboxableType = VectorAPIBoxingUtils.asUnboxableVectorType(loadMasked, context);
+                    if (unboxableType == null) {
+                        node.graph().getDebug().log(DebugContext.DETAILED_LEVEL, "unsupported masked load %s is not unboxable", loadMasked);
+                        component.canExpand = false;
+                    } else {
+                        component.unboxes.add(loadMasked);
+                        component.simdStamps.put(loadMasked, unboxableType.stamp);
+                        propagateStampToUsages(loadMasked, unboxableType.stamp, component, flood, context);
+                        isUnboxInput = true;
+                    }
+                } else {
+                    component.macros.add(macro);
+                    if (macro instanceof VectorAPISinkNode sink) {
+                        component.sinks.add(sink);
+                        isSink = true;
+                    }
+                    if (macro.vectorStamp() == null) {
+                        node.graph().getDebug().log(DebugContext.DETAILED_LEVEL, "macro %s has null vector stamp %s", macro, macro.vectorStamp());
+                        component.canExpand = false;
+                    } else if (component.canExpand) {
+                        component.simdStamps.put(macro, macro.vectorStamp());
+                        propagateStampToUsages(macro, macro.vectorStamp(), component, flood, context);
+                    }
                 }
             } else if (node instanceof ValuePhiNode phi) {
                 component.phis.add(phi);
@@ -431,7 +479,15 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
             /* Check for unsupported usages of vector values outside the connected component. */
             if (!isSink && component.canExpand && !isNullConstant && !isUnboxInput) {
                 for (Node usage : node.usages()) {
-                    if (unionFind.find(usage) == representative) {
+                    if (node instanceof ValueNode value && shouldBox(value, usage, context)) {
+                        /*
+                         * Some usages are scalar fallbacks around an expandable component. Box
+                         * them before checking the component representative. A fallback usage may
+                         * also be connected to the component through its result.
+                         */
+                        component.boxes.add(value);
+                        continue;
+                    } else if (unionFind.find(usage) == representative) {
                         /*
                          * The usage is in the same connected component, so it will be expanded to
                          * SIMD code iff this node is expanded.
@@ -443,11 +499,14 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
                          * deoptimization, this will materialize the SIMD value as a vector object
                          * on the heap.
                          */
-                        continue;
-                    } else if (node instanceof ValueNode value && shouldBox(value, usage, context)) {
-                        // Manually box the vector node to disconnect the unexpected usage from the
-                        // ConnectedComponent
-                        component.boxes.add(value);
+                        ResolvedJavaType type = StampTool.typeOrNull((ValueNode) node);
+                        VectorAPIType vectorType = type == null ? null : VectorAPIType.ofType(type, context);
+                        if (vectorType == null) {
+                            graph.getDebug().log(DebugContext.DETAILED_LEVEL, "frame state usage %s for node %s prevents SIMD expansion because its Vector API type cannot be resolved",
+                                            usage, node);
+                            component.canExpand = false;
+                            break;
+                        }
                         continue;
                     } else {
                         /*
@@ -559,7 +618,9 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
                 boxComponentOutputs(graph, context, component, expanded, vectorArch);
                 /* Expand, starting from sinks and recursing upwards through inputs. */
                 for (VectorAPISinkNode sink : component.sinks) {
-                    expandRecursivelyUpwards(graph, context, expanded, component.simdStamps, sink, vectorArch);
+                    if (sink.isAlive()) {
+                        expandRecursivelyUpwards(graph, context, expanded, component.simdStamps, sink, vectorArch);
+                    }
                 }
                 /*
                  * Normally, expanding upwards from sinks should take care of all nodes in the
@@ -568,7 +629,7 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
                  * handled as well.
                  */
                 for (ValueNode node : component.simdStamps.getKeys()) {
-                    if (!expanded.containsKey(node)) {
+                    if (node.isAlive() && !expanded.containsKey(node)) {
                         expandRecursivelyUpwards(graph, context, expanded, component.simdStamps, node, vectorArch);
                     }
                 }
@@ -619,6 +680,9 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
     private static void boxComponentOutputs(StructuredGraph graph, CoreProviders providers, ConnectedComponent component, NodeMap<ValueNode> expanded, VectorArchitecture vectorArch) {
         GraalError.guarantee(component.canExpand, "should only place box nodes once we know the component can expand");
         for (ValueNode valueToBox : component.boxes) {
+            if (!valueToBox.isAlive()) {
+                continue;
+            }
             expandRecursivelyUpwards(graph, providers, expanded, component.simdStamps, valueToBox, vectorArch);
             ValueNode expandedDef = expanded.get(valueToBox);
             GraalError.guarantee(expandedDef != null, "must be expanded %s", valueToBox);
@@ -657,6 +721,8 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
                         useCloned = graph.addOrUniqueWithInputs(useCloned);
                         fixedSuccessor.replaceAllInputs(use, useCloned);
                     }
+                    GraalError.guarantee(use.hasNoUsages(), "all users of the original call target must have been replaced: %s", use);
+                    use.safeDelete();
                 } else if (use instanceof ValuePhiNode phi) {
                     for (int i = 0; i < phi.valueCount(); i++) {
                         ValueNode phiValue = phi.valueAt(i);
@@ -698,11 +764,60 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
         } else if (use instanceof ReturnNode returnNode && returnNode.result().equals(value)) {
             /* If a vector value is returned, we can also try to box the vector there. */
             return VectorAPIBoxingUtils.asUnboxableVectorType(value, providers) != null;
+        } else if (use instanceof LoadFieldNode loadField && loadField.object() == value) {
+            /*
+             * Some Vector API operations still use Java fallbacks that read the boxed vector's
+             * payload field. Box the value so these payload reads don't block SIMD expansion.
+             */
+            return loadField.field().getName().equals("payload") && VectorAPIBoxingUtils.asUnboxableVectorType(value, providers) != null;
+        } else if (use instanceof VectorAPILoadMaskedNode loadMasked && loadMasked.getMask() == value) {
+            /*
+             * A scalar fallback masked load consumes a mask object. If the mask is a phi that is
+             * expanded as part of a SIMD component, provide an object value at this scalar use.
+             */
+            return value instanceof ValuePhiNode &&
+                            loadMasked.vectorStamp() != null &&
+                            shouldUseScalarMaskedFallback(loadMasked, VectorAPIUtils.vectorArchitecture(providers), providers) &&
+                            VectorAPIBoxingUtils.asUnboxableVectorType(value, providers) != null;
+        } else if (use instanceof VectorAPIStoreMaskedNode storeMasked) {
+            /*
+             * If a masked store must stay scalar, keep the store as a fallback call and box the
+             * input vector/mask at this use.
+             */
+            return shouldUseScalarMaskedFallback(storeMasked, VectorAPIUtils.vectorArchitecture(providers), providers) && VectorAPIBoxingUtils.asUnboxableVectorType(value, providers) != null;
         } else if (use instanceof ValuePhiNode phi && isPhiToBox(phi, providers)) {
             /* A phi that mixes vector and non-vector inputs, box all its input vectors. */
             return true;
         }
 
+        return false;
+    }
+
+    private static boolean shouldUseScalarMaskedFallback(VectorAPILoadMaskedNode loadMasked, VectorArchitecture vectorArch, CoreProviders providers) {
+        return !loadMasked.supportsVectorMaskedMove(vectorArch) || shouldBoxMaskedInput(loadMasked.getMask(), providers);
+    }
+
+    private static boolean shouldUseScalarMaskedFallback(VectorAPIStoreMaskedNode storeMasked, VectorArchitecture vectorArch, CoreProviders providers) {
+        return !storeMasked.supportsVectorMaskedMove(vectorArch) || shouldBoxMaskedInput(storeMasked.getMask(), providers);
+    }
+
+    private static boolean shouldBoxMaskedInput(ValueNode mask, CoreProviders providers) {
+        if (mask instanceof ValuePhiNode phi && isPhiToBox(phi, providers)) {
+            return true;
+        }
+        if (VectorAPIBoxingUtils.asUnboxableVectorType(mask, providers) != null) {
+            return false;
+        }
+        /*
+         * This covers exact boxed mask objects whose stamp is still nullable, e.g., a PiNode that
+         * refines the type but has not proved the value non-null. The unboxing helpers require a
+         * non-null exact stamp, so keep masked operations as scalar fallbacks in this case.
+         */
+        if (mask.stamp(NodeView.DEFAULT) instanceof ObjectStamp objectStamp && objectStamp.isExactType()) {
+            ResolvedJavaType type = objectStamp.type();
+            VectorAPIType vectorType = type == null ? null : VectorAPIType.ofType(type, providers);
+            return vectorType != null && vectorType.isMask;
+        }
         return false;
     }
 
@@ -864,7 +979,7 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
             /* This node and all of its inputs have now been expanded. */
             stack.pop();
             if (!expansion.isAlive()) {
-                graph.addWithoutUniqueWithInputs(expansion);
+                expansion = graph.addOrUniqueWithInputs(expansion);
             }
             expanded.put(node, expansion);
             graph.getOptimizationLog().withProperty("expansion", expansion).report(VectorAPIExpansionPhase.class, "SIMD expansion", node);
@@ -921,6 +1036,8 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
      * usages outside the component (scalar usages, states) are replaced here.
      */
     private static void replaceComponentNodes(StructuredGraph graph, HighTierContext context, ConnectedComponent component, NodeMap<ValueNode> expanded, VectorArchitecture vectorArch) {
+        replaceComponentFrameStateUsages(graph, context, component, expanded, vectorArch);
+
         for (ValueNode node : component.simdStamps.getKeys()) {
             if (!node.isAlive()) {
                 // As we kill CFGs while replacing each element of the component, it may be the case
@@ -937,14 +1054,58 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
             }
 
             /*
-             * Fix up frame state usages. These may need to materialize a SIMD value as a Vector API
-             * object, so we need to build a corresponding virtual object.
+             * Clear out all other usages because we will replace nodes with SIMD versions that have
+             * different stamps. The usages themselves will be deleted since they are part of the
+             * same component, and all nodes in the component are replaced.
              */
+            node.replaceAtUsages(null, usage -> component.simdStamps.containsKey((ValueNode) usage));
+            GraalError.guarantee(node.hasNoUsages(), "unexpected remaining usage %s of expanded Vector API node %s", node.usages().first(), node);
+            if (node instanceof FixedWithNextNode fixedNode) {
+                if (replacement instanceof FixedWithNextNode fixedReplacement && fixedReplacement.next() != null) {
+                    /*
+                     * The replacement is already linked into the control flow. This happens for
+                     * unboxing operations, which expand to multiple fixed nodes that we add to the
+                     * control flow during unboxing.
+                     */
+                    graph.removeFixed(fixedNode);
+                } else {
+                    graph.replaceFixed(fixedNode, replacement);
+                }
+            } else if (node instanceof MacroWithExceptionNode macroWithExceptionNode) {
+                AbstractBeginNode exceptionEdge = macroWithExceptionNode.exceptionEdge();
+                if (replacement instanceof FixedWithNextNode fixedReplacement && fixedReplacement.next() != null) {
+                    graph.removeSplit(macroWithExceptionNode, macroWithExceptionNode.getPrimarySuccessor());
+                } else {
+                    graph.replaceSplit(macroWithExceptionNode, replacement, macroWithExceptionNode.getPrimarySuccessor());
+                }
+                GraphUtil.killCFG(exceptionEdge);
+            }
+        }
+        graph.getDebug().dump(DebugContext.DETAILED_LEVEL, graph, "after adding duplicates for %s", component);
+    }
+
+    /**
+     * Fix up frame state usages before the component's fixed nodes are destructively replaced.
+     * Replacing fixed nodes can kill CFGs, including replacement phis needed to materialize values
+     * in still-unprocessed frame states.
+     */
+    private static void replaceComponentFrameStateUsages(StructuredGraph graph, HighTierContext context, ConnectedComponent component, NodeMap<ValueNode> expanded,
+                    VectorArchitecture vectorArch) {
+        for (ValueNode node : component.simdStamps.getKeys()) {
+            if (!node.isAlive()) {
+                continue;
+            }
             if (node.usages().filter(u -> u instanceof FrameState || u instanceof VirtualObjectState).isNotEmpty()) {
+                ValueNode replacement = expanded.get(node);
+                GraalError.guarantee(replacement != null, "node was not expanded: %s", node);
+                if (node instanceof VectorAPISinkNode && replacement.stamp(NodeView.DEFAULT) instanceof PrimitiveStamp) {
+                    node.replaceAtUsages(replacement, usage -> usage instanceof FrameState || usage instanceof VirtualObjectState);
+                    continue;
+                }
                 ResolvedJavaType type = StampTool.typeOrNull(node);
                 GraalError.guarantee(type != null, "could not resolve type for %s (%s)", node, node.stamp(NodeView.DEFAULT));
                 VectorAPIType vectorType = VectorAPIType.ofType(type, context);
-                GraalError.guarantee(type != null, "could not find Vector API type for %s (%s)", node, node.stamp(NodeView.DEFAULT));
+                GraalError.guarantee(vectorType != null, "could not find Vector API type for %s (%s)", node, node.stamp(NodeView.DEFAULT));
                 VirtualInstanceNode virtualInstance = graph.add(new VirtualInstanceNode(type, true));
                 ValueNode replacementValue = replacement;
                 if (vectorType.isMask) {
@@ -967,37 +1128,100 @@ public class VectorAPIExpansionPhase extends PostRunCanonicalizationPhase<HighTi
                 }
                 node.replaceAtUsages(virtualInstance, usage -> usage != virtualState && (usage instanceof FrameState || usage instanceof VirtualObjectState));
             }
+        }
+    }
 
-            /*
-             * Clear out all other usages because we will replace nodes with SIMD versions that have
-             * different stamps. The usages themselves will be deleted since they are part of the
-             * same component, and all nodes in the component are replaced.
-             */
-            node.replaceAtUsages(null, usage -> component.simdStamps.containsKey((ValueNode) usage));
-            if (node instanceof FixedWithNextNode fixedNode) {
-                if (replacement instanceof FixedWithNextNode fixedReplacement && fixedReplacement.next() != null) {
-                    /*
-                     * The replacement is already linked into the control flow. This happens for
-                     * unboxing operations, which expand to multiple fixed nodes that we add to the
-                     * control flow during unboxing.
-                     */
-                    fixedNode.replaceAtUsages(replacement);
-                    graph.removeFixed(fixedNode);
-                } else {
-                    graph.replaceFixed(fixedNode, replacement);
+    /*
+     * A limit on the width of phis that we are willing to hoist through. The exact value doesn't
+     * matter, but as hoisting guards through phis duplicates code, we want some limit to avoid
+     * explosive surprises.
+     */
+    private static final int MAX_PHI_PREDECESSORS = 4;
+
+    /**
+     * Try to improve a graph shape involving loop phis that don't have precise Vector API type
+     * stamps. Given code like this:
+     *
+     * <pre>
+     *     Object init = [some generic Object value];
+     *     Object phi = init;
+     *     loop {
+     *         Byte128Vector v = (Byte128Vector) phi;
+     *         Byte128Vector w = v.add(1);
+     *         phi = w;
+     *     }
+     * </pre>
+     *
+     * This method will hoist the cast through the phi, placing the guards in all phi predecessors
+     * that don't have a precise stamp yet (i.e., in this case, at the loop entry):
+     *
+     * <pre>
+     *     Object init = [some generic Object value];
+     *     Byte128Vector castInit = (Byte128Vector) init;  // hoisted type check guard
+     *     Byte128Vector phi = castInit;
+     *     loop {
+     *         phi = phi.add(1);
+     *     }
+     * </pre>
+     *
+     * In the original code, we have a type check on every loop iteration, plus we would have to
+     * insert unboxing/boxing code around the SIMD add operation. In the modified code, we only have
+     * one type check and one unboxing before the loop, and the SIMD computation in the loop can be
+     * fully unboxed. Reasonably written code should not contain such patterns, but Truffle OSR
+     * compilations have such code shapes because OSR locals have generic object stamps.
+     * <p>
+     *
+     * The hoisting of the type check is guarded by a speculation, so we do not repeat this
+     * transformation if we ever see the hoisted guard fail.
+     */
+    private void speculativelyHoistGuardsThroughPhis(StructuredGraph graph, HighTierContext context) {
+        for (VectorAPIMacroNode macro : graph.getNodes(VectorAPIMacroNode.TYPE)) {
+            for (ValueNode vectorInput : macro.vectorInputs()) {
+                if (vectorInput instanceof PiNode pi && pi.getGuard() instanceof FixedGuardNode guard && guard.canFloat()) {
+                    if (guard.getCondition() instanceof InstanceOfNode instanceOf &&
+                                    !guard.isNegated() &&  // if (!(x instanceof T)) { deopt; }
+                                    instanceOf.getValue() == pi.getOriginalNode() &&
+                                    instanceOf.getCheckedStamp().nonNull() &&
+                                    instanceOf.getCheckedStamp().equals(pi.piStamp()) &&
+                                    instanceOf.getValue() instanceof ValuePhiNode phi &&
+                                    phi.valueCount() <= MAX_PHI_PREDECESSORS &&
+                                    phi.isLoopPhi() &&
+                                    VectorAPIBoxingUtils.asUnboxableVectorType(pi, context) != null) {
+                        SpeculationLog.SpeculationReason speculationReason = FIXED_GUARD_HOISTING_SPECULATIONS.createSpeculationReason(phi.merge().stateAfter().getMethod(),
+                                        phi.merge().stateAfter().bci, guard.getReason());
+                        if (graph.getSpeculationLog().maySpeculate(speculationReason)) {
+                            SpeculationLog.Speculation hoistingSpeculation = graph.getSpeculationLog().speculate(speculationReason);
+                            for (int i = 0; i < phi.valueCount(); i++) {
+                                LogicNode newCondition = InstanceOfNode.create(instanceOf.type(), phi.valueAt(i));
+                                if (newCondition instanceof LogicConstantNode logicConstant && logicConstant.getValue() == !guard.isNegated()) {
+                                    /*
+                                     * This phi input already has a precise stamp that doesn't need
+                                     * to be improved.
+                                     */
+                                    continue;
+                                }
+                                newCondition = graph.addOrUniqueWithInputs(newCondition);
+                                FixedGuardNode newGuard = graph.add(new FixedGuardNode(newCondition, guard.getReason(), guard.getAction(), hoistingSpeculation, guard.isNegated(),
+                                                guard.getNoDeoptSuccessorPosition()));
+                                graph.addBeforeFixed(phi.merge().phiPredecessorAt(i), newGuard);
+                                ValueNode newPi = graph.addOrUnique(PiNode.create(phi.valueAt(i), pi.piStamp(), newGuard));
+                                if (newPi != phi.valueAt(i)) {
+                                    phi.setValueAt(i, newPi);
+                                }
+                            }
+                            /*
+                             * Improve the phi and canonicalize its usages right away. The original
+                             * guard and its pi will fold away, and other macros using the same pi
+                             * will now see the phi with its precise stamp. This way, we don't
+                             * repeat the same work for other usages of the pi.
+                             */
+                            phi.inferStamp();
+                            canonicalizer.applyIncremental(graph, context, phi.usages());
+                        }
+                    }
                 }
-            } else if (node instanceof MacroWithExceptionNode macroWithExceptionNode) {
-                AbstractBeginNode exceptionEdge = macroWithExceptionNode.exceptionEdge();
-                if (replacement instanceof FixedWithNextNode fixedReplacement && fixedReplacement.next() != null) {
-                    macroWithExceptionNode.replaceAtUsages(replacement);
-                    graph.removeSplit(macroWithExceptionNode, macroWithExceptionNode.getPrimarySuccessor());
-                } else {
-                    graph.replaceSplit(macroWithExceptionNode, replacement, macroWithExceptionNode.getPrimarySuccessor());
-                }
-                GraphUtil.killCFG(exceptionEdge);
             }
         }
-        graph.getDebug().dump(DebugContext.DETAILED_LEVEL, graph, "after adding duplicates for %s", component);
     }
 
     public static class VectorAPISimplification implements CanonicalizerPhase.CustomSimplification {

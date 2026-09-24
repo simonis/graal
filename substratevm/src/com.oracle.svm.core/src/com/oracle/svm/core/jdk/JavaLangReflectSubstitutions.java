@@ -29,19 +29,20 @@ package com.oracle.svm.core.jdk;
 import java.lang.reflect.Array;
 import java.util.Objects;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.configure.RuntimeDynamicAccessMetadata;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.metadata.MetadataTracer;
 import com.oracle.svm.core.reflect.MissingReflectionRegistrationUtils;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 
-import jdk.graal.compiler.word.BarrieredAccess;
+import org.graalvm.word.impl.BarrieredAccess;
 
 @TargetClass(java.lang.reflect.Array.class)
 final class Target_java_lang_reflect_Array {
@@ -387,7 +388,14 @@ final class Target_java_lang_reflect_Array {
     @Substitute
     private static Object newArray(Class<?> componentType, int length)
                     throws NegativeArraySizeException {
-        if (MetadataTracer.enabled()) {
+        if (componentType == null) {
+            throw new NullPointerException();
+        } else if (length < 0) {
+            throw new NegativeArraySizeException(String.valueOf(length));
+        } else if (componentType == void.class || (componentType.isArray() && SubstrateUtil.arrayTypeDimension(componentType) >= 255)) {
+            throw new IllegalArgumentException();
+        }
+        if (MetadataTracer.enabled() && Util_java_lang_reflect_Array.shouldTraceReflectionArrayType(componentType, 1)) {
             MetadataTracer.singleton().traceReflectionArrayType(componentType);
         }
         return KnownIntrinsics.unvalidatedNewArray(componentType, length);
@@ -412,21 +420,38 @@ final class Target_java_lang_reflect_Array {
                 throw new NegativeArraySizeException(String.valueOf(dimensions[i]));
             }
         }
+        if (MetadataTracer.enabled() && Util_java_lang_reflect_Array.shouldTraceReflectionArrayType(componentType, dimensions.length)) {
+            MetadataTracer.singleton().traceReflectionArrayType(componentType, dimensions.length);
+        }
 
         // get the ultimate outer array type
         DynamicHub arrayHub = DynamicHub.fromClass(componentType);
         for (int i = 0; i < dimensions.length; i++) {
-            arrayHub = arrayHub.getArrayHub();
-            if (arrayHub == null) {
+            DynamicHub maybeArrayHub = arrayHub.getOrCreateArrayHub();
+            if (maybeArrayHub == null) {
                 throw MissingReflectionRegistrationUtils.reportArrayInstantiation(componentType, dimensions.length);
             }
+            arrayHub = maybeArrayHub;
         }
 
         return Util_java_lang_reflect_Array.createMultiArrayAtIndex(0, arrayHub, dimensions);
     }
+
 }
 
 final class Util_java_lang_reflect_Array {
+
+    static boolean shouldTraceReflectionArrayType(Class<?> componentType, int dimensions) {
+        DynamicHub arrayHub = DynamicHub.fromClass(componentType);
+        for (int i = 0; i < dimensions; i++) {
+            arrayHub = arrayHub.getArrayHub();
+            if (arrayHub == null) {
+                return true;
+            }
+        }
+        RuntimeDynamicAccessMetadata dynamicAccessMetadata = arrayHub.getDynamicAccessMetadata();
+        return MetadataTracer.shouldTraceMetadata(dynamicAccessMetadata);
+    }
 
     static Object createMultiArrayAtIndex(int index, DynamicHub arrayHub, int[] dimensions) {
         final int length = dimensions[index];
@@ -442,7 +467,7 @@ final class Util_java_lang_reflect_Array {
                 Object subArray = createMultiArrayAtIndex(nextIndex, subArrayHub, dimensions);
                 // Each subArray could create a cross-generational reference.
                 BarrieredAccess.writeObject(result, offset, subArray);
-                offset = offset.add(ConfigurationValues.getObjectLayout().getReferenceSize());
+                offset = offset.add(ObjectLayout.singleton().getReferenceSize());
             }
         }
         return result;

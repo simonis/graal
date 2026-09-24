@@ -27,7 +27,10 @@ package jdk.graal.compiler.truffle.test;
 import static jdk.graal.compiler.core.common.CompilationRequestIdentifier.asCompilationRequest;
 import static jdk.graal.compiler.debug.DebugOptions.DumpOnError;
 
+import java.lang.StackWalker.StackFrame;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.junit.Assert;
@@ -50,6 +53,7 @@ import jdk.graal.compiler.graph.Node;
 import jdk.graal.compiler.nodes.ConstantNode;
 import jdk.graal.compiler.nodes.DynamicDeoptimizeNode;
 import jdk.graal.compiler.nodes.FrameState;
+import jdk.graal.compiler.nodes.NodeView;
 import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.java.MethodCallTargetNode;
 import jdk.graal.compiler.options.OptionValues;
@@ -62,6 +66,7 @@ import jdk.graal.compiler.truffle.TruffleCompilation;
 import jdk.graal.compiler.truffle.TruffleCompilerImpl;
 import jdk.graal.compiler.truffle.TruffleDebugJavaMethod;
 import jdk.graal.compiler.truffle.TruffleTierContext;
+import jdk.graal.compiler.truffle.nodes.TrufflePreserveFrameStateNode;
 import jdk.graal.compiler.truffle.phases.TruffleTier;
 import jdk.graal.compiler.util.CollectionsUtil;
 import jdk.vm.ci.code.BailoutException;
@@ -235,6 +240,130 @@ public abstract class PartialEvaluationTest extends TruffleCompilerImplTest {
         }
     }
 
+    private static RootNode createLambdaRootNode(Runnable f) {
+        StackFrame frame = WALKER.walk(stream -> stream.skip(2).findFirst().orElse(null));
+        return new TestRootNode("Lambda_", frame, (_) -> {
+            f.run();
+            return null;
+        });
+    }
+
+    private static RootNode createLambdaRootNode(Supplier<?> f) {
+        StackFrame frame = WALKER.walk(stream -> stream.skip(2).findFirst().orElse(null));
+        return new TestRootNode("Lambda_", frame, (_) -> {
+            f.get();
+            return null;
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RootNode createLambdaRootNode(Consumer<?> f) {
+        StackFrame frame = WALKER.walk(stream -> stream.skip(2).findFirst().orElse(null));
+        return new TestRootNode("Lambda_", frame, (a) -> {
+            ((Consumer<Object>) f).accept(a);
+            return null;
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> RootNode createLambdaRootNode(Function<T, ?> f, @SuppressWarnings("unused") T object) {
+        StackFrame frame = WALKER.walk(stream -> stream.skip(2).findFirst().orElse(null));
+        return new TestRootNode("Lambda_", frame, (Function<Object, ?>) f);
+    }
+
+    protected void assertPartialEvalNoInvokes(Runnable expected) {
+        assertPartialEvalNoInvokes(createLambdaRootNode(expected), new Object[1]);
+    }
+
+    protected void assertPartialEvalNoInvokes(Supplier<?> expected) {
+        assertPartialEvalNoInvokes(createLambdaRootNode(expected), new Object[1]);
+    }
+
+    protected <T> void assertPartialEvalNoInvokes(Consumer<T> expected, T value) {
+        assertPartialEvalNoInvokes(createLambdaRootNode(expected), new Object[]{value});
+    }
+
+    protected <T, R> void assertPartialEvalNoInvokes(Function<T, R> expected, T value) {
+        assertPartialEvalNoInvokes(createLambdaRootNode(expected, value), new Object[]{value});
+    }
+
+    protected void assertCompileBailout(Runnable expected) {
+        assertCompileBailout(createLambdaRootNode(expected), new Object[1]);
+    }
+
+    protected void assertCompileBailout(Supplier<?> expected) {
+        assertCompileBailout(createLambdaRootNode(expected), new Object[1]);
+    }
+
+    protected <T> void assertCompileBailout(Consumer<T> expected, T value) {
+        assertCompileBailout(createLambdaRootNode(expected), new Object[]{value});
+    }
+
+    protected <T, R> void assertCompileBailout(Function<T, R> expected, T value) {
+        assertCompileBailout(createLambdaRootNode(expected, value), new Object[]{value});
+    }
+
+    private void assertCompileBailout(RootNode lambdaRootNode, Object[] objects) {
+        boolean prevProfileCalls = this.preventProfileCalls;
+        this.preventProfileCalls = true;
+        try {
+            try {
+                compile((OptimizedCallTarget) lambdaRootNode.getCallTarget(), partialEval(lambdaRootNode, objects));
+                fail("Bailout expected but succeeded for " + lambdaRootNode.getName());
+            } catch (BailoutException e) {
+                // expected
+            }
+        } finally {
+            this.preventProfileCalls = prevProfileCalls;
+        }
+    }
+
+    private static final StackWalker WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+
+    @SuppressWarnings("unchecked")
+    protected <T, R> void assertPartialEvalEquals(Function<T, R> expected, Function<T, R> actual, T argument) {
+        // capture stack frame for better root node names
+        StackFrame frame = WALKER.walk(stream -> stream.skip(1).findFirst().orElse(null));
+        assertPartialEvalEquals(new TestRootNode("Expected_", frame, (Function<Object, ?>) expected), new TestRootNode("Actual_", frame, (Function<Object, ?>) actual), argument);
+    }
+
+    @SuppressWarnings("unchecked")
+    protected <T> void assertPartialEvalEquals(Supplier<T> expected, Supplier<T> actual) {
+        // capture stack frame for better root node names
+        StackFrame frame = WALKER.walk(stream -> stream.skip(1).findFirst().orElse(null));
+        assertPartialEvalEquals(new TestRootNode("Expected_", frame, (_) -> expected.get()), new TestRootNode("Actual_", frame, (_) -> actual.get()), 42);
+    }
+
+    private static final class TestRootNode extends RootNode {
+
+        private final String namePrefix;
+        private final StackFrame caller;
+        private final Function<Object, ?> f;
+
+        TestRootNode(String namePrefix, StackFrame caller, Function<Object, ?> f) {
+            super(null);
+            this.namePrefix = namePrefix;
+            this.caller = caller;
+            this.f = f;
+        }
+
+        @Override
+        public Object execute(VirtualFrame frame) {
+            return f.apply(frame.getArguments()[0]);
+        }
+
+        @Override
+        public String getName() {
+            return namePrefix + caller.getClassName() + "_" + caller.getMethodName() + "_" + caller.getLineNumber();
+        }
+
+        @Override
+        public String toString() {
+            return getName();
+        }
+
+    }
+
     protected StructuredGraph partialEval(RootNode root, Object... arguments) {
         OptimizedCallTarget target = (OptimizedCallTarget) root.getCallTarget();
         return partialEval(target, arguments);
@@ -347,18 +476,28 @@ public abstract class PartialEvaluationTest extends TruffleCompilerImplTest {
             }
         }
 
+        /*
+         * Preserve-frame-state markers are intentionally kept in compiled graphs for deoptimization
+         * attribution, but they are orthogonal to the semantic graph-shape checks performed by
+         * assertPartialEvalEquals.
+         */
+        for (TrufflePreserveFrameStateNode marker : graph.getNodes(TrufflePreserveFrameStateNode.TYPE).snapshot()) {
+            if (marker.isAlive()) {
+                graph.removeFixed(marker);
+            }
+        }
+
         new DeadCodeEliminationPhase().apply(graph);
 
         // we are not interested in comparing object ids of the graphs e.g. for root nodes
         // so we null out all the object constants
         for (Node node : graph.getNodes()) {
-            if (node instanceof ConstantNode) {
-                Constant constant = ((ConstantNode) node).getValue();
+            if (node instanceof ConstantNode constantNode) {
+                Constant constant = constantNode.getValue();
                 if (constant instanceof JavaConstant) {
                     ResolvedJavaType type = getMetaAccess().lookupJavaType((JavaConstant) constant);
                     if (((JavaConstant) constant).getJavaKind() == JavaKind.Object && type != null && !WRAPPER_CLASSES.contains(type.toJavaName())) {
-                        node.replaceAtUsages(graph.unique(ConstantNode.defaultForKind(JavaKind.Object)));
-                        node.safeDelete();
+                        node.replaceAtUsagesAndDelete(ConstantNode.forConstant(constantNode.stamp(NodeView.DEFAULT), JavaConstant.NULL_POINTER, getMetaAccess(), graph));
                     }
                 }
             }

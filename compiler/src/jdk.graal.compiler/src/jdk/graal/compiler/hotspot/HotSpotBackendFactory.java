@@ -29,12 +29,10 @@ import static jdk.vm.ci.common.InitTimer.timer;
 
 import jdk.graal.compiler.bytecode.BytecodeProvider;
 import jdk.graal.compiler.core.ArchitectureSpecific;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.common.spi.ConstantFieldProvider;
 import jdk.graal.compiler.debug.Assertions;
-import jdk.graal.compiler.hotspot.meta.HotSpotGraalConstantFieldProvider;
+import jdk.graal.compiler.hotspot.meta.HotSpotConstantFieldProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotHostForeignCallsProvider;
-import jdk.graal.compiler.hotspot.meta.HotSpotIdentityHashCodeProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotLoweringProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotMetaAccessExtensionProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotPlatformConfigurationProvider;
@@ -55,10 +53,10 @@ import jdk.graal.compiler.nodes.gc.NoBarrierSet;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
 import jdk.graal.compiler.nodes.loop.LoopsDataProviderImpl;
-import jdk.graal.compiler.nodes.spi.IdentityHashCodeProvider;
 import jdk.graal.compiler.nodes.spi.LoopsDataProvider;
 import jdk.graal.compiler.nodes.spi.Replacements;
 import jdk.graal.compiler.nodes.type.NarrowOopStamp;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.tiers.CompilerConfiguration;
 import jdk.graal.compiler.replacements.classfile.ClassfileBytecodeProvider;
@@ -108,8 +106,8 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
         return (HotSpotCodeCacheProvider) jvmci.getCodeCache();
     }
 
-    protected HotSpotGraalConstantFieldProvider createConstantFieldProvider(GraalHotSpotVMConfig config, MetaAccessProvider metaAccess) {
-        return new HotSpotGraalConstantFieldProvider(config, metaAccess);
+    protected ConstantFieldProvider createConstantFieldProvider(GraalHotSpotVMConfig config, MetaAccessProvider metaAccess) {
+        return new HotSpotConstantFieldProvider(config, metaAccess);
     }
 
     protected HotSpotWordTypes createWordTypes(MetaAccessProvider metaAccess, TargetDescription target) {
@@ -124,8 +122,8 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
         return new HotSpotPlatformConfigurationProvider(config, barrierSet);
     }
 
-    protected HotSpotMetaAccessExtensionProvider createMetaAccessExtensionProvider(ConstantReflectionProvider constantReflection) {
-        return new HotSpotMetaAccessExtensionProvider(constantReflection);
+    protected HotSpotMetaAccessExtensionProvider createMetaAccessExtensionProvider(ConstantReflectionProvider constantReflection, GraalHotSpotVMConfig config) {
+        return new HotSpotMetaAccessExtensionProvider(constantReflection, config);
     }
 
     protected HotSpotReplacementsImpl createReplacements(TargetDescription target, HotSpotProviders p, BytecodeProvider bytecodeProvider) {
@@ -171,7 +169,7 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
         afterJVMCIProvidersCreated();
         TargetDescription target = codeCache.getTarget();
         SnippetSignature.initPrimitiveKindCache(metaAccess);
-        ConstantFieldProvider constantFieldProvider = new HotSpotGraalConstantFieldProvider(config, metaAccess);
+        ConstantFieldProvider constantFieldProvider = createConstantFieldProvider(config, metaAccess);
         HotSpotProviders providers;
         HotSpotReplacementsImpl replacements;
         try (InitTimer t = timer("create providers")) {
@@ -198,7 +196,7 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
             }
             HotSpotMetaAccessExtensionProvider metaAccessExtensionProvider;
             try (InitTimer rt = timer("create MetaAccessExtensionProvider")) {
-                metaAccessExtensionProvider = createMetaAccessExtensionProvider(constantReflection);
+                metaAccessExtensionProvider = createMetaAccessExtensionProvider(constantReflection, config);
             }
             HotSpotStampProvider stampProvider;
             try (InitTimer rt = timer("create stamp provider")) {
@@ -221,12 +219,8 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
             try (InitTimer rt = timer("create Bytecode provider")) {
                 bytecodeProvider = createBytecodeProvider(metaAccess, snippetReflection);
             }
-            IdentityHashCodeProvider identityHashCodeProvider;
-            try (InitTimer rt = timer("create IdentityHashCode provider")) {
-                identityHashCodeProvider = createIdentityHashCodeProvider();
-            }
             providers = new HotSpotProviders(metaAccess, codeCache, constantReflection, constantFieldProvider, foreignCalls, lowerer, null, null, registers,
-                            snippetReflection, wordTypes, stampProvider, platformConfigurationProvider, metaAccessExtensionProvider, loopsDataProvider, config, identityHashCodeProvider,
+                            snippetReflection, wordTypes, stampProvider, platformConfigurationProvider, metaAccessExtensionProvider, loopsDataProvider, config,
                             graalRuntime.getReplayCompilationSupport());
 
             try (InitTimer rt = timer("create Replacements provider")) {
@@ -254,10 +248,6 @@ public abstract class HotSpotBackendFactory implements ArchitectureSpecific {
         try (InitTimer rt = timer("instantiate backend")) {
             return createBackend(config, graalRuntime, providers);
         }
-    }
-
-    protected IdentityHashCodeProvider createIdentityHashCodeProvider() {
-        return new HotSpotIdentityHashCodeProvider();
     }
 
     protected abstract HotSpotBackend createBackend(GraalHotSpotVMConfig config, HotSpotGraalRuntimeProvider graalRuntime, HotSpotProviders providers);

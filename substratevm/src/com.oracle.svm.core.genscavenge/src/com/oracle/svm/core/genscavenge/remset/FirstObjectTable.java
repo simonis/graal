@@ -24,19 +24,18 @@
  */
 package com.oracle.svm.core.genscavenge.remset;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.util.UnsignedUtils;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import org.graalvm.word.impl.Word;
 
 /**
  * A "first object table" to tell me the start of the first object that crosses onto a card
@@ -339,7 +338,7 @@ public final class FirstObjectTable {
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static int memoryOffsetScale() {
-        return ConfigurationValues.getObjectLayout().getAlignment();
+        return ObjectLayout.singleton().getAlignment();
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)

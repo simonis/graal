@@ -24,11 +24,12 @@
  */
 package com.oracle.svm.hosted.imagelayer;
 
+import com.oracle.svm.hosted.LayeredFieldValueGuestValue;
 import static com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import static com.oracle.graal.pointsto.ObjectScanner.ScanReason;
+import static com.oracle.svm.hosted.imagelayer.LayeredFieldValueTransformerSupport.LayeredCallbacks;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,28 +39,27 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
+import com.oracle.graal.pointsto.heap.ImageHeapScanner;
 import com.oracle.graal.pointsto.meta.AnalysisField;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layered.LayeredFieldValue;
-import com.oracle.svm.core.layered.LayeredFieldValueTransformer;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.layered.LayeredFieldValueTransformer;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedField;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 
 import jdk.vm.ci.meta.JavaConstant;
 
@@ -68,7 +68,7 @@ import jdk.vm.ci.meta.JavaConstant;
  * properly relayed to {@link CrossLayerFieldUpdaterFeature}.
  */
 @AutomaticallyRegisteredFeature
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = LayeredFieldValueTransformerSupport.LayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = LayeredCallbacks.class)
 public class LayeredFieldValueTransformerSupport implements InternalFeature {
 
     private final Map<AnalysisField, LayeredFieldValueTransformerImpl> fieldToLayeredTransformer = new ConcurrentHashMap<>();
@@ -82,6 +82,7 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
     private Set<Integer> fieldsWithUpdatableValues = Set.of();
 
     private List<UpdatableValueState> priorUpdatableValues;
+    private final Set<Integer> fieldsWithInstalledUpdatableValueStates = ConcurrentHashMap.newKeySet();
 
     private CrossLayerFieldUpdaterFeature cachedFieldUpdater;
 
@@ -114,6 +115,11 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
     }
 
     @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(LayeredFieldValueTransformerSupport.class, this);
+    }
+
+    @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
         return ImageLayerBuildingSupport.buildingImageLayer();
     }
@@ -133,19 +139,20 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
         if (extensionLayer) {
             SVMImageLayerLoader loader = HostedImageLayerBuildingSupport.singleton().getLoader();
 
-            List<UpdatableValueState> newPriorUpdatableValues = new ArrayList<>();
+            priorUpdatableValues = new ArrayList<>();
             for (var fieldId : fieldsWithUpdatableValues) {
                 var aField = loader.getAnalysisFieldForBaseLayerId(fieldId);
-                List<Integer> receiverIds = loader.getUpdatableFieldReceiverIds(fieldId);
-                var proxy = createTransformer(aField, aField.getAnnotation(LayeredFieldValue.class), Set.copyOf(receiverIds));
-
-                for (int receiverId : receiverIds) {
-                    ImageHeapConstant constant = loader.getConstant(receiverId);
-                    var state = new UpdatableValueState(proxy, receiverId, constant);
-                    newPriorUpdatableValues.add(state);
+                var proxy = fieldToLayeredTransformer.get(aField);
+                if (proxy == null) {
+                    LayeredFieldValueGuestValue layeredFieldValue = LayeredFieldValueGuestValue.get(aField);
+                    if (layeredFieldValue != null) {
+                        proxy = createTransformer(aField, layeredFieldValue, Set.copyOf(loader.getUpdatableFieldReceiverIds(fieldId)));
+                    }
+                }
+                if (proxy != null) {
+                    installPriorUpdatableValueStates(loader, aField, proxy);
                 }
             }
-            priorUpdatableValues = Collections.unmodifiableList(newPriorUpdatableValues);
         }
     }
 
@@ -158,7 +165,7 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
     @Override
     public void duringAnalysis(DuringAnalysisAccess access) {
         if (extensionLayer) {
-            boolean changed = processUpdatableValues((FeatureImpl.DuringAnalysisAccessImpl) access);
+            boolean changed = processUpdatableValues(((FeatureImpl.DuringAnalysisAccessImpl) access).getUniverse().getHeapScanner());
             if (changed) {
                 // new objects were added which need to be scanned
                 access.requireAnalysisIteration();
@@ -167,22 +174,22 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
     }
 
     /**
-     * Because these fields have already been installed in the heap, these objects with updatable
-     * field will not be reached while laying out the current layer's image heap. Hence, we call
-     * {@link LayeredFieldValueTransformerSupport#processUpdatableValues} once more before
-     * performing the heap layout.
+     * Finalize current-layer updatable values while the image heap scanner is still open, and poll
+     * prior-layer updatable values once more before heap layout starts.
      */
     @Override
     public void beforeHeapLayout(BeforeHeapLayoutAccess access) {
+        ImageHeapScanner heapScanner = ((FeatureImpl.BeforeHeapLayoutAccessImpl) access).getHeapScanner();
+        finalizeFieldValues(heapScanner);
         if (extensionLayer) {
-            processUpdatableValues(null);
+            processUpdatableValues(heapScanner);
         }
     }
 
     /**
      * Go through all potential updates to find any new updates which need to processed.
      */
-    public boolean processUpdatableValues(FeatureImpl.DuringAnalysisAccessImpl access) {
+    public boolean processUpdatableValues(ImageHeapScanner heapScanner) {
         SVMImageLayerLoader loader = HostedImageLayerBuildingSupport.singleton().getLoader();
         boolean updated = false;
         ScanReason reason = new OtherReason("Manual rescan triggered from " + LayeredFieldValueTransformerSupport.class);
@@ -193,19 +200,17 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
                     updatableValue.receiver = loader.getConstant(updatableValue.receiverId);
                 }
                 if (updatableValue.receiver != null) {
-                    var result = updatableValue.transformer.updateAndGetResult(updatableValue.receiver);
-                    if (result != null) {
+                    var state = updatableValue.transformer.updateAndGetResult(updatableValue.receiver);
+                    if (!state.isUnresolved()) {
                         /*
                          * As part of updating process we must record the field update and also, if
                          * during analysis, ensure the object is scanned.
                          */
-                        VMError.guarantee(!result.updatable(), "Currently values can only be updated once.");
+                        VMError.guarantee(!state.isUpdatable(), "Currently values can only be updated once.");
                         updatableValue.updated = true;
-                        var newValue = result.value();
+                        var newValue = state.getResultValue();
                         getFieldUpdater().updateField(updatableValue.receiver, updatableValue.transformer.aField, newValue);
-                        if (access != null) {
-                            access.rescanObject(newValue, reason);
-                        }
+                        heapScanner.doScan(newValue, reason);
                         updated = true;
                     }
                 }
@@ -214,36 +219,76 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
         return updated;
     }
 
-    public LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, LayeredFieldValue layeredFieldValue) {
+    private void finalizeFieldValues(ImageHeapScanner heapScanner) {
+        ScanReason reason = new OtherReason("Pre-heap-layout field value finalization triggered from " + LayeredFieldValueTransformerSupport.class);
+        for (var transformer : fieldToLayeredTransformer.values()) {
+            transformer.finalizeFieldValues(heapScanner, reason);
+        }
+    }
+
+    public LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, LayeredFieldValueGuestValue layeredFieldValue) {
         var result = fieldToLayeredTransformer.get(aField);
         if (result != null) {
             return result;
         }
-        VMError.guarantee(!aField.isInBaseLayer() || !fieldsWithUpdatableValues.contains(aField.getId()),
+        VMError.guarantee(!aField.isInSharedLayer() || !fieldsWithUpdatableValues.contains(aField.getId()),
                         "Field value transformer should have already been installed via setupUpdatableValueTransformers.");
         return createTransformer(aField, layeredFieldValue, Set.of());
     }
 
-    private LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, LayeredFieldValue layeredFieldValue, Set<Integer> delayedValueReceivers) {
+    public LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, LayeredFieldValueTransformer<?> transformer) {
+        var result = createTransformer(aField, GuestAccess.get().getSnippetReflection().forObject(transformer), getUpdatableFieldReceiverIds(aField));
+        if (extensionLayer && priorUpdatableValues != null) {
+            installPriorUpdatableValueStates(HostedImageLayerBuildingSupport.singleton().getLoader(), aField, result);
+        }
+        return result;
+    }
+
+    private LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, LayeredFieldValueGuestValue layeredFieldValue, Set<Integer> delayedValueReceivers) {
         return fieldToLayeredTransformer.computeIfAbsent(aField, _ -> {
-            var transformer = ReflectionUtil.newInstance(layeredFieldValue.transformer());
+            var transformer = JVMCIReflectionUtil.newInstance(layeredFieldValue.transformer());
             return new LayeredFieldValueTransformerImpl(aField, transformer, delayedValueReceivers);
         });
     }
 
+    private LayeredFieldValueTransformerImpl createTransformer(AnalysisField aField, JavaConstant transformer, Set<Integer> delayedValueReceivers) {
+        return fieldToLayeredTransformer.computeIfAbsent(aField, _ -> new LayeredFieldValueTransformerImpl(aField, transformer, delayedValueReceivers));
+    }
+
+    private Set<Integer> getUpdatableFieldReceiverIds(AnalysisField aField) {
+        if (extensionLayer) {
+            SVMImageLayerLoader loader = HostedImageLayerBuildingSupport.singleton().getLoader();
+            int fieldId = loader.lookupHostedFieldInBaseLayer(aField);
+            if (fieldsWithUpdatableValues.contains(fieldId)) {
+                return Set.copyOf(loader.getUpdatableFieldReceiverIds(fieldId));
+            }
+        }
+        return Set.of();
+    }
+
+    private void installPriorUpdatableValueStates(SVMImageLayerLoader loader, AnalysisField aField, LayeredFieldValueTransformerImpl transformer) {
+        int fieldId = loader.lookupHostedFieldInBaseLayer(aField);
+        if (!fieldsWithUpdatableValues.contains(fieldId)) {
+            return;
+        }
+        if (fieldsWithInstalledUpdatableValueStates.add(fieldId)) {
+            List<Integer> receiverIds = loader.getUpdatableFieldReceiverIds(fieldId);
+            for (int receiverId : receiverIds) {
+                ImageHeapConstant constant = loader.getConstant(receiverId);
+                priorUpdatableValues.add(new UpdatableValueState(transformer, receiverId, constant));
+            }
+        }
+    }
+
     /**
-     * Called on all field values before heap layout. Note, that because we cannot fold updatable
-     * values, we need to have an explicit call to signal that it is safe to expose updatable
-     * values.
-     * 
-     * @return whether this receiver needs to be patched.
+     * @return whether this field value was finalized as updatable before heap layout and therefore
+     *         needs to be written into a patchable heap partition.
      */
-    public boolean finalizeFieldValue(HostedField hField, JavaConstant receiver) {
+    public boolean isFieldValueUpdatable(HostedField hField, JavaConstant receiver) {
         AnalysisField aField = hField.getWrapped();
-        ImageHeapConstant ihc = (ImageHeapConstant) receiver;
         var transformer = fieldToLayeredTransformer.get(aField);
         if (transformer != null) {
-            return transformer.finalizeFieldValue(ihc);
+            return transformer.isUpdatableReceiver(receiver);
         }
         return false;
     }
@@ -273,15 +318,15 @@ public class LayeredFieldValueTransformerSupport implements InternalFeature {
 
     static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
         @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<LayeredFieldValueTransformerSupport>() {
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<LayeredFieldValueTransformerSupport>() {
                 @Override
-                public LayeredImageSingleton.PersistFlags doPersist(ImageSingletonWriter writer, LayeredFieldValueTransformerSupport singleton) {
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, LayeredFieldValueTransformerSupport singleton) {
                     var fieldsWithUpdatableValues = singleton.fieldToLayeredTransformer.entrySet().stream()
                                     .filter(e -> e.getValue().currentLayerHasUpdatableValues)
                                     .map(e -> e.getKey().getId()).toList();
                     writer.writeIntList("fieldsWithUpdatableValues", fieldsWithUpdatableValues);
-                    return LayeredImageSingleton.PersistFlags.CALLBACK_ON_REGISTRATION;
+                    return LayeredPersistFlags.CALLBACK_ON_REGISTRATION;
                 }
 
                 @Override

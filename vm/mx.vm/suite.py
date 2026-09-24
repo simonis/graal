@@ -1,8 +1,8 @@
 suite = {
     "name": "vm",
-    "version" : "25.1.0",
-    "mxversion": "7.55.2",
-    "release" : False,
+    "mxversion": "7.67.0",
+    "version_from" : "sdk",
+    "release_from" : "sdk",
     "groupId" : "org.graalvm",
 
     "url" : "http://www.graalvm.org/",
@@ -17,6 +17,7 @@ suite = {
       "read" : "https://github.com/oracle/graal.git",
       "write" : "git@github.com:oracle/graal.git",
     },
+    "capture_suite_commit_info": False,
     "defaultLicense" : "GPLv2-CPE",
     "imports": {
         "suites": [
@@ -33,7 +34,7 @@ suite = {
                 "name": "graal-nodejs",
                 "subdir": True,
                 "dynamic": True,
-                "version": "5d411090181cc050b4abff255a6e77da61ccfed8",
+                "version": "58f1795f7d12d12260d0c0423811e846c7632649",
                 "urls" : [
                     {"url" : "https://github.com/graalvm/graaljs.git", "kind" : "git"},
                 ]
@@ -42,30 +43,14 @@ suite = {
                 "name": "graal-js",
                 "subdir": True,
                 "dynamic": True,
-                "version": "5d411090181cc050b4abff255a6e77da61ccfed8",
+                "version": "58f1795f7d12d12260d0c0423811e846c7632649",
                 "urls": [
                     {"url": "https://github.com/graalvm/graaljs.git", "kind" : "git"},
                 ]
             },
             {
-                "name": "truffleruby",
-                "version": "e278fbe3af5e173582ca925f9658a6a674ffb0bd",
-                "dynamic": True,
-                "urls": [
-                    {"url": "https://github.com/oracle/truffleruby.git", "kind": "git"},
-                ]
-            },
-            {
-                "name": "fastr",
-                "version": "6e5e07a23c5dce133a07701d6c49afcfd9cee86c",
-                "dynamic": True,
-                "urls": [
-                    {"url": "https://github.com/oracle/fastr.git", "kind": "git"},
-                ]
-            },
-            {
                 "name": "graalpython",
-                "version": "a7f0723738f7b58bbd0efdcb0671efa6636881c1",
+                "version": "89a3b1f7fc0c0fa87eeeb26be22f68ad7c3d39c3",
                 "dynamic": True,
                 "urls": [
                     {"url": "https://github.com/graalvm/graalpython.git", "kind": "git"},
@@ -73,11 +58,22 @@ suite = {
             },
             {
                 "name": "polybenchmarks",
-                "version": "a04259d72ab94b6245d3ce775833c8e8a3af42fa",
+                "version": "692ba4ccdb4ca317525ea342940cf96c45806c6e",
                 "dynamic": True,
                 "urls": [
                     {"url": "https://github.com/graalvm/polybenchmarks.git", "kind": "git"},
                 ]
+            },
+            # dynamic import for the 'barista' bench suite
+            {
+                "name": "barista",
+                "subdir": False,
+                "version": "0.8.1",
+                "foreign": True, # barista is not an mx suite
+                "dynamic": True,
+                "urls": [
+                    {"url": "https://github.com/barista-benchmarks/barista.git", "kind" : "git"},
+                ],
             },
         ]
     },

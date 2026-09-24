@@ -37,7 +37,6 @@ import java.lang.reflect.Modifier;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -46,32 +45,36 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
 import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
+import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
+import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.svm.core.MissingRegistrationUtils;
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.hub.PredefinedClassesSupport;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
+import com.oracle.svm.core.hub.registry.ClassRegistries;
 import com.oracle.svm.core.jdk.StackTraceUtils;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ExceptionSynthesizer;
-import com.oracle.svm.hosted.FallbackFeature;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageSystemClassLoader;
 import com.oracle.svm.hosted.ReachabilityCallbackNode;
+import com.oracle.svm.hosted.SVMHost;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.dynamicaccessinference.DynamicAccessInferenceLog;
 import com.oracle.svm.hosted.dynamicaccessinference.StrictDynamicAccessInferenceFeature;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
 import com.oracle.svm.hosted.substitute.SubstitutionReflectivityFilter;
-import com.oracle.svm.util.ModuleSupport;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.util.ModuleSupport;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.OriginalClassProvider;
 import com.oracle.svm.util.TypeResult;
 
 import jdk.graal.compiler.debug.GraalError;
@@ -119,19 +122,17 @@ public final class ReflectionPlugins {
     private final ClassInitializationPlugin classInitializationPlugin;
     private final AnalysisUniverse aUniverse;
     private final ParsingReason reason;
-    private final FallbackFeature fallbackFeature;
     private final ClassInitializationSupport classInitializationSupport;
     private final DynamicAccessInferenceLog inferenceLog;
     private final SubstitutionReflectivityFilter reflectivityFilter;
 
     private ReflectionPlugins(ImageClassLoader imageClassLoader, AnnotationSubstitutionProcessor annotationSubstitutions,
-                    ClassInitializationPlugin classInitializationPlugin, AnalysisUniverse aUniverse, ParsingReason reason, FallbackFeature fallbackFeature) {
+                    ClassInitializationPlugin classInitializationPlugin, AnalysisUniverse aUniverse, ParsingReason reason) {
         this.imageClassLoader = imageClassLoader;
         this.annotationSubstitutions = annotationSubstitutions;
         this.classInitializationPlugin = classInitializationPlugin;
         this.aUniverse = aUniverse;
         this.reason = reason;
-        this.fallbackFeature = fallbackFeature;
 
         this.classInitializationSupport = (ClassInitializationSupport) ImageSingletons.lookup(RuntimeClassInitializationSupport.class);
 
@@ -141,8 +142,8 @@ public final class ReflectionPlugins {
     }
 
     public static void registerInvocationPlugins(ImageClassLoader imageClassLoader, AnnotationSubstitutionProcessor annotationSubstitutions,
-                    ClassInitializationPlugin classInitializationPlugin, InvocationPlugins plugins, AnalysisUniverse aUniverse, ParsingReason reason, FallbackFeature fallbackFeature) {
-        ReflectionPlugins rp = new ReflectionPlugins(imageClassLoader, annotationSubstitutions, classInitializationPlugin, aUniverse, reason, fallbackFeature);
+                    ClassInitializationPlugin classInitializationPlugin, InvocationPlugins plugins, AnalysisUniverse aUniverse, ParsingReason reason) {
+        ReflectionPlugins rp = new ReflectionPlugins(imageClassLoader, annotationSubstitutions, classInitializationPlugin, aUniverse, reason);
         rp.registerMethodHandlesPlugins(plugins);
         rp.registerClassPlugins(plugins);
     }
@@ -349,7 +350,7 @@ public final class ReflectionPlugins {
                 @Override
                 public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode nameNode) {
                     ClassLoader loader;
-                    if (ClassForNameSupport.respectClassLoader()) {
+                    if (ClassRegistries.respectClassLoader()) {
                         Class<?> callerClass = OriginalClassProvider.getJavaClass(b.getMethod().getDeclaringClass());
                         loader = callerClass.getClassLoader();
                     } else {
@@ -362,7 +363,7 @@ public final class ReflectionPlugins {
                 @Override
                 public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode nameNode, ValueNode initializeNode, ValueNode classLoaderNode) {
                     ClassLoader loader;
-                    if (ClassForNameSupport.respectClassLoader()) {
+                    if (ClassRegistries.respectClassLoader()) {
                         if (!classLoaderNode.isJavaConstant()) {
                             return false;
                         }
@@ -405,7 +406,7 @@ public final class ReflectionPlugins {
      * the constructor parameter.
      */
     private boolean processMethodHandlesLookup(GraphBuilderContext b, ResolvedJavaMethod targetMethod) {
-        if (StackTraceUtils.ignoredBySecurityStackWalk(b.getMetaAccess(), b.getMethod())) {
+        if (StackTraceUtils.ignoredBySecurityStackWalk(b.getMetaAccess(), b.getMetaAccessExtensionProvider(), b.getMethod())) {
             /*
              * If our immediate caller (which is the only method available at the time the
              * invocation plugin is running) is not the method returned by
@@ -441,7 +442,7 @@ public final class ReflectionPlugins {
 
         Object[] arguments = targetMethod.getParameters().length == 1
                         ? new Object[]{className}
-                        : new Object[]{className, initialize, ClassForNameSupport.respectClassLoader() ? loader : DynamicAccessInferenceLog.ignoreArgument()};
+                        : new Object[]{className, initialize, ClassRegistries.respectClassLoader() ? loader : DynamicAccessInferenceLog.ignoreArgument()};
 
         TypeResult<Class<?>> typeResult = ImageClassLoader.findClass(className, false, loader);
         if (!typeResult.isPresent()) {
@@ -483,8 +484,19 @@ public final class ReflectionPlugins {
             return false;
         }
 
-        // GR-57649 generalize code if needed in more places
-        ClassLoader loader = clazz.getClassLoader();
+        ClassLoader loader;
+        if (reason == ParsingReason.AutomaticUnsafeTransformation || reason == ParsingReason.EarlyClassInitializerAnalysis) {
+            /*
+             * We are getting called before analysis, DynamicHubs are not available at this point.
+             * This is acceptable because those graphs will not be used by the analysis later.
+             */
+            // GR-57649 generalize code if needed in more places
+            loader = clazz.getClassLoader();
+        } else {
+            /* Get loader from DynamicHub. The one from the hosted clazz can be different. */
+            loader = ((SVMHost) aUniverse.hostVM()).dynamicHub(clazz).getClassLoader();
+        }
+
         JavaConstant result;
         if (loader == null) {
             result = JavaConstant.NULL_POINTER;
@@ -507,7 +519,7 @@ public final class ReflectionPlugins {
      * yet available in JDK 8 (like VarHandle methods) are silently ignored.
      */
     private void registerFoldInvocationPlugins(InvocationPlugins plugins, boolean subjectToStrictDynamicAccessInference, Class<?> declaringClass, String... methodNames) {
-        Set<String> methodNamesSet = new HashSet<>(Arrays.asList(methodNames));
+        EconomicSet<String> methodNamesSet = EconomicSet.create(Arrays.asList(methodNames));
         ModuleSupport.accessModuleByClass(ModuleSupport.Access.OPEN, ReflectionPlugins.class, declaringClass);
         for (Method method : declaringClass.getDeclaredMethods()) {
             if (methodNamesSet.contains(method.getName()) && !method.isSynthetic()) {
@@ -633,12 +645,9 @@ public final class ReflectionPlugins {
         return true;
     }
 
-    private <T> void registerForRuntimeReflection(T receiver, Consumer<T> registrationCallback) {
+    private static <T> void registerForRuntimeReflection(T receiver, Consumer<T> registrationCallback) {
         try {
             registrationCallback.accept(receiver);
-            if (fallbackFeature != null) {
-                fallbackFeature.ignoreReflectionFallback = true;
-            }
         } catch (LinkageError e) {
             // Ignore, the call should be registered manually
         }
@@ -738,7 +747,10 @@ public final class ReflectionPlugins {
              */
             return null;
         }
-        return (T) aUniverse.replaceObject(element);
+        /* GR-79060: Migrate this builder-object bridge to JVMCI constants. */
+        JavaConstant constant = GuestAccess.get().getSnippetReflection().forObject(element);
+        JavaConstant replacedConstant = aUniverse.replaceConstantWithOrdinaryReplacers(constant);
+        return (T) aUniverse.getHostedValuesProvider().asObject(Object.class, replacedConstant);
     }
 
     /**
@@ -757,7 +769,14 @@ public final class ReflectionPlugins {
              */
             return null;
         }
-        return aUniverse.replaceObjectWithConstant(element, context.getSnippetReflection()::forObject);
+        /* GR-79060: Migrate this builder-object bridge to JVMCI constants. */
+        JavaConstant constant = GuestAccess.get().getSnippetReflection().forObject(element);
+        JavaConstant replacedConstant = aUniverse.replaceConstantWithAllReplacers(constant);
+        if (replacedConstant instanceof ImageHeapConstant) {
+            return replacedConstant;
+        }
+        // Make sure the result is always an ImageHeapConstant
+        return aUniverse.getHeapScanner().createImageHeapConstant(replacedConstant, OtherReason.UNKNOWN);
     }
 
     private JavaConstant pushConstant(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Object receiver, Object[] arguments, JavaKind returnKind, Object returnValue,

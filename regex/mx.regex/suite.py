@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2019, 2025, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2019, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # The Universal Permissive License (UPL), Version 1.0
@@ -39,12 +39,12 @@
 # SOFTWARE.
 #
 suite = {
-  "mxversion": "7.58.0",
+  "mxversion": "7.65.0",
 
   "name" : "regex",
 
-  "version" : "25.1.0",
-  "release" : False,
+  "version_from" : "truffle",
+  "release_from" : "truffle",
   "groupId" : "org.graalvm.regex",
   "url" : "http://www.graalvm.org/",
   "developer" : {
@@ -67,7 +67,7 @@ suite = {
       },
     ]
   },
-  "ignore_suite_commit_info": True,
+  "capture_suite_commit_info": False,
   "licenses" : {
     "upl" : {
       "name" : "Universal Permissive License, Version 1.0",

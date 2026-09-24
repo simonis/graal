@@ -24,10 +24,12 @@
  */
 package com.oracle.svm.core;
 
-import static com.oracle.svm.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
+import static com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
 
 import java.lang.reflect.Method;
 
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.Uninterruptible;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.LogHandler;
 import org.graalvm.nativeimage.Platform;
@@ -36,14 +38,16 @@ import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
 
 import com.oracle.svm.core.graal.code.StubCallingConvention;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
+import com.oracle.svm.core.log.CoreLogSupport;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
-import com.oracle.svm.util.ReflectionUtil;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.sdk.staging.layeredimage.LayeredCompilationBehavior;
+import com.oracle.svm.sdk.staging.layeredimage.LayeredCompilationBehavior.Behavior;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import org.graalvm.word.impl.Word;
 
 /**
  * Provides stub methods that can be used for uninitialized method pointers. Instead of a segfault,
@@ -79,6 +83,7 @@ public final class InvalidMethodPointerHandler {
     @StubCallingConvention
     @NeverInline("We need a separate frame that stores all registers")
     @Uninterruptible(reason = "Precaution.")
+    @LayeredCompilationBehavior(Behavior.FULLY_DELAYED_TO_APPLICATION_LAYER)
     private static void invalidVTableEntryHandler() {
         Pointer callerSP = KnownIntrinsics.readCallerStackPointer();
         CodePointer callerIP = KnownIntrinsics.readReturnAddress();
@@ -108,7 +113,7 @@ public final class InvalidMethodPointerHandler {
          * cause of the fatal error.
          */
         LogHandler logHandler = ImageSingletons.lookup(LogHandler.class);
-        Log log = Log.enterFatalContext(logHandler, callerIP, message, null);
+        Log log = CoreLogSupport.enterFatalContext(logHandler, callerIP, message, null);
         if (log != null) {
             SubstrateDiagnostics.printFatalError(log, callerSP, callerIP, Word.nullPointer(), true);
             log.string(message).newline();

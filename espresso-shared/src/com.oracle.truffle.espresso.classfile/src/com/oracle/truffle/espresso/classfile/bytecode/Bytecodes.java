@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -600,7 +600,7 @@ public final class Bytecodes {
         def(ARETURN             , "areturn"         , "b"    , -1, TRAP | STOP);
         def(RETURN              , "return"          , "b"    ,  0, TRAP | STOP);
 
-        // The stack effect of put/get bytecodes encodes the the number of slots that are guarantee to be pusehd/popped by a full push/pop operation.
+        // The stack effect of put/get bytecodes encodes the number of slots that are guaranteed to be pushed/popped by a full push/pop operation.
         // e.g. getField pops the receiver (-1), but the result size depends on the field, so it's not included in the effect.
         def(GETSTATIC           , "getstatic"       , "bjj"  ,  0, TRAP | FIELD_READ | PRODUCE_FOREIGN);
         def(PUTSTATIC           , "putstatic"       , "bjj"  ,  0, TRAP | FIELD_WRITE);
@@ -633,7 +633,14 @@ public final class Bytecodes {
         // Unlike standard bytecodes, stack effects are determined completely by the node, even if the semantics
         // of patched bytecode is partially or completely known.
         def(QUICK               , "quick"           , "bjj"  ,  0, TRAP | QUICKENED | PRODUCE_FOREIGN | RECEIVE_FOREIGN);
-        def(SLIM_QUICK          , "slimquick"       ,"b"     ,  0, TRAP | QUICKENED | PRODUCE_FOREIGN | RECEIVE_FOREIGN);
+        def(SLIM_QUICK          , "slimquick"       , "b"    ,  0, TRAP | QUICKENED | PRODUCE_FOREIGN | RECEIVE_FOREIGN);
+        /*
+         * Espresso special bytecodes.
+         * They don't have the TRAP flag to avoid out-of-range BCI being collected
+         * for exception stack trace.
+         */
+        def(RETURN_VALUE        , "returnvalue"     , "b"    ,  0, STOP);
+        def(THROW_VALUE         , "throwvalue"      , "b"    ,  0, STOP);
     }
     // @formatter:on
     // Checkstyle: resume

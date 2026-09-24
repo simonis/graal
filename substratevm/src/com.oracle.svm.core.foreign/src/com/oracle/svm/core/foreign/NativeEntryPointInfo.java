@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,12 @@ import java.lang.invoke.MethodType;
 import java.util.Arrays;
 import java.util.Objects;
 
-import com.oracle.svm.core.util.VMError;
+import org.graalvm.nativeimage.ImageInfo;
+import org.graalvm.nativeimage.c.function.CFunctionPointer;
+import org.graalvm.word.impl.Word;
+
+import com.oracle.svm.core.interpreter.InterpreterForeignFunctionsSupport;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.internal.foreign.abi.ABIDescriptor;
 import jdk.internal.foreign.abi.VMStorage;
@@ -112,8 +117,15 @@ public final class NativeEntryPointInfo {
                     boolean needsTransition,
                     boolean allowHeapAccess) {
         var info = make(argMoves, returnMoves, methodType, needsReturnBuffer, capturedStateMask, needsTransition, allowHeapAccess);
-        long addr = ForeignFunctionsRuntime.singleton().getDowncallStubPointer(info).rawValue();
-        return new Target_jdk_internal_foreign_abi_NativeEntryPoint(info.methodType(), addr, capturedStateMask);
+        ForeignFunctionsRuntime foreignFunctionsRuntime = ForeignFunctionsRuntime.singleton();
+        CFunctionPointer downcallStubPointer = foreignFunctionsRuntime.getDowncallStubPointer(info, !(ImageInfo.inImageRuntimeCode() && InterpreterForeignFunctionsSupport.isAvailable()));
+        if (downcallStubPointer.isNull()) {
+            // crema case
+            return new Target_jdk_internal_foreign_abi_NativeEntryPoint(info.methodType(), Word.nullPointer(), Word.nullPointer(), capturedStateMask,
+                            foreignFunctionsRuntime.createInterpreterDowncallPlan(info));
+        }
+        return new Target_jdk_internal_foreign_abi_NativeEntryPoint(info.methodType(), downcallStubPointer, foreignFunctionsRuntime.getDowncallStubInvokerPointer(methodType),
+                        capturedStateMask, null);
     }
 
     public MethodType methodType() {

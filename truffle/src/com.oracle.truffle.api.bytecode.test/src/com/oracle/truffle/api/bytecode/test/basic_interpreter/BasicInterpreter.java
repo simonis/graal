@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -45,6 +45,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
@@ -53,12 +54,15 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.bytecode.BytecodeConfig;
+import com.oracle.truffle.api.bytecode.BytecodeFrame;
 import com.oracle.truffle.api.bytecode.BytecodeLocation;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
 import com.oracle.truffle.api.bytecode.BytecodeRootNode;
+import com.oracle.truffle.api.bytecode.BytecodeTier;
 import com.oracle.truffle.api.bytecode.ConstantOperand;
 import com.oracle.truffle.api.bytecode.ContinuationResult;
 import com.oracle.truffle.api.bytecode.ContinuationRootNode;
+import com.oracle.truffle.api.bytecode.ForceQuickening;
 import com.oracle.truffle.api.bytecode.GenerateBytecode;
 import com.oracle.truffle.api.bytecode.GenerateBytecodeTestVariants;
 import com.oracle.truffle.api.bytecode.GenerateBytecodeTestVariants.Variant;
@@ -71,6 +75,7 @@ import com.oracle.truffle.api.bytecode.Operation;
 import com.oracle.truffle.api.bytecode.ShortCircuitOperation;
 import com.oracle.truffle.api.bytecode.ShortCircuitOperation.Operator;
 import com.oracle.truffle.api.bytecode.Variadic;
+import com.oracle.truffle.api.bytecode.Yield;
 import com.oracle.truffle.api.bytecode.test.BytecodeDSLTestLanguage;
 import com.oracle.truffle.api.bytecode.test.DebugBytecodeRootNode;
 import com.oracle.truffle.api.dsl.Bind;
@@ -81,6 +86,7 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameDescriptor;
+import com.oracle.truffle.api.frame.FrameInstance;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -92,6 +98,7 @@ import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.nodes.UnexpectedResultException;
 import com.oracle.truffle.api.source.SourceSection;
 
 /**
@@ -108,6 +115,7 @@ import com.oracle.truffle.api.source.SourceSection;
                                 enableSerialization = true, //
                                 enableTagInstrumentation = true, //
                                 enableSpecializationIntrospection = true, //
+                                enableInstructionRewriting = false, //
                                 allowUnsafe = false, //
                                 variadicStackLimit = "4")),
                 @Variant(suffix = "Unsafe", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
@@ -191,7 +199,19 @@ import com.oracle.truffle.api.source.SourceSection;
                                 defaultUncachedThreshold = "defaultUncachedThreshold", //
                                 enableSpecializationIntrospection = true, //
                                 boxingEliminationTypes = {boolean.class, long.class}, //
-                                variadicStackLimit = "16"))
+                                variadicStackLimit = "16")),
+                @Variant(suffix = "ProductionRootScopingTailCall", configuration = @GenerateBytecode(languageClass = BytecodeDSLTestLanguage.class, //
+                                additionalAssertions = true, //
+                                enableYield = true, //
+                                enableMaterializedLocalAccesses = true, //
+                                enableSerialization = true, //
+                                enableBlockScoping = false, //
+                                enableTagInstrumentation = true, //
+                                enableUncachedInterpreter = true, //
+                                defaultUncachedThreshold = "defaultUncachedThreshold", //
+                                enableSpecializationIntrospection = true, //
+                                boxingEliminationTypes = {boolean.class, long.class}, //
+                                enableTailCallHandlers = true, variadicStackLimit = "16")),
 })
 @ShortCircuitOperation(booleanConverter = BasicInterpreter.ToBoolean.class, name = "ScAnd", operator = Operator.AND_RETURN_VALUE)
 @ShortCircuitOperation(booleanConverter = BasicInterpreter.ToBoolean.class, name = "ScOr", operator = Operator.OR_RETURN_VALUE, javadoc = "ScOr returns the first truthy operand value.")
@@ -212,6 +232,11 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public Throwable interceptInternalException(Throwable t, VirtualFrame frame, BytecodeNode bytecodeNode, int bytecodeIndex) {
+        t.addSuppressed(new AssertionError("Attached Bytecode dump: " + bytecodeNode.dump(bytecodeIndex)));
+        return t;
     }
 
     @Override
@@ -270,7 +295,15 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     @Operation(javadoc = "Adds the two operand values, which must either be longs or Strings.")
     static final class Add {
+
         @Specialization
+        @ForceQuickening("add")
+        public static long addInts(int lhs, int rhs) {
+            return lhs + rhs;
+        }
+
+        @Specialization
+        @ForceQuickening("add")
         public static long addLongs(long lhs, long rhs) {
             return lhs + rhs;
         }
@@ -428,6 +461,17 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     }
 
     @Operation(storeBytecodeIndex = false)
+    @ConstantOperand(type = long.class)
+    static final class BytecodeSetLocalValue {
+        @Specialization
+        static void perform(VirtualFrame frame, long localOffset, Object value,
+                        @Bind BytecodeNode bytecodeNode,
+                        @Bind("$bytecodeIndex") int bytecodeIndex) {
+            bytecodeNode.setLocalValue(bytecodeIndex, frame, (int) localOffset, value);
+        }
+    }
+
+    @Operation(storeBytecodeIndex = false)
     @ConstantOperand(type = LocalRangeAccessor.class)
     static final class TeeLocalRange {
         @Specialization
@@ -513,6 +557,30 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
     @SuppressWarnings("unused")
     @Operation(storeBytecodeIndex = true)
+    public static final class InvokeInlined {
+        @Specialization(guards = {"callTargetMatches(root.getCallTarget(), callNode.getCallTarget())"}, limit = "1")
+        public static Object doRootNode(BasicInterpreter root, @Variadic Object[] args, @Cached("createForcedInlineCall(root.getCallTarget())") DirectCallNode callNode) {
+            return callNode.call(args);
+        }
+
+        @Specialization(replaces = {"doRootNode"})
+        public static Object doRootNodeUncached(BasicInterpreter root, @Variadic Object[] args, @Shared @Cached IndirectCallNode callNode) {
+            return callNode.call(root.getCallTarget(), args);
+        }
+
+        static DirectCallNode createForcedInlineCall(CallTarget target) {
+            DirectCallNode callNode = DirectCallNode.create(target);
+            callNode.forceInlining();
+            return callNode;
+        }
+
+        static boolean callTargetMatches(CallTarget left, CallTarget right) {
+            return left == right;
+        }
+    }
+
+    @SuppressWarnings("unused")
+    @Operation(storeBytecodeIndex = true)
     public static final class Invoke {
         @Specialization(guards = {"callTargetMatches(root.getCallTarget(), callNode.getCallTarget())"}, limit = "1")
         public static Object doRootNode(BasicInterpreter root, @Variadic Object[] args, @Cached("create(root.getCallTarget())") DirectCallNode callNode) {
@@ -571,6 +639,14 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
+    @Operation(storeBytecodeIndex = false)
+    public static final class MaterializeSources {
+        @Specialization
+        public static void materialize(@Bind BytecodeNode bytecodeNode) {
+            bytecodeNode.ensureSourceInformation();
+        }
+    }
+
     @Operation
     public static final class CreateClosure {
         @Specialization
@@ -605,23 +681,15 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     }
 
     @Operation(storeBytecodeIndex = true)
-    public static final class GetSourcePosition {
-        @Specialization
-        public static SourceSection doOperation(VirtualFrame frame,
-                        @Bind Node node,
-                        @Bind BytecodeNode bytecode) {
-            return bytecode.getSourceLocation(frame, node);
-        }
-    }
-
-    @Operation(storeBytecodeIndex = true)
     public static final class EnsureAndGetSourcePosition {
         @Specialization
         public static SourceSection doOperation(VirtualFrame frame, boolean ensure,
                         @Bind Node node,
                         @Bind BytecodeNode bytecode) {
-            // Put this branch in the operation itself so that the bytecode branch profile doesn't
-            // mark this path unreached during compilation.
+            /*
+             * Put this branch in the operation itself so that the bytecode branch profile doesn't
+             * mark this path unreached during compilation.
+             */
             if (ensure) {
                 return bytecode.ensureSourceInformation().getSourceLocation(frame, node);
             } else {
@@ -702,51 +770,37 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
-    @Operation(storeBytecodeIndex = true)
-    public static final class CollectSourceLocations {
+    @Operation
+    public static final class EnsureVirtualizedContinuationFrame {
         @Specialization
-        public static List<SourceSection> perform(
-                        @Bind BytecodeLocation location,
-                        @Bind BasicInterpreter currentRootNode) {
-            List<SourceSection> sourceLocations = new ArrayList<>();
-            Truffle.getRuntime().iterateFrames(f -> {
-                if (f.getCallTarget() instanceof RootCallTarget rct && rct.getRootNode() instanceof BasicInterpreter frameRootNode) {
-                    if (currentRootNode == frameRootNode) {
-                        // The top-most stack trace element doesn't have a call node.
-                        sourceLocations.add(location.getSourceLocation());
-                    } else {
-                        sourceLocations.add(frameRootNode.getBytecodeNode().getSourceLocation(f));
-                    }
-                } else {
-                    sourceLocations.add(null);
-                }
-                return null;
-            });
-            return sourceLocations;
+        public static ContinuationResult perform(ContinuationResult result) {
+            CompilerDirectives.ensureVirtualized(result.getFrame());
+            return result;
         }
     }
 
     @Operation(storeBytecodeIndex = true)
-    public static final class CollectAllSourceLocations {
-        @Specialization
-        public static List<SourceSection[]> perform(
-                        @Bind BytecodeLocation location,
-                        @Bind BasicInterpreter currentRootNode) {
-            List<SourceSection[]> allSourceLocations = new ArrayList<>();
-            Truffle.getRuntime().iterateFrames(f -> {
-                if (f.getCallTarget() instanceof RootCallTarget rct && rct.getRootNode() instanceof BasicInterpreter frameRootNode) {
-                    if (currentRootNode == frameRootNode) {
-                        // The top-most stack trace element doesn't have a call node.
-                        allSourceLocations.add(location.getSourceLocations());
-                    } else {
-                        allSourceLocations.add(frameRootNode.getBytecodeNode().getSourceLocations(f));
-                    }
-                } else {
-                    allSourceLocations.add(null);
-                }
-                return null;
-            });
-            return allSourceLocations;
+    public static final class ContinueInlined {
+        public static final int LIMIT = 3;
+
+        @SuppressWarnings("unused")
+        @Specialization(guards = {"result.getContinuationRootNode() == rootNode"}, limit = "LIMIT")
+        public static Object invokeDirect(ContinuationResult result, Object value,
+                        @Cached("result.getContinuationRootNode()") ContinuationRootNode rootNode,
+                        @Cached("createForcedInlineCall(rootNode.getCallTarget())") DirectCallNode callNode) {
+            return callNode.call(result.getFrame(), value);
+        }
+
+        @Specialization(replaces = "invokeDirect")
+        public static Object invokeIndirect(ContinuationResult result, Object value,
+                        @Cached IndirectCallNode callNode) {
+            return callNode.call(result.getContinuationCallTarget(), result.getFrame(), value);
+        }
+
+        static DirectCallNode createForcedInlineCall(CallTarget target) {
+            DirectCallNode callNode = DirectCallNode.create(target);
+            callNode.forceInlining();
+            return callNode;
         }
     }
 
@@ -777,11 +831,118 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         }
     }
 
+    @Operation(storeBytecodeIndex = true)
+    @SuppressWarnings("truffle-interpreted-performance")
+    public static final class CaptureFrame {
+        private static final Object FRAME_UNAVAILABLE = new Object();
+
+        @Specialization
+        public static BytecodeFrame perform(int skipFrames, FrameInstance.FrameAccess access) {
+            Object frameWalkResult = Truffle.getRuntime().iterateFrames(frameInstance -> {
+                BytecodeFrame result = BytecodeFrame.get(frameInstance, access);
+                if (result == null) {
+                    // Return a sentinel value so that frame walking doesn't continue.
+                    return FRAME_UNAVAILABLE;
+                }
+                return result;
+            }, skipFrames);
+
+            return frameWalkResult == FRAME_UNAVAILABLE ? null : (BytecodeFrame) frameWalkResult;
+        }
+    }
+
+    @Operation(storeBytecodeIndex = true)
+    @SuppressWarnings("truffle-interpreted-performance")
+    public static final class CaptureNonVirtualFrame {
+        private static final Object FRAME_UNAVAILABLE = new Object();
+
+        @Specialization
+        public static BytecodeFrame perform(int skipFrames) {
+            Object frameWalkResult = Truffle.getRuntime().iterateFrames(frameInstance -> {
+                BytecodeFrame result = BytecodeFrame.getNonVirtual(frameInstance);
+                if (result == null) {
+                    // Return a sentinel value so that frame walking doesn't continue.
+                    return FRAME_UNAVAILABLE;
+                }
+                return result;
+            }, skipFrames);
+
+            return frameWalkResult == FRAME_UNAVAILABLE ? null : (BytecodeFrame) frameWalkResult;
+        }
+    }
+
+    // Special operation that forces its operand to escape.
+    @Operation
+    public static final class Blackhole {
+        @Specialization
+        @TruffleBoundary
+        public static void perform(@SuppressWarnings("unused") Object value) {
+            // do nothing
+        }
+    }
+
+    @Yield
+    public static final class CustomYield {
+        @Specialization
+        public static ContinuationResult perform(Object value, @Bind ContinuationRootNode root, @Bind MaterializedFrame frame) {
+            return ContinuationResult.create(root, frame, value);
+        }
+    }
+
+    /**
+     * Deoptimizes when the condition is true. Note that the deoptimization can float. Use
+     * {@link DeoptimizeHere} for precise deopt locations.
+     */
+    @Operation
+    public static final class Deoptimize {
+        @Specialization
+        public static void deoptimize(boolean condition) {
+            if (condition) {
+                CompilerDirectives.transferToInterpreter();
+            }
+        }
+    }
+
+    /**
+     * Deoptimizes at the current location when the condition is true. Use {@link Deoptimize} for
+     * floatable deopts.
+     */
+    @Operation
+    public static final class DeoptimizeHere {
+        @Specialization
+        public static void deoptimize(boolean condition) {
+            if (condition) {
+                // Keep the deopt fixed at this operation for tests that need an exact location.
+                forceStateSplit();
+                CompilerDirectives.transferToInterpreter();
+            }
+        }
+
+        @TruffleBoundary(allowInlining = false)
+        private static void forceStateSplit() {
+        }
+    }
+
     @Instrumentation
     public static final class PrintHere {
         @Specialization
         public static void perform() {
             System.out.println("here!");
+        }
+    }
+
+    @Instrumentation(storeBytecodeIndex = false)
+    @ConstantOperand(type = LocalAccessor.class)
+    public static final class IncrementLocal {
+        @Specialization
+        public static void doIncrement(VirtualFrame frame,
+                        LocalAccessor accessor,
+                        @Bind BytecodeNode bytecode) {
+            try {
+                accessor.setLong(bytecode, frame, 1L + accessor.getLong(bytecode, frame));
+            } catch (UnexpectedResultException ex) {
+                CompilerDirectives.shouldNotReachHere(ex);
+            }
         }
     }
 
@@ -802,6 +963,24 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     }
 
     @Operation(storeBytecodeIndex = false)
+    public static final class EnableIncrementLocalInstrumentation {
+        @Specialization
+        public static void doEnable(
+                        @Bind BasicInterpreter root,
+                        @Cached(value = "getConfig(root)", allowUncached = true, neverDefault = true) BytecodeConfig config) {
+            root.getRootNodes().update(config);
+        }
+
+        @TruffleBoundary
+        protected static BytecodeConfig getConfig(BasicInterpreter root) {
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
+            configBuilder.addInstrumentation(IncrementLocal.class);
+            return configBuilder.build();
+        }
+
+    }
+
+    @Operation(storeBytecodeIndex = false)
     public static final class EnableIncrementValueInstrumentation {
         @Specialization
         public static void doEnable(
@@ -812,7 +991,7 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @TruffleBoundary
         protected static BytecodeConfig getConfig(BasicInterpreter root) {
-            BytecodeConfig.Builder configBuilder = BasicInterpreterBuilder.invokeNewConfigBuilder(root.getClass());
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
             configBuilder.addInstrumentation(IncrementValue.class);
             return configBuilder.build();
         }
@@ -829,8 +1008,16 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
     @Operation
     static final class Less {
         @Specialization
-        static boolean doInts(long left, long right) {
+        static boolean doLongs(long left, long right) {
             return left < right;
+        }
+    }
+
+    @Operation
+    static final class Greater {
+        @Specialization
+        static boolean doLongs(long left, long right) {
+            return left > right;
         }
     }
 
@@ -845,11 +1032,19 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
 
         @TruffleBoundary
         protected static BytecodeConfig getConfig(BasicInterpreter root) {
-            BytecodeConfig.Builder configBuilder = BasicInterpreterBuilder.invokeNewConfigBuilder(root.getClass());
+            BytecodeConfig.Builder configBuilder = AbstractBasicInterpreterTest.lookupVariant(root).newConfigBuilder();
             configBuilder.addInstrumentation(DoubleValue.class);
             return configBuilder.build();
         }
 
+    }
+
+    @Operation(storeBytecodeIndex = false)
+    public static final class IsUncached {
+        @Specialization
+        public static boolean perform(@Bind BytecodeTier tier) {
+            return tier == BytecodeTier.UNCACHED;
+        }
     }
 
     record Bindings(
@@ -920,6 +1115,17 @@ public abstract class BasicInterpreter extends DebugBytecodeRootNode implements 
         @SuppressWarnings("unused")
         public static Object[] doDefault(long arg0, @Variadic Object[] args) {
             return args;
+        }
+    }
+
+    @Operation(storeBytecodeIndex = false)
+    @ConstantOperand(name = "f", type = Function.class)
+    static final class Run {
+        @SuppressWarnings("unchecked")
+        @Specialization
+        @TruffleBoundary
+        public static Object doDefault(Function<?, ?> supplier, @Bind BytecodeNode bc) {
+            return ((Function<Object, Object>) supplier).apply(bc);
         }
     }
 

@@ -30,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.List;
 
 import org.graalvm.collections.EconomicMap;
@@ -41,31 +40,35 @@ import org.graalvm.nativeimage.impl.HeapDumpSupport;
 
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.encoder.SymbolEncoder;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.dump.HProfType;
 import com.oracle.svm.core.heap.dump.HeapDumpMetadata;
-import com.oracle.svm.core.heap.dump.HeapDumpShutdownHook;
 import com.oracle.svm.core.heap.dump.HeapDumpStartupHook;
 import com.oracle.svm.core.heap.dump.HeapDumpSupportImpl;
+import com.oracle.svm.core.heap.dump.HeapDumpTeardownHook;
 import com.oracle.svm.core.heap.dump.HeapDumpWriter;
 import com.oracle.svm.core.heap.dump.HeapDumping;
 import com.oracle.svm.core.imagelayer.BuildingImageLayerPredicate;
 import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.jdk.RuntimeSupport;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
 import com.oracle.svm.core.meta.SharedField;
 import com.oracle.svm.core.meta.SharedType;
 import com.oracle.svm.core.util.ByteArrayReader;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.FeatureImpl.AfterCompilationAccessImpl;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks.LayeredSingletonInstantiator;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.util.TypeConversion;
 import jdk.graal.compiler.core.common.util.UnsafeArrayTypeWriter;
@@ -95,11 +98,10 @@ public class HeapDumpFeature implements InternalFeature {
 
     @Override
     public void duringSetup(DuringSetupAccess access) {
-        HeapDumpSupportImpl heapDumpSupport = new HeapDumpSupportImpl();
-        ImageSingletons.add(HeapDumpSupport.class, heapDumpSupport);
-        ImageSingletons.add(HeapDumping.class, heapDumpSupport);
-
         if (ImageLayerBuildingSupport.firstImageBuild()) {
+            HeapDumpSupportImpl heapDumpSupport = new HeapDumpSupportImpl();
+            ImageSingletons.add(HeapDumpSupport.class, heapDumpSupport);
+            ImageSingletons.add(HeapDumping.class, heapDumpSupport);
             ImageSingletons.add(HeapDumpMetadata.class, new HeapDumpMetadata());
         }
         ImageSingletons.add(HeapDumpMetadata.HeapDumpEncodedData.class, new HeapDumpMetadata.HeapDumpEncodedData());
@@ -108,13 +110,9 @@ public class HeapDumpFeature implements InternalFeature {
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         /* Heap dumping on signal and on OutOfMemoryError are opt-in features. */
-        if (VMInspectionOptions.hasHeapDumpSupport()) {
+        if (VMInspectionOptions.hasHeapDumpSupport() && ImageLayerBuildingSupport.firstImageBuild()) {
             RuntimeSupport.getRuntimeSupport().addStartupHook(new HeapDumpStartupHook());
-            RuntimeSupport.getRuntimeSupport().addShutdownHook(new HeapDumpShutdownHook());
-            if (ImageLayerBuildingSupport.buildingImageLayer()) {
-                var method = ReflectionUtil.lookupMethod(VMInspectionOptions.class, "determineHeapDumpPath");
-                ((FeatureImpl.BeforeAnalysisAccessImpl) access).getMetaAccess().lookupJavaMethod(method).setFullyDelayedToApplicationLayer();
-            }
+            RuntimeSupport.getRuntimeSupport().addTearDownHook(new HeapDumpTeardownHook());
         }
     }
 
@@ -289,7 +287,8 @@ public class HeapDumpFeature implements InternalFeature {
 }
 
 @AutomaticallyRegisteredImageSingleton(onlyWith = BuildingImageLayerPredicate.class)
-class LayeredHeapDumpEncodedTypesTracker implements LayeredImageSingleton {
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = LayeredHeapDumpEncodedTypesTracker.LayeredCallbacks.class)
+class LayeredHeapDumpEncodedTypesTracker {
     private List<String> encodedFieldNames;
     private final List<String> priorFieldNames;
 
@@ -309,20 +308,30 @@ class LayeredHeapDumpEncodedTypesTracker implements LayeredImageSingleton {
         return priorFieldNames;
     }
 
-    @Override
-    public EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
-        return LayeredImageSingletonBuilderFlags.BUILDTIME_ACCESS_ONLY;
+    static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+
+        @Override
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<LayeredHeapDumpEncodedTypesTracker>() {
+                @Override
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, LayeredHeapDumpEncodedTypesTracker singleton) {
+                    writer.writeStringList("encodedFieldNames", singleton.encodedFieldNames);
+                    return LayeredPersistFlags.CREATE;
+                }
+
+                @Override
+                public Class<? extends LayeredSingletonInstantiator<?>> getSingletonInstantiator() {
+                    return SingletonInstantiator.class;
+                }
+            });
+        }
     }
 
-    @Override
-    public PersistFlags preparePersist(ImageSingletonWriter writer) {
-        writer.writeStringList("encodedFieldNames", encodedFieldNames);
-        return PersistFlags.CREATE;
-    }
-
-    @SuppressWarnings("unused")
-    public static Object createFromLoader(ImageSingletonLoader loader) {
-        List<String> encodedFieldNames = Collections.unmodifiableList(loader.readStringList("encodedFieldNames"));
-        return new LayeredHeapDumpEncodedTypesTracker(encodedFieldNames);
+    static class SingletonInstantiator implements LayeredSingletonInstantiator<LayeredHeapDumpEncodedTypesTracker> {
+        @Override
+        public LayeredHeapDumpEncodedTypesTracker createFromLoader(ImageSingletonLoader loader) {
+            List<String> encodedFieldNames = Collections.unmodifiableList(loader.readStringList("encodedFieldNames"));
+            return new LayeredHeapDumpEncodedTypesTracker(encodedFieldNames);
+        }
     }
 }

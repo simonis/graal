@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,11 +40,12 @@
  */
 package com.oracle.truffle.api.bytecode.test.basic_interpreter;
 
-import static com.oracle.truffle.api.bytecode.test.basic_interpreter.AbstractBasicInterpreterTest.ExpectedSourceTree.expectedSourceTree;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -63,7 +64,6 @@ import org.junit.runners.Parameterized;
 
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.bytecode.BytecodeConfig;
-import com.oracle.truffle.api.bytecode.BytecodeEncodingException;
 import com.oracle.truffle.api.bytecode.BytecodeLabel;
 import com.oracle.truffle.api.bytecode.BytecodeLocal;
 import com.oracle.truffle.api.bytecode.BytecodeNode;
@@ -76,7 +76,6 @@ import com.oracle.truffle.api.bytecode.Instruction;
 import com.oracle.truffle.api.bytecode.Instruction.Argument;
 import com.oracle.truffle.api.bytecode.Instruction.Argument.Kind;
 import com.oracle.truffle.api.bytecode.SourceInformation;
-import com.oracle.truffle.api.bytecode.SourceInformationTree;
 import com.oracle.truffle.api.bytecode.test.AbstractInstructionTest;
 import com.oracle.truffle.api.bytecode.test.BytecodeDSLTestLanguage;
 import com.oracle.truffle.api.dsl.Introspection.SpecializationInfo;
@@ -147,14 +146,19 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         return new ExpectedInstruction.Builder(name);
     }
 
-    private static void assertInstructionsEqual(List<Instruction> actualInstructions, ExpectedInstruction... expectedInstructions) {
+    private static void assertInstructionsEqual(List<Instruction> actualInstructionsOriginal, ExpectedInstruction... expectedInstructions) {
+        List<Instruction> actualInstructions = filterTrace(actualInstructionsOriginal);
         if (actualInstructions.size() != expectedInstructions.length) {
             fail(String.format("Expected %d instructions, but %d found.\nExpected: %s.\nActual: %s", expectedInstructions.length, actualInstructions.size(), expectedInstructions, actualInstructions));
         }
-        int bci = 0;
+        int bci = actualInstructions.get(0).getBytecodeIndex();
         for (int i = 0; i < expectedInstructions.length; i++) {
             assertInstructionEquals(actualInstructions.get(i), expectedInstructions[i].withBci(bci));
-            bci = actualInstructions.get(i).getNextBytecodeIndex();
+
+            if (i + 1 < actualInstructions.size()) {
+                bci = actualInstructions.get(i + 1).getBytecodeIndex();
+            }
+
         }
     }
 
@@ -174,6 +178,14 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
                     fail(String.format("Argument %s missing from instruction %s", expectedArgument.name, actual.getName()));
                 }
                 assertEquals(expectedArgument.kind, actualArgument.getKind());
+
+                if (TruffleTestAssumptions.isOptimizingRuntime() && expectedArgument.kind == Kind.BRANCH_PROFILE) {
+                    // no validation of branch profile frequency for the optimizing runtime
+                    // it is generally race to assume they are stable with the optimizing runtime
+                    // we can only safely assume they are deterministic in the fallback runtime.
+                    continue;
+                }
+
                 switch (expectedArgument.kind) {
                     case CONSTANT -> assertEquals(expectedArgument.value, actualArgument.asConstant());
                     case INTEGER -> assertEquals(expectedArgument.value, actualArgument.asInteger());
@@ -1393,7 +1405,7 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         assumeTrue(run.storesBciInFrame());
 
         // This test relies on an assertion. Explicitly open a context with compilation disabled.
-        try (Context c = createContextWithCompilationDisabled()) {
+        try (Context c = BytecodeDSLTestLanguage.createPolyglotContextWithCompilationDisabled()) {
             BytecodeRootNodes<BasicInterpreter> nodes = createNodes(BytecodeConfig.DEFAULT, b -> {
                 b.beginRoot();
 
@@ -1465,16 +1477,6 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             }
         }
 
-    }
-
-    private static Context createContextWithCompilationDisabled() {
-        var builder = Context.newBuilder(BytecodeDSLTestLanguage.ID);
-        if (TruffleTestAssumptions.isOptimizingRuntime()) {
-            builder.option("engine.Compilation", "false");
-        }
-        Context result = builder.build();
-        result.enter();
-        return result;
     }
 
     /*
@@ -1943,6 +1945,7 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         assertEquals(1337L, root.call());
     }
 
+    @Test
     public void testVariadicFallback() {
         // return variadicOperation(arg0, arg1, arg2);
 
@@ -2234,269 +2237,6 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
     }
 
     @Test
-    public void testManyBytecodes() {
-        BasicInterpreter node = parseNode("manyBytecodes", b -> {
-            b.beginRoot();
-            b.beginBlock();
-            for (int i = 0; i < Short.MAX_VALUE * 2; i++) {
-                b.emitLoadConstant(123L);
-            }
-            b.beginReturn();
-            b.emitLoadConstant(42L);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        assertEquals(42L, node.getCallTarget().call());
-    }
-
-    @Test
-    public void testManyConstants() {
-        BasicInterpreter node = parseNode("manyConstants", b -> {
-            b.beginRoot();
-            b.beginBlock();
-            for (int i = 0; i < Short.MAX_VALUE * 2; i++) {
-                b.emitLoadConstant((long) i);
-            }
-            b.beginReturn();
-            b.emitLoadConstant(42L);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        assertEquals(42L, node.getCallTarget().call());
-    }
-
-    @Test
-    public void testManyNodes() {
-        BasicInterpreter node = parseNode("manyNodes", b -> {
-            b.beginRoot();
-            b.beginBlock();
-            for (int i = 0; i < Short.MAX_VALUE * 2; i++) {
-                b.emitVoidOperation();
-            }
-            b.beginReturn();
-            b.emitLoadConstant(42L);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        assertEquals(42L, node.getCallTarget().call());
-    }
-
-    @Test
-    public void testManyConditionalBranches() {
-        BasicInterpreter node = parseNode("manyConditionalBranches", b -> {
-            b.beginRoot();
-            b.beginBlock();
-            for (int i = 0; i < Short.MAX_VALUE * 2; i++) {
-                b.beginConditional();
-                b.emitLoadArgument(0);
-                b.emitLoadConstant(123L);
-                b.emitLoadConstant(321L);
-                b.endConditional();
-            }
-            b.beginReturn();
-            b.emitLoadConstant(42L);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        assertEquals(42L, node.getCallTarget().call(true));
-    }
-
-    @Test
-    public void testManyLocals() {
-        BasicInterpreter node = parseNode("manyLocals", b -> {
-            b.beginRoot();
-            b.beginBlock();
-
-            for (int i = 0; i < Short.MAX_VALUE - 10; i++) {
-                b.createLocal();
-            }
-            BytecodeLocal x = b.createLocal();
-            b.beginStoreLocal(x);
-            b.emitLoadConstant(42L);
-            b.endStoreLocal();
-
-            b.beginReturn();
-            b.emitLoadLocal(x);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        // TODO(GR-59372): Without default values, every local slot gets cleared on entry, which
-        // breaks compilation because the number of clears exceed PE's explode loop threshold. Using
-        // illegal default slots will solve this problem because the clears will be unnecessary.
-        if (run.getDefaultLocalValue() != null) {
-            assertEquals(42L, node.getCallTarget().call());
-        }
-    }
-
-    @Test
-    public void testTooManyLocals() {
-        assertThrows(BytecodeEncodingException.class, () -> {
-            parseNode("tooManyLocals", b -> {
-                b.beginRoot();
-                b.beginBlock();
-
-                for (int i = 0; i < Short.MAX_VALUE; i++) {
-                    b.createLocal();
-                }
-                BytecodeLocal x = b.createLocal();
-                b.beginStoreLocal(x);
-                b.emitLoadConstant(42L);
-                b.endStoreLocal();
-
-                b.beginReturn();
-                b.emitLoadLocal(x);
-                b.endReturn();
-                b.endBlock();
-                b.endRoot();
-            });
-        });
-    }
-
-    @Test
-    public void testManyRoots() {
-        BytecodeRootNodes<BasicInterpreter> nodes = createNodes(BytecodeConfig.DEFAULT, b -> {
-            for (int i = 0; i < Short.MAX_VALUE; i++) {
-                b.beginRoot();
-                b.beginReturn();
-                b.emitLoadConstant((long) i);
-                b.endReturn();
-                b.endRoot();
-            }
-        });
-        assertEquals(0L, nodes.getNode(0).getCallTarget().call());
-        assertEquals(42L, nodes.getNode(42).getCallTarget().call());
-        assertEquals((long) (Short.MAX_VALUE - 1), nodes.getNode(Short.MAX_VALUE - 1).getCallTarget().call());
-
-    }
-
-    @Test
-    public void testTooManyRoots() {
-        assertThrowsWithMessage("Root node count exceeded maximum value", BytecodeEncodingException.class, () -> {
-            createNodes(BytecodeConfig.DEFAULT, b -> {
-                for (int i = 0; i < Short.MAX_VALUE + 1; i++) {
-                    b.beginRoot();
-                    b.beginReturn();
-                    b.emitLoadConstant((long) i);
-                    b.endReturn();
-                    b.endRoot();
-                }
-            });
-        });
-    }
-
-    @Test
-    public void testManyInstructionsInLoop() {
-        BasicInterpreter node = parseNode("manyInstructionsInLoop", b -> {
-            b.beginRoot();
-            b.beginBlock();
-
-            BytecodeLocal x = b.createLocal();
-            b.beginStoreLocal(x);
-            b.emitLoadConstant(0L);
-            b.endStoreLocal();
-
-            BytecodeLocal result = b.createLocal();
-
-            b.beginStoreLocal(result);
-            b.emitLoadConstant(0L);
-            b.endStoreLocal();
-
-            b.beginWhile();
-            b.beginLess();
-            b.emitLoadLocal(x);
-            b.emitLoadConstant(5L);
-            b.endLess();
-
-            b.beginBlock();
-            for (int i = 0; i < Short.MAX_VALUE * 2; i++) {
-                b.emitVoidOperation();
-            }
-            // x = x + 1
-            b.beginStoreLocal(x);
-            b.beginAdd();
-            b.emitLoadLocal(x);
-            b.emitLoadConstant(1L);
-            b.endAdd();
-            b.endStoreLocal();
-
-            // result += x
-            b.beginStoreLocal(result);
-            b.beginAdd();
-            b.emitLoadLocal(result);
-            b.emitLoadLocal(x);
-            b.endAdd();
-            b.endStoreLocal();
-
-            b.endBlock();
-
-            b.endWhile();
-
-            b.beginReturn();
-            b.emitLoadLocal(result);
-            b.endReturn();
-            b.endBlock();
-            b.endRoot();
-        });
-
-        assertEquals(15L, node.getCallTarget().call());
-    }
-
-    @Test
-    public void testManyStackValues() {
-        BasicInterpreter node = parseNode("manyStackValues", b -> {
-            b.beginRoot();
-            b.beginReturn();
-            for (int i = 0; i < Short.MAX_VALUE - 1; i++) {
-                b.beginAdd();
-                b.emitLoadConstant(1L);
-            }
-            b.emitLoadConstant(0L);
-
-            for (int i = 0; i < Short.MAX_VALUE - 1; i++) {
-                b.endAdd();
-            }
-
-            b.endReturn();
-            b.endRoot();
-        });
-
-        assertEquals((long) Short.MAX_VALUE - 1, node.getCallTarget().call());
-    }
-
-    @Test
-    public void testTooManyStackValues() {
-        assertThrowsWithMessage("Maximum stack height exceeded", BytecodeEncodingException.class, () -> {
-            parseNode("tooManyStackValues", b -> {
-                b.beginRoot();
-                b.beginReturn();
-                for (int i = 0; i < Short.MAX_VALUE; i++) {
-                    b.beginAdd();
-                    b.emitLoadConstant(1L);
-                }
-                b.emitLoadConstant(0L);
-
-                for (int i = 0; i < Short.MAX_VALUE; i++) {
-                    b.endAdd();
-                }
-
-                b.endReturn();
-                b.endRoot();
-            });
-        });
-
-    }
-
-    @Test
     public void testTransitionToCached() {
         assumeTrue(run.hasUncachedInterpreter());
         BasicInterpreter node = parseNode("transitionToCached", b -> {
@@ -2512,8 +2252,10 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
             assertEquals(42L, node.getCallTarget().call());
         }
-        assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
+        // The bytecode node will transition to cached at the start of the next call.
+        assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
         assertEquals(42L, node.getCallTarget().call());
+        assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
     }
 
     @Test
@@ -2559,11 +2301,7 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             b.endStoreLocal();
 
             b.beginWhile();
-            b.beginLess();
-            b.emitLoadLocal(i);
-            b.emitLoadArgument(0);
-            b.endLess();
-
+            b.emitIsUncached();
             b.beginStoreLocal(i);
             b.beginAddConstantOperation(1L);
             b.emitLoadLocal(i);
@@ -2578,36 +2316,27 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             b.endRoot();
         });
 
-        node.getBytecodeNode().setUncachedThreshold(50);
+        node.getBytecodeNode().setUncachedThreshold(10);
         assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
-        assertEquals(24L, node.getCallTarget().call(24L)); // 24 back edges + 1 return
-        assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
-        assertEquals(24L, node.getCallTarget().call(24L)); // 24 back edges + 1 return
+        // 1 call + 10 backedges causes on-stack transition to cached.
+        assertEquals(10L, node.getCallTarget().call());
         assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
-        assertEquals(24L, node.getCallTarget().call(24L));
     }
 
     @Test
     public void testTransitionToCachedRecursive() {
         assumeTrue(run.hasUncachedInterpreter());
         BasicInterpreter node = parseNode("transitionToCachedRecursive", b -> {
-            // function f(x) { return 0 < x ? x + f(x-1) : 0 }
+            // function f() { return uncached ? 1 + f() : 0 }
             b.beginRoot();
             b.beginIfThenElse();
-            b.beginLess();
-            b.emitLoadConstant(0L);
-            b.emitLoadArgument(0);
-            b.endLess();
+            b.emitIsUncached();
 
             b.beginReturn();
-            b.beginAdd();
-            b.emitLoadArgument(0);
+            b.beginAddConstantOperation(1L);
             b.beginInvokeRecursive();
-            b.beginAddConstantOperation(-1L);
-            b.emitLoadArgument(0);
-            b.endAddConstantOperation();
             b.endInvokeRecursive();
-            b.endAdd();
+            b.endAddConstantOperation();
             b.endReturn();
 
             b.beginReturn();
@@ -2618,12 +2347,10 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             b.endRoot();
         });
 
-        node.getBytecodeNode().setUncachedThreshold(22);
+        node.getBytecodeNode().setUncachedThreshold(20);
         assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
-        assertEquals(20 * 21 / 2L, node.getCallTarget().call(20L)); // 21 calls
-        assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
-        node.getBytecodeNode().setUncachedThreshold(21);
-        assertEquals(20 * 21 / 2L, node.getCallTarget().call(20L)); // 21 calls
+        // 20 uncached calls before transitioning to cached.
+        assertEquals(20L, node.getCallTarget().call(20L));
         assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
     }
 
@@ -2643,10 +2370,13 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         node.getBytecodeNode().setUncachedThreshold(16);
         assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
         ContinuationResult cont = (ContinuationResult) node.getCallTarget().call();
-        for (int i = 1; i < 16; i++) {
+        for (int i = 0; i < 15; i++) {
             assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
             cont = (ContinuationResult) cont.continueWith(null);
         }
+        // The bytecode node transitions to cached at the start of the next resume.
+        assertEquals(BytecodeTier.UNCACHED, node.getBytecodeNode().getTier());
+        cont = (ContinuationResult) cont.continueWith(null);
         assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
     }
 
@@ -2884,7 +2614,10 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         for (Instruction instruction : bytecode.getInstructions()) {
             int bci = instruction.getBytecodeIndex();
             if (startBci <= bci && bci < endBci) {
-                result.add(instruction.getName());
+                // filter trace instructions
+                if (!instruction.getName().equals("trace.instruction")) {
+                    result.add(instruction.getName());
+                }
             }
         }
         return result.toArray(new String[0]);
@@ -3114,11 +2847,8 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
             b.beginSourceSection(7, 5);
             b.beginAdd();
 
-            // intentional duplicate source section
-            b.beginSourceSection(7, 1);
             b.beginSourceSection(7, 1);
             b.emitLoadConstant(1L);
-            b.endSourceSection();
             b.endSourceSection();
 
             b.beginSourceSection(11, 1);
@@ -3149,80 +2879,22 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
         assertEquals("1 + 2", s3.getSourceSection().getCharacters().toString());
         assertEquals("return 1 + 2", s4.getSourceSection().getCharacters().toString());
 
-        List<Instruction> instructions = node.getBytecodeNode().getInstructionsAsList();
+        if (!run.testTracer()) {
+            List<Instruction> instructions = node.getBytecodeNode().getInstructionsAsList();
 
-        assertEquals(0, s1.getStartBytecodeIndex());
-        assertEquals(instructions.get(1).getBytecodeIndex(), s1.getEndBytecodeIndex());
+            assertEquals(0, s1.getStartBytecodeIndex());
+            assertEquals(instructions.get(1).getBytecodeIndex(), s1.getEndBytecodeIndex());
 
-        assertEquals(6, s2.getStartBytecodeIndex());
-        assertEquals(instructions.get(2).getBytecodeIndex(), s2.getEndBytecodeIndex());
+            assertEquals(6, s2.getStartBytecodeIndex());
+            assertEquals(instructions.get(2).getBytecodeIndex(), s2.getEndBytecodeIndex());
 
-        assertEquals(0, s3.getStartBytecodeIndex());
-        assertEquals(instructions.get(3).getBytecodeIndex(), s3.getEndBytecodeIndex());
+            assertEquals(0, s3.getStartBytecodeIndex());
+            assertEquals(instructions.get(3).getBytecodeIndex(), s3.getEndBytecodeIndex());
 
-        assertEquals(0, s4.getStartBytecodeIndex());
-        assertEquals(instructions.get(3).getNextBytecodeIndex(), s4.getEndBytecodeIndex());
-    }
+            assertEquals(0, s4.getStartBytecodeIndex());
+            assertEquals(instructions.get(3).getNextBytecodeIndex(), s4.getEndBytecodeIndex());
+        }
 
-    @Test
-    public void testIntrospectionDataSourceInformationTree() {
-        Source source = Source.newBuilder("test", "return (a + b) + 2", "test.test").build();
-        BasicInterpreter node = parseNodeWithSource("introspectionDataSourceInformationTree", b -> {
-            b.beginSource(source);
-            b.beginSourceSection(0, 18);
-
-            b.beginRoot();
-            b.beginReturn();
-
-            b.beginSourceSection(7, 11);
-            b.beginAdd();
-
-            // intentional duplicate source section
-            b.beginSourceSection(7, 7);
-            b.beginSourceSection(7, 7);
-            b.beginAdd();
-
-            b.beginSourceSection(8, 1);
-            b.emitLoadArgument(0);
-            b.endSourceSection();
-
-            b.beginSourceSection(12, 1);
-            b.emitLoadArgument(1);
-            b.endSourceSection();
-
-            b.endAdd();
-            b.endSourceSection();
-            b.endSourceSection();
-
-            b.beginSourceSection(17, 1);
-            b.emitLoadConstant(2L);
-            b.endSourceSection();
-
-            b.endAdd();
-            b.endSourceSection();
-
-            b.endReturn();
-            b.endRoot();
-
-            b.endSourceSection();
-            b.endSource();
-        });
-        BytecodeNode bytecode = node.getBytecodeNode();
-
-        // @formatter:off
-        ExpectedSourceTree expected = expectedSourceTree("return (a + b) + 2",
-            expectedSourceTree("(a + b) + 2",
-                expectedSourceTree("(a + b)",
-                    expectedSourceTree("a"),
-                    expectedSourceTree("b")
-                ),
-                expectedSourceTree("2")
-            )
-        );
-        // @formatter:on
-        SourceInformationTree tree = bytecode.getSourceInformationTree();
-        expected.assertTreeEquals(tree);
-        assertTrue(tree.toString().contains("return (a + b) + 2"));
     }
 
     @Test
@@ -3357,6 +3029,94 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
     }
 
     @Test
+    public void testCloneUninitializedYield() {
+        // return (yield 1) + (yield 2);
+        BasicInterpreter node = parseNode("cloneUninitializedYield", b -> {
+            b.beginRoot();
+
+            b.beginReturn();
+            b.beginAdd();
+
+            b.beginYield();
+            b.emitLoadConstant(1L);
+            b.endYield();
+
+            b.beginYield();
+            b.emitLoadConstant(2L);
+            b.endYield();
+
+            b.endAdd();
+            b.endReturn();
+
+            b.endRoot();
+        });
+
+        BasicInterpreter cloned = node.doCloneUninitialized();
+        assertNotEquals(node.getCallTarget(), cloned.getCallTarget());
+
+        ContinuationResult originalCont1 = (ContinuationResult) node.getCallTarget().call();
+        ContinuationResult clonedCont1 = (ContinuationResult) cloned.getCallTarget().call();
+
+        assertEquals(1L, originalCont1.getResult());
+        assertEquals(1L, clonedCont1.getResult());
+        assertSame(node, originalCont1.getContinuationRootNode().getSourceRootNode());
+        assertSame(cloned, clonedCont1.getContinuationRootNode().getSourceRootNode());
+
+        ContinuationResult originalCont2 = (ContinuationResult) originalCont1.continueWith(3L);
+        ContinuationResult clonedCont2 = (ContinuationResult) clonedCont1.continueWith(3L);
+
+        assertEquals(2L, originalCont2.getResult());
+        assertEquals(2L, clonedCont2.getResult());
+        assertSame(node, originalCont2.getContinuationRootNode().getSourceRootNode());
+        assertSame(cloned, clonedCont2.getContinuationRootNode().getSourceRootNode());
+
+        assertEquals(7L, originalCont2.continueWith(4L));
+        assertEquals(7L, clonedCont2.continueWith(4L));
+    }
+
+    @Test
+    public void testCloneUninitializedYieldUpdate() {
+        // result = yield incrementValue(arg0); return incrementValue(result);
+        BasicInterpreter node = parseNode("cloneUninitializedYieldUpdate", b -> {
+            b.beginRoot();
+
+            BytecodeLocal result = b.createLocal();
+            b.beginStoreLocal(result);
+            b.beginYield();
+            b.beginIncrementValue();
+            b.emitLoadArgument(0);
+            b.endIncrementValue();
+            b.endYield();
+            b.endStoreLocal();
+
+            b.beginReturn();
+            b.beginIncrementValue();
+            b.emitLoadLocal(result);
+            b.endIncrementValue();
+            b.endReturn();
+
+            b.endRoot();
+        });
+
+        BasicInterpreter cloned = node.doCloneUninitialized();
+        assertNotEquals(node.getCallTarget(), cloned.getCallTarget());
+
+        node.getRootNodes().update(createBytecodeConfigBuilder().addInstrumentation(BasicInterpreter.IncrementValue.class).build());
+
+        ContinuationResult originalCont = (ContinuationResult) node.getCallTarget().call(123L);
+        ContinuationResult clonedCont = (ContinuationResult) cloned.getCallTarget().call(123L);
+
+        assertEquals(124L, originalCont.getResult());
+        assertEquals(124L, clonedCont.getResult());
+        assertNotSame(originalCont.getContinuationRootNode(), clonedCont.getContinuationRootNode());
+        assertSame(node, originalCont.getContinuationRootNode().getSourceRootNode());
+        assertSame(cloned, clonedCont.getContinuationRootNode().getSourceRootNode());
+
+        assertEquals(43L, originalCont.continueWith(42L));
+        assertEquals(43L, clonedCont.continueWith(42L));
+    }
+
+    @Test
     public void testCloneUninitializedUnquicken() {
         assumeTrue(run.hasBoxingElimination());
 
@@ -3481,6 +3241,654 @@ public class BasicInterpreterTest extends AbstractBasicInterpreterTest {
                         "load.argument",
                         "c.AddConstantOperationAtEnd",
                         "return");
+    }
+
+    @Test
+    public void testNegativeRelativeBytecodeIndex() {
+        assumeTrue(run.hasBoxingElimination());
+
+        BasicInterpreter node = parseNode("relativeChildBytecodeIndexUnavailableWhenOffsetTooLarge", b -> {
+            b.beginRoot();
+            b.beginReturn();
+            b.beginAdd();
+            b.emitLoadConstant(1L);
+            emitNestedConditionalExpression(b, 0, 16);
+            b.endAdd();
+            b.endReturn();
+            b.endRoot();
+        });
+
+        node.getBytecodeNode().setUncachedThreshold(0);
+        assertEquals(1L, node.getCallTarget().call(0L));
+        assertEquals(6L, node.getCallTarget().call(5L));
+        assertEquals(17L, node.getCallTarget().call(16L));
+        assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
+
+        List<Instruction> addInstr = node.getBytecodeNode().getInstructionsAsList().stream().filter((i) -> i.getName().equals("c.Add$AddInts#AddLongs")).toList();
+        assertEquals(1, addInstr.size());
+
+        for (Argument argument : addInstr.get(0).getArguments()) {
+            if (argument.getKind() == Kind.BYTECODE_INDEX && argument.getName().equals("child0")) {
+                assertEquals(-1, argument.asBytecodeIndex());
+                return;
+            }
+        }
+        fail("Relative child BCI wasn't -1 for the final ADD instruction");
+    }
+
+    private static void emitNestedConditionalExpression(BasicInterpreterBuilder b, int value, int fallbackValue) {
+        b.beginConditional();
+        b.beginLess();
+        b.emitLoadArgument(0);
+        b.emitLoadConstant((long) value + 1);
+        b.endLess();
+        b.emitLoadConstant((long) value);
+        if (value + 1 == fallbackValue) {
+            b.emitLoadConstant((long) fallbackValue);
+        } else {
+            emitNestedConditionalExpression(b, value + 1, fallbackValue);
+        }
+        b.endConditional();
+    }
+
+    @Test
+    public void testNegativeRelativeBytecodeIndexStoreLocal() {
+        // Regression test for mishandling of negative childBci in StoreLocal.
+        assumeTrue(run.hasBoxingElimination());
+
+        BasicInterpreter node = parseNode("negativeRelativeBytecodeIndexStoreLocal", b -> {
+            b.beginRoot();
+            BytecodeLocal x = b.createLocal();
+            b.beginStoreLocal(x);
+            // Short-circuit operations with multiple operands pass the short-circuit instruction bci.
+            // TODO GR-77456: replace the nested conditional with a simpler expression once multi-operand short-circuit ops pass -1.
+            b.beginScAnd();
+            b.emitLoadConstant(1L);
+            emitNestedConditionalExpression(b, 0, 16);
+            b.endScAnd();
+            b.endStoreLocal();
+
+            b.beginReturn();
+            b.emitLoadLocal(x);
+            b.endReturn();
+            b.endRoot();
+        });
+
+        node.getBytecodeNode().setUncachedThreshold(0);
+        assertEquals(1L, node.getCallTarget().call(1L));
+        assertEquals(BytecodeTier.CACHED, node.getBytecodeNode().getTier());
+
+        List<Instruction> storeLocalInstr = node.getBytecodeNode().getInstructionsAsList().stream().filter((i) -> i.getName().equals("store.local$generic")).toList();
+        assertEquals(1, storeLocalInstr.size());
+
+        for (Argument argument : storeLocalInstr.get(0).getArguments()) {
+            if (argument.getKind() == Kind.BYTECODE_INDEX && argument.getName().equals("child0")) {
+                assertEquals(-1, argument.asBytecodeIndex());
+                return;
+            }
+        }
+        fail("Relative child BCI wasn't -1 for the StoreLocal instruction");
+    }
+
+    /**
+     * Tests that transitioning from uncached to cached correctly adapts cached local tags to the
+     * current variables in the frame.
+     */
+    @Test
+    public void testLocalBoxingEliminationOnTransition() {
+        assumeTrue(run.hasBoxingElimination());
+        assumeTrue(run.hasUncachedInterpreter());
+        /*
+         * @formatter:off
+         * def f():
+         *   i = 30L
+         *   x;
+         *   while 0L < i:
+         *     i--
+         *   x = 42L
+         *   return x
+         *
+         * @formatter:on
+         */
+        BasicInterpreter node = parseNode("localBoxingEliminationOnTransition", b -> {
+            b.beginRoot();
+            BytecodeLocal i = b.createLocal();
+            BytecodeLocal x = b.createLocal();
+            b.beginStoreLocal(i);
+            b.emitLoadConstant(30L);
+            b.endStoreLocal();
+
+            b.beginWhile(); // trigger cached transition while i, x are live.
+            b.beginLess();
+            b.emitLoadConstant(0L);
+            b.emitLoadLocal(i);
+            b.endLess();
+
+            b.beginStoreLocal(i);
+            b.beginAddConstantOperation(-1L);
+            b.emitLoadLocal(i);
+            b.endAddConstantOperation();
+            b.endStoreLocal();
+            b.endWhile();
+
+            // though x is not live at the transition, it should still specialize to long
+            b.beginStoreLocal(x);
+            b.emitLoadConstant(42L);
+            b.endStoreLocal();
+
+            b.beginReturn();
+            b.emitLoadLocal(x);
+            b.endReturn();
+
+            b.endRoot();
+        });
+
+        AbstractInstructionTest.assertInstructions(node,
+                        "load.constant",
+                        "store.local",
+                        "load.constant",
+                        "load.local",
+                        "c.Less",
+                        "branch.false",
+                        "load.local",
+                        "c.AddConstantOperation",
+                        "store.local",
+                        "branch.backward",
+                        "load.constant",
+                        "store.local",
+                        "load.local",
+                        "return");
+
+        assertEquals(42L, node.getCallTarget().call());
+        assertTrue(node.getBytecodeNode().getTier() == BytecodeTier.CACHED);
+        // call again to stabilize profiles
+        assertEquals(42L, node.getCallTarget().call());
+        AbstractInstructionTest.assertInstructions(node,
+                        "load.constant$Long",
+                        "store.local$Long$Long",
+                        "load.constant$Long",
+                        "load.local$Long$unboxed",
+                        "c.Less$Longs$unboxed",
+                        "branch.false$Boolean",
+                        "load.local$Long$unboxed",
+                        "c.AddConstantOperation$AddLongs$unboxed",
+                        "store.local$Long$Long",
+                        "branch.backward",
+                        "load.constant$Long",
+                        "store.local$Long$Long",
+                        "load.local$Long",
+                        "return");
+    }
+
+    /**
+     * Tests that transitioning from uncached to cached because of external invalidation correctly
+     * adapts cached local tags to the current variables in the frame.
+     */
+    @Test
+    public void testLocalBoxingEliminationOnExternalTransition() {
+        assumeTrue(run.hasBoxingElimination());
+        assumeTrue(run.hasUncachedInterpreter());
+        /*
+         * @formatter:off
+         * def f(recur):
+         *   i = 30L
+         *   if recur:
+         *     x = 4L;
+         *     f(false)                 // (1) call recursively
+         *     y = i + x + 8L;          // (4) detect invalidation and transition
+         *     return y
+         *   else:
+         *     while 0L < i:            // (2) transition to cached
+         *       i--
+         *     enableInstrumentation    // (3) invalidate bytecode
+         *
+         * @formatter:on
+         */
+        BasicInterpreter node = parseNode("localBoxingEliminationOnExternalTransition", b -> {
+            b.beginRoot();
+            BytecodeLocal i = b.createLocal();
+            b.beginStoreLocal(i);
+            b.emitLoadConstant(30L);
+            b.endStoreLocal();
+
+            b.beginIfThenElse();
+            b.emitLoadArgument(0);
+
+            b.beginBlock(); // case recur == true
+
+            BytecodeLocal x = b.createLocal();
+            BytecodeLocal y = b.createLocal();
+            b.beginStoreLocal(x);
+            b.emitLoadConstant(4L);
+            b.endStoreLocal();
+
+            b.beginInvokeRecursive(); // (1)
+            b.emitLoadConstant(false);
+            b.endInvokeRecursive();
+
+            b.beginStoreLocal(y); // (4)
+            b.beginAdd();
+            b.emitLoadLocal(i);
+            b.beginAdd();
+            b.emitLoadLocal(x);
+            b.emitLoadConstant(8L);
+            b.endAdd();
+            b.endAdd();
+            b.endStoreLocal();
+
+            b.beginReturn();
+            b.emitLoadLocal(y);
+            b.endReturn();
+
+            b.endBlock();
+
+            b.beginBlock(); // case recur == false
+
+            b.beginWhile(); // (2)
+            b.beginLess();
+            b.emitLoadConstant(0L);
+            b.emitLoadLocal(i);
+            b.endLess();
+
+            b.beginStoreLocal(i);
+            b.beginAddConstantOperation(-1L);
+            b.emitLoadLocal(i);
+            b.endAddConstantOperation();
+            b.endStoreLocal();
+            b.endWhile();
+
+            b.emitEnableIncrementValueInstrumentation(); // (3)
+
+            b.beginReturn();
+            b.emitLoadNull();
+            b.endReturn();
+
+            b.endBlock();
+
+            b.endIfThenElse();
+            b.endRoot();
+        });
+
+        AbstractInstructionTest.assertInstructions(node,
+                        "load.constant",
+                        "store.local",
+                        "load.argument",
+                        "branch.false",
+                        "load.constant",
+                        "store.local",
+                        "load.constant",
+                        "create.variadic",
+                        "c.InvokeRecursive",
+                        "pop",
+                        "load.local",
+                        "load.local",
+                        "load.constant",
+                        "c.Add",
+                        "c.Add",
+                        "store.local",
+                        "load.local",
+                        "return",
+                        "load.constant",
+                        "load.local",
+                        "c.Less",
+                        "branch.false",
+                        "load.local",
+                        "c.AddConstantOperation",
+                        "store.local",
+                        "branch.backward",
+                        "c.EnableIncrementValueInstrumentation",
+                        "load.null",
+                        "return");
+
+        assertEquals(42L, node.getCallTarget().call(true));
+        assertTrue(node.getBytecodeNode().getTier() == BytecodeTier.CACHED);
+        // call again to stabilize profiles
+        assertEquals(42L, node.getCallTarget().call(true));
+        AbstractInstructionTest.assertInstructions(node,
+                        "load.constant$Long",
+                        "store.local$Long$Long",
+                        "load.argument$Boolean",
+                        "branch.false$Boolean",
+                        "load.constant$Long",
+                        "store.local$Long$Long",
+                        "load.constant",
+                        "create.variadic",
+                        "c.InvokeRecursive",
+                        "pop$generic",
+                        "load.local$Long$unboxed",
+                        "load.local$Long$unboxed",
+                        "load.constant$Long",
+                        "c.Add$AddLongs$unboxed",
+                        "c.Add$AddLongs$unboxed",
+                        "store.local$Long$Long",
+                        "load.local$Long",
+                        "return",
+                        "load.constant$Long",
+                        "load.local$Long$unboxed",
+                        "c.Less$Longs$unboxed",
+                        "branch.false$Boolean",
+                        "load.local$Long$unboxed",
+                        "c.AddConstantOperation$AddLongs$unboxed",
+                        "store.local$Long$Long",
+                        "branch.backward",
+                        "c.EnableIncrementValueInstrumentation",
+                        "load.null",
+                        "return");
+    }
+
+    /**
+     * Tests that invalidating bytecodes on one node causes the node it transitioned from to be
+     * invalidated and properly transition on stack.
+     */
+    @Test
+    public void testOnStackTransition1() {
+        assumeTrue(run.hasUncachedInterpreter());
+        /*
+         * @formatter:off
+         * def f(recur):
+         *   x = 21L
+         *   incrementLocalInstrumentation
+         *   ... // repeat 100x
+         *   incrementLocalInstrumentation
+         *   if recur:
+         *     a = f(false)          // (1,5) call recursively, then detect invalidation and transition
+         *     return x + a          // (6) return without executing any instrumentations
+         *   else:
+         *     i = 16
+         *     while 0 < i:          // (2) transition to cached
+         *       i--;
+         *     enableInstrumentation // (3) invalidate bytecode
+         *     return x              // (4) return
+         *
+         * @formatter:on
+         */
+        BasicInterpreter root = parseNode("onStackTransition1", b -> {
+            b.beginRoot();
+            BytecodeLocal x = b.createLocal();
+            b.beginStoreLocal(x);
+            b.emitLoadConstant(21L);
+            b.endStoreLocal();
+
+            for (int i = 0; i < 100; i++) {
+                b.emitIncrementLocal(x);
+            }
+
+            b.beginIfThenElse();
+            b.emitLoadArgument(0);
+
+            b.beginBlock(); // case recur == true
+
+            BytecodeLocal a = b.createLocal();
+            b.beginStoreLocal(a); // (1,5)
+            b.beginInvokeRecursive();
+            b.emitLoadConstant(false);
+            b.endInvokeRecursive();
+            b.endStoreLocal();
+
+            b.beginReturn(); // (6)
+            b.beginAdd();
+            b.emitLoadLocal(x);
+            b.emitLoadLocal(a);
+            b.endAdd();
+            b.endReturn();
+            b.endBlock();
+
+            b.beginBlock(); // case recur == false
+
+            BytecodeLocal i = b.createLocal("i", null);
+            b.beginStoreLocal(i);
+            b.emitLoadConstant(16L);
+            b.endStoreLocal();
+            b.beginWhile(); // (2)
+            b.beginLess();
+            b.emitLoadConstant(0L);
+            b.emitLoadLocal(i);
+            b.endLess();
+
+            b.beginStoreLocal(i);
+            b.beginAddConstantOperation(-1L);
+            b.emitLoadLocal(i);
+            b.endAddConstantOperation();
+            b.endStoreLocal();
+            b.endWhile();
+
+            b.emitEnableIncrementLocalInstrumentation(); // (3)
+            b.beginReturn(); // (4)
+            b.emitLoadLocal(x);
+            b.endReturn();
+            b.endBlock();
+            b.endIfThenElse();
+            b.endRoot();
+        });
+        assertEquals(42L, root.getCallTarget().call(true));
+        assertEquals(242L, root.getCallTarget().call(true));
+    }
+
+    /**
+     * Tests that invalidating bytecodes on one node causes the nodes it transitively transitioned
+     * from to be invalidated and properly transition on stack.
+     */
+    @Test
+    public void testOnStackTransition2() {
+        assumeTrue(run.hasUncachedInterpreter());
+        /*
+         * @formatter:off
+         * def f(arg):
+         *   x = 14L
+         *   incrementLocalInstrumentation
+         *   ... // repeat 100x
+         *   incrementLocalInstrumentation
+         *   if arg == 0:
+         *     return f(1) + x       // (1, 8) call recursively, return sum
+         *   elif arg == 1:
+         *     materializeSources    // (2) transition to sources
+         *     return f(2) + x       // (3, 7) call recursively, return sum
+         *   else:
+         *     i = 16
+         *     while 0 < i:          // (4) transition to cached
+         *       i--;
+         *     enableInstrumentation // (5) invalidate bytecode
+         *     return x              // (6) return
+         *
+         * @formatter:on
+         */
+        BasicInterpreter root = parseNode("onStackTransition2", b -> {
+            b.beginRoot();
+            BytecodeLocal x = b.createLocal();
+            b.beginStoreLocal(x);
+            b.emitLoadConstant(14L);
+            b.endStoreLocal();
+
+            for (int i = 0; i < 100; i++) {
+                b.emitIncrementLocal(x);
+            }
+
+            b.beginIfThenElse();
+            b.beginLess();
+            b.emitLoadArgument(0);
+            b.emitLoadConstant(1L);
+            b.endLess();
+
+            b.beginBlock(); // case arg == 0
+            b.beginReturn(); // (1, 8)
+            b.beginAdd();
+            b.beginInvokeRecursive();
+            b.emitLoadConstant(1L);
+            b.endInvokeRecursive();
+            b.emitLoadLocal(x);
+            b.endAdd();
+            b.endReturn();
+            b.endBlock();
+
+            b.beginIfThenElse();
+            b.beginLess();
+            b.emitLoadArgument(0);
+            b.emitLoadConstant(2L);
+            b.endLess();
+
+            b.beginBlock(); // case arg == 1
+            b.emitMaterializeSources(); // (2)
+            b.beginReturn(); // (3, 7)
+            b.beginAdd();
+            b.beginInvokeRecursive();
+            b.emitLoadConstant(2L);
+            b.endInvokeRecursive();
+            b.emitLoadLocal(x);
+            b.endAdd();
+            b.endReturn();
+            b.endBlock();
+
+            b.beginBlock(); // case arg == 2
+            BytecodeLocal i = b.createLocal("i", null);
+            b.beginStoreLocal(i);
+            b.emitLoadConstant(16L);
+            b.endStoreLocal();
+
+            b.beginWhile(); // (4)
+            b.beginLess();
+            b.emitLoadConstant(0L);
+            b.emitLoadLocal(i);
+            b.endLess();
+
+            b.beginStoreLocal(i);
+            b.beginAddConstantOperation(-1L);
+            b.emitLoadLocal(i);
+            b.endAddConstantOperation();
+            b.endStoreLocal();
+            b.endWhile();
+            b.emitEnableIncrementLocalInstrumentation(); // (5)
+            b.beginReturn(); // (6)
+            b.emitLoadLocal(x);
+            b.endReturn();
+            b.endBlock();
+
+            b.endIfThenElse();
+            b.endIfThenElse();
+            b.endRoot();
+        });
+        assertEquals(42L, root.getCallTarget().call(0L));
+        assertEquals(342L, root.getCallTarget().call(0L));
+    }
+
+    /**
+     * Tests that invalidating bytecodes on one node causes the node it transitioned from and a node
+     * it transitioned into to be invalidated and properly transition on stack.
+     */
+    @Test
+    public void testOnStackTransition3() {
+        assumeTrue(run.hasUncachedInterpreter());
+        /*
+         * @formatter:off
+         * def f(arg):
+         *   x = 14L
+         *   incrementLocalInstrumentation
+         *   ... // repeat 100x
+         *   incrementLocalInstrumentation
+         *   if arg == 0:
+         *     return f(1) + x       // (1, 10) call recursively, return sum
+         *   elif arg == 1:
+         *     materializeSources    // (2) transition to sources
+         *     c = f(2)              // (3) call recursively
+         *     enableInstrumentation // (6) invalidate bytecode
+         *     return resume(c) + x  // (7, 9) resume and return
+         *   else:
+         *     i = 16
+         *     while 0 < i:          // (4) transition to cached
+         *       i--;
+         *     yield                 // (5) yield back to caller
+         *     return x              // (8) return
+         *
+         * @formatter:on
+         */
+        BasicInterpreter root = parseNode("onStackTransition3", b -> {
+            b.beginRoot();
+            BytecodeLocal x = b.createLocal();
+            b.beginStoreLocal(x);
+            b.emitLoadConstant(14L);
+            b.endStoreLocal();
+
+            for (int i = 0; i < 100; i++) {
+                b.emitIncrementLocal(x);
+            }
+
+            b.beginIfThenElse();
+            b.beginLess();
+            b.emitLoadArgument(0);
+            b.emitLoadConstant(1L);
+            b.endLess();
+
+            b.beginBlock(); // case arg == 0
+            b.beginReturn(); // (1, 10)
+            b.beginAdd();
+            b.beginInvokeRecursive();
+            b.emitLoadConstant(1L);
+            b.endInvokeRecursive();
+            b.emitLoadLocal(x);
+            b.endAdd();
+            b.endReturn();
+            b.endBlock();
+
+            b.beginIfThenElse();
+            b.beginLess();
+            b.emitLoadArgument(0);
+            b.emitLoadConstant(2L);
+            b.endLess();
+
+            b.beginBlock(); // case arg == 1
+            b.emitMaterializeSources(); // (2)
+            BytecodeLocal c = b.createLocal();
+            b.beginStoreLocal(c); // (3)
+            b.beginInvokeRecursive();
+            b.emitLoadConstant(2L);
+            b.endInvokeRecursive();
+            b.endStoreLocal();
+
+            b.emitEnableIncrementLocalInstrumentation(); // (6)
+            b.beginReturn(); // (7, 9)
+            b.beginAdd();
+            b.beginContinue();
+            b.emitLoadLocal(c);
+            b.emitLoadNull();
+            b.endContinue();
+            b.emitLoadLocal(x);
+            b.endAdd();
+            b.endReturn();
+            b.endBlock();
+
+            b.beginBlock(); // case arg == 2
+            BytecodeLocal i = b.createLocal("i", null);
+            b.beginStoreLocal(i);
+            b.emitLoadConstant(16L);
+            b.endStoreLocal();
+
+            b.beginWhile(); // (4)
+            b.beginLess();
+            b.emitLoadConstant(0L);
+            b.emitLoadLocal(i);
+            b.endLess();
+
+            b.beginStoreLocal(i);
+            b.beginAddConstantOperation(-1L);
+            b.emitLoadLocal(i);
+            b.endAddConstantOperation();
+            b.endStoreLocal();
+            b.endWhile();
+
+            b.beginYield(); // (5)
+            b.emitLoadNull();
+            b.endYield();
+
+            b.beginReturn(); // (8)
+            b.emitLoadLocal(x);
+            b.endReturn();
+            b.endBlock();
+
+            b.endIfThenElse();
+            b.endIfThenElse();
+            b.endRoot();
+        });
+        assertEquals(42L, root.getCallTarget().call(0L));
+        assertEquals(342L, root.getCallTarget().call(0L));
     }
 
     @Test

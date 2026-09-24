@@ -33,9 +33,18 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.jdk.Resources;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @Platforms(Platform.HOSTED_ONLY.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class EmbeddedResourcesInfo {
+    private final boolean collectEmbeddedResourcesInfo;
+
+    EmbeddedResourcesInfo(boolean collectEmbeddedResourcesInfo) {
+        this.collectEmbeddedResourcesInfo = collectEmbeddedResourcesInfo;
+    }
 
     record SourceAndOrigin(String source, Object origin) {
     }
@@ -50,12 +59,12 @@ public class EmbeddedResourcesInfo {
         return ImageSingletons.lookup(EmbeddedResourcesInfo.class);
     }
 
-    public void declareResourceAsRegistered(Module module, String resource, String source, Object origin) {
-        if (!ImageSingletons.lookup(ResourcesFeature.class).collectEmbeddedResourcesInfo()) {
+    public void declareResourceAsRegistered(ClassLoader owner, Module module, String resource, String source, Object origin) {
+        if (!collectEmbeddedResourcesInfo) {
             return;
         }
 
-        Resources.ModuleResourceKey key = Resources.createStorageKey(module, resource);
+        Resources.ModuleResourceKey key = Resources.createStorageKey(owner, module, resource);
 
         /*
          * If we already have an entry with this key, and it was a NEGATIVE_QUERY, the new resource

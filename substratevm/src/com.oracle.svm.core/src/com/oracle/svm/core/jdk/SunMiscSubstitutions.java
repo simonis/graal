@@ -31,15 +31,15 @@ import java.security.ProtectionDomain;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.impl.UnsafeMemorySupport;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
@@ -47,10 +47,10 @@ import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.memory.NativeMemory;
 import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 import jdk.graal.compiler.nodes.extended.MembarNode;
-import jdk.graal.compiler.word.Word;
 
 @TargetClass(className = "jdk.internal.misc.Unsafe")
 @SuppressWarnings({"static-method", "unused"})
@@ -88,7 +88,7 @@ final class Target_jdk_internal_misc_Unsafe_Core {
 
     @Substitute
     private int addressSize() {
-        return ConfigurationValues.getTarget().wordSize;
+        return SubstrateTarget.getWordSize();
     }
 
     @Substitute
@@ -187,8 +187,8 @@ final class Target_jdk_internal_misc_Unsafe_Core {
     private native int arrayIndexScale0(Class<?> arrayClass);
 
     @Substitute
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+16/src/hotspot/share/prims/unsafe.cpp#L708-L712")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+16/src/hotspot/share/prims/unsafe.cpp#L649-L705")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+16/src/hotspot/share/prims/unsafe.cpp#L708-L712")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+16/src/hotspot/share/prims/unsafe.cpp#L649-L705")
     @SuppressWarnings("unused")
     private Class<?> defineClass0(String name, byte[] b, int off, int len, ClassLoader loader, ProtectionDomain protectionDomain) {
         // Note that if name is not null, it is a binary name in either / or .-form
@@ -198,6 +198,9 @@ final class Target_jdk_internal_misc_Unsafe_Core {
 
 @TargetClass(jdk.internal.access.SharedSecrets.class)
 final class Target_jdk_internal_access_SharedSecrets {
+    @Alias
+    static native Target_jdk_internal_access_JavaLangAccess getJavaLangAccess();
+
     @Substitute
     private static Target_jdk_internal_access_JavaAWTAccess getJavaAWTAccess() {
         return null;
@@ -209,6 +212,28 @@ final class Target_jdk_internal_access_SharedSecrets {
      */
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
     private static Target_jdk_internal_access_JavaIOAccess javaIOAccess;
+}
+
+@TargetClass(jdk.internal.access.JavaLangAccess.class)
+@SuppressWarnings("unused")
+final class Target_jdk_internal_access_JavaLangAccess {
+    @Alias
+    native Module defineModule(ClassLoader loader, java.lang.module.ModuleDescriptor descriptor, java.net.URI uri);
+
+    @Alias
+    native void addReads(Module m1, Module m2);
+
+    @Alias
+    native void addReadsAllUnnamed(Module m);
+
+    @Alias
+    native void addExports(Module m, String pn);
+
+    @Alias
+    native void addExports(Module m, String pn, Module other);
+
+    @Alias
+    native void addOpens(Module m, String pn, Module other);
 }
 
 @TargetClass(jdk.internal.access.JavaIOAccess.class)

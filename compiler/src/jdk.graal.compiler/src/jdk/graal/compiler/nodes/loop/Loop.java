@@ -498,7 +498,7 @@ public class Loop {
                 assert !exits.contains(b.getBeginNode());
                 exits.add(b.getBeginNode());
             } else if (blocks.add(b.getBeginNode())) {
-                HIRBlock d = b.getDominatedSibling();
+                HIRBlock d = b.getFirstDominated();
                 while (d != null) {
                     /*
                      * if the post dominator is reachable via a branch block it means it was a merge
@@ -627,7 +627,8 @@ public class Loop {
                     boolean isValidConvert = op instanceof PiNode || op instanceof SignExtendNode;
                     if (!isValidConvert && op instanceof ZeroExtendNode) {
                         ZeroExtendNode zeroExtendNode = (ZeroExtendNode) op;
-                        isValidConvert = ((IntegerStamp) zeroExtendNode.stamp(NodeView.DEFAULT)).isPositive();
+                        /* A zero extension only preserves its input's numeric value if the input is not negative. */
+                        isValidConvert = ((IntegerStamp) zeroExtendNode.getValue().stamp(NodeView.DEFAULT)).isPositive();
                     }
                     if (!isValidConvert && op instanceof NarrowNode) {
                         NarrowNode narrow = (NarrowNode) op;

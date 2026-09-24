@@ -4,6 +4,10 @@
 <module name="Checker">
   <property name="severity" value="error"/>
   <module name="TreeWalker">
+    <module name="OuterTypeFilename">
+      <message key="type.file.mismatch"
+               value="The top-level type matching the filename must be declared first in the file."/>
+    </module>
 
     <!-- Disallows direct calls to "AnnotatedElement.get(Declared)Annotation(s)". This check can yield false positives,
     i.e., it will match any ".get(Declared)Annotation(s)" calls that are not preceded by "AnnotationAccess"
@@ -13,7 +17,7 @@
       <property name="id" value="annotationAccess"/>
       <metadata name="net.sf.eclipsecs.core.comment" value="Disallow calls to AnnotatedElement.get(Declared)Annotation(s)."/>
       <property name="severity" value="error"/>
-      <property name="format" value="(?&lt;!AnnotationAccess)\.(getAnnotation|getAnnotations|getDeclaredAnnotation|getDeclaredAnnotations|isAnnotationPresent)\b"/>
+      <property name="format" value="(?&lt;!Annotation(Access|Util))\.(getAnnotation|getAnnotations|getDeclaredAnnotation|getDeclaredAnnotations|isAnnotationPresent)\b"/>
       <property name="message" value="Direct calls to java.lang.reflect.AnnotatedElement.get(Declared)Annotation(s) are restricted. Use org.graalvm.nativeimage.AnnotationAccess methods. (Use &quot;// Checkstyle: allow direct annotation access... // Checkstyle: disallow direct annotation access&quot; to disable this check.)"/>
       <property name="ignoreComments" value="true"/>
     </module>

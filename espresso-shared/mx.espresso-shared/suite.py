@@ -23,10 +23,10 @@
 # questions.
 #
 suite = {
-    "mxversion": "7.58.0",
+    "mxversion": "7.65.0",
     "name": "espresso-shared",
-    "version" : "25.1.0",
-    "release" : False,
+    "version_from" : "sdk",
+    "release_from" : "sdk",
     "groupId" : "org.graalvm.espresso",
     "url" : "https://www.graalvm.org/reference-manual/java-on-truffle/",
     "developer" : {
@@ -40,7 +40,7 @@ suite = {
         "read" : "https://github.com/oracle/graal.git",
         "write" : "git@github.com:oracle/graal.git",
     },
-    "ignore_suite_commit_info": True,
+    "capture_suite_commit_info": False,
 
     # ------------- licenses
 

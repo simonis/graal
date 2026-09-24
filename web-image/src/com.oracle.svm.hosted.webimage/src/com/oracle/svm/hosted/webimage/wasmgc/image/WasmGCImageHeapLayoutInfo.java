@@ -25,8 +25,8 @@
 
 package com.oracle.svm.hosted.webimage.wasmgc.image;
 
-import com.oracle.svm.core.BuildPhaseProvider;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
 import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 
 /**
@@ -48,7 +48,7 @@ public class WasmGCImageHeapLayoutInfo extends ImageHeapLayoutInfo {
      *            known before the binary is assembled).
      */
     public WasmGCImageHeapLayoutInfo(long serializedSize, long theoreticalSize) {
-        super(0, theoreticalSize, 0, theoreticalSize, 0L, 0L, 0L, 0L);
+        super(0, theoreticalSize, 0, theoreticalSize, 0L, 0L, 0L, 0L, 0L);
 
         this.serializedSize = serializedSize;
     }

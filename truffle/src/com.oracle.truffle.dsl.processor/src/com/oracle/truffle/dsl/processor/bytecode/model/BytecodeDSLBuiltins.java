@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,7 +42,12 @@ package com.oracle.truffle.dsl.processor.bytecode.model;
 
 import static com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.OPCODE_WIDTH;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
 
 import javax.lang.model.type.TypeMirror;
 
@@ -53,6 +58,8 @@ import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.Instruct
 import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationArgument;
 import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationArgument.Encoding;
 import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationKind;
+import com.oracle.truffle.dsl.processor.java.ElementUtils;
+import com.oracle.truffle.dsl.processor.java.model.CodeTreeBuilder;
 import com.oracle.truffle.dsl.processor.java.model.CodeTypeMirror.ArrayCodeTypeMirror;
 
 /**
@@ -64,18 +71,21 @@ public class BytecodeDSLBuiltins {
     private static final String GENERATE_BYTECODE = "com.oracle.truffle.api.bytecode.GenerateBytecode";
 
     public static void addBuiltins(BytecodeDSLModel m, TruffleTypes types, ProcessorContext context) {
-        m.popInstruction = m.instruction(InstructionKind.POP, "pop", m.signature(void.class, Object.class));
-        m.dupInstruction = m.instruction(InstructionKind.DUP, "dup", m.signature(void.class));
-        m.returnInstruction = m.instruction(InstructionKind.RETURN, "return", m.signature(void.class, Object.class));
+        final TypeMirror objectType = context.getType(Object.class);
+        final TypeMirror voidType = context.getType(void.class);
+
+        m.popInstruction = m.instruction(InstructionKind.POP, "pop", m.signature(void.class, "value", Object.class, Object.class));
+        m.dupInstruction = m.instruction(InstructionKind.DUP, "dup", m.signature(Object.class));
+        m.returnInstruction = m.instruction(InstructionKind.RETURN, "return", m.signature(void.class, "result", Object.class, Object.class));
         m.branchInstruction = m.instruction(InstructionKind.BRANCH, "branch", m.signature(void.class)) //
                         .addImmediate(ImmediateKind.BYTECODE_INDEX, "branch_target");
         m.branchBackwardInstruction = m.instruction(InstructionKind.BRANCH_BACKWARD, "branch.backward", m.signature(void.class)) //
                         .addImmediate(ImmediateKind.BYTECODE_INDEX, "branch_target") //
                         .addImmediate(ImmediateKind.BRANCH_PROFILE, "loop_header_branch_profile");
-        m.branchFalseInstruction = m.instruction(InstructionKind.BRANCH_FALSE, "branch.false", m.signature(void.class, Object.class)) //
+        m.branchFalseInstruction = m.instruction(InstructionKind.BRANCH_FALSE, "branch.false", m.signature(void.class, "condition", Object.class, boolean.class)) //
                         .addImmediate(ImmediateKind.BYTECODE_INDEX, "branch_target") //
                         .addImmediate(ImmediateKind.BRANCH_PROFILE, "branch_profile");
-        m.throwInstruction = m.instruction(InstructionKind.THROW, "throw", m.signature(void.class, Object.class));
+        m.throwInstruction = m.instruction(InstructionKind.THROW, "throw", m.signature(void.class, "exception", Object.class, Throwable.class));
         m.loadConstantInstruction = m.instruction(InstructionKind.LOAD_CONSTANT, "load.constant", m.signature(Object.class)) //
                         .addImmediate(ImmediateKind.CONSTANT, "constant");
         m.loadNullInstruction = m.instruction(InstructionKind.LOAD_NULL, "load.null", m.signature(Object.class));
@@ -86,13 +96,12 @@ public class BytecodeDSLBuiltins {
                                         This operation can be used to group multiple operations together in a single operation.
                                         The result of a Block is the result produced by the last child (or void, if no value is produced).
                                         """) //
-                        .setTransparent(true) //
+                        .setForwardsChildResult(true) //
                         .setVariadic(true, 0) //
-                        .setDynamicOperands(transparentOperationChild());
+                        .setDynamicOperands(variadicBody());
         m.rootOperation = m.operation(OperationKind.ROOT, "Root", rootOperationJavadoc(m)) //
-                        .setTransparent(true) //
-                        .setVariadic(true, 0) //
-                        .setDynamicOperands(transparentOperationChild());
+                        // Root is not technically variadic, but its user-facing body is variadic.
+                        .setDynamicOperands(variadicBody());
         m.ifThenOperation = m.operation(OperationKind.IF_THEN, "IfThen", """
                         IfThen implements an if-then statement. It evaluates {@code condition}, which must produce a boolean. If the value is {@code true}, it executes {@code thens}.
                         This is a void operation; {@code thens} can also be void.
@@ -186,7 +195,7 @@ public class BytecodeDSLBuiltins {
                                         """) //
                         .setVoid(true) //
                         .setVariadic(true, 0) //
-                        .setDynamicOperands(transparentOperationChild()) //
+                        .setDynamicOperands(variadicBody()) //
                         .setOperationBeginArguments(new OperationArgument(context.getType(short.class), Encoding.SHORT, "finallyOperationSp",
                                         "the operation stack pointer for the finally operation that created the FinallyHandler")) //
                         .setInternal();
@@ -215,28 +224,33 @@ public class BytecodeDSLBuiltins {
                         LoadNull produces a {@code null} value.
                         """) //
                         .setInstruction(m.loadNullInstruction);
+        m.loadArgumentInstruction = m.instruction(InstructionKind.LOAD_ARGUMENT, "load.argument", m.signature(Object.class))//
+                        .addImmediate(ImmediateKind.SHORT, "index");
         m.operation(OperationKind.LOAD_ARGUMENT, "LoadArgument", """
                         LoadArgument reads the argument at {@code index} from the frame.
                         Throws {@link IndexOutOfBoundsException} if the index is out of bounds.
                         """) //
                         .setOperationBeginArguments(new OperationArgument(context.getType(int.class), Encoding.INTEGER, "index", "the index of the argument to load (must fit into a short)")) //
-                        .setInstruction(m.instruction(InstructionKind.LOAD_ARGUMENT, "load.argument", m.signature(Object.class))//
-                                        .addImmediate(ImmediateKind.SHORT, "index"));
+                        .setInstruction(m.loadArgumentInstruction);
         m.operation(OperationKind.LOAD_EXCEPTION, "LoadException", """
                         LoadException reads the current exception from the frame.
                         This operation is only permitted inside the {@code catch} operation of TryCatch and TryCatchOtherwise operations.
                         """) //
                         .setInstruction(m.instruction(InstructionKind.LOAD_EXCEPTION, "load.exception", m.signature(Object.class))//
                                         .addImmediate(ImmediateKind.STACK_POINTER, "exception_sp"));
+        m.loadStackValueInstruction = m.instruction(InstructionKind.LOAD_STACKVALUE, "load.stackvalue", m.signature(Object.class)) //
+                        .addImmediate(ImmediateKind.SHORT, "offset");
+        m.storeStackValueInstruction = m.instruction(InstructionKind.STORE_STACKVALUE, "store.stackvalue", m.signature(void.class, "value", Object.class, Object.class)) //
+                        .addImmediate(ImmediateKind.SHORT, "offset");
         m.loadLocalOperation = m.operation(OperationKind.LOAD_LOCAL, "LoadLocal",
                         String.format("""
                                         LoadLocal reads {@code local} from the current frame.
                                         If a value has not been written to the local, LoadLocal %s.
-                                        """, loadLocalUndefinedBehaviour(m))) //
+                                        """, loadIllegalLocalBehaviour(m))) //
                         .setOperationBeginArguments(new OperationArgument(types.BytecodeLocal, Encoding.LOCAL, "local", "the local to load")) //
                         .setInstruction(m.instruction(InstructionKind.LOAD_LOCAL, "load.local", m.signature(Object.class)) //
                                         .addImmediate(ImmediateKind.FRAME_INDEX, "frame_index"));
-        m.storeLocalInstruction = m.instruction(InstructionKind.STORE_LOCAL, "store.local", m.signature(void.class, Object.class)) //
+        m.storeLocalInstruction = m.instruction(InstructionKind.STORE_LOCAL, "store.local", m.signature(void.class, "value", Object.class, Object.class)) //
                         .addImmediate(ImmediateKind.FRAME_INDEX, "frame_index");
         m.storeLocalOperation = m.operation(OperationKind.STORE_LOCAL, "StoreLocal", """
                         StoreLocal writes the value produced by {@code value} into the {@code local} in the current frame.
@@ -245,6 +259,8 @@ public class BytecodeDSLBuiltins {
                         .setOperationBeginArguments(new OperationArgument(types.BytecodeLocal, Encoding.LOCAL, "local", "the local to store to")) //
                         .setDynamicOperands(child("value")) //
                         .setInstruction(m.storeLocalInstruction);
+        m.clearLocalInstruction = m.instruction(InstructionKind.CLEAR_LOCAL, "clear.local", m.signature(void.class))//
+                        .addImmediate(ImmediateKind.FRAME_INDEX, "frame_index");
         if (m.enableMaterializedLocalAccesses) {
             m.loadLocalMaterializedOperation = m.operation(OperationKind.LOAD_LOCAL_MATERIALIZED, "LoadLocalMaterialized",
                             String.format("""
@@ -255,7 +271,8 @@ public class BytecodeDSLBuiltins {
                                             """, GENERATE_BYTECODE)) //
                             .setOperationBeginArguments(new OperationArgument(types.BytecodeLocal, Encoding.LOCAL, "local", "the local to load")) //
                             .setDynamicOperands(child("frame")) //
-                            .setInstruction(m.instruction(InstructionKind.LOAD_LOCAL_MATERIALIZED, "load.local.mat", m.signature(Object.class, Object.class)) //
+                            .setInstruction(m.instruction(InstructionKind.LOAD_LOCAL_MATERIALIZED, "load.local.mat",
+                                            m.signature(objectType, "frame", objectType, types.FrameWithoutBoxing)) //
                                             .addImmediate(ImmediateKind.FRAME_INDEX, "frame_index") //
                                             .addImmediate(ImmediateKind.LOCAL_ROOT, "root_index"));
             m.storeLocalMaterializedOperation = m.operation(OperationKind.STORE_LOCAL_MATERIALIZED, "StoreLocalMaterialized",
@@ -269,7 +286,7 @@ public class BytecodeDSLBuiltins {
                             .setOperationBeginArguments(new OperationArgument(types.BytecodeLocal, Encoding.LOCAL, "local", "the local to store to")) //
                             .setDynamicOperands(child("frame"), child("value")) //
                             .setInstruction(m.instruction(InstructionKind.STORE_LOCAL_MATERIALIZED, "store.local.mat",
-                                            m.signature(void.class, Object.class, Object.class)) //
+                                            m.signature(voidType, "frame", objectType, types.FrameWithoutBoxing, "value", objectType, objectType)) //
                                             .addImmediate(ImmediateKind.FRAME_INDEX, "frame_index") //
                                             .addImmediate(ImmediateKind.LOCAL_ROOT, "root_index"));
         }
@@ -278,7 +295,7 @@ public class BytecodeDSLBuiltins {
                         .setDynamicOperands(child("result")) //
                         .setInstruction(m.returnInstruction);
         if (m.enableYield) {
-            m.yieldInstruction = m.instruction(InstructionKind.YIELD, "yield", m.signature(Object.class, Object.class)).addImmediate(ImmediateKind.CONSTANT, "location");
+            m.yieldInstruction = m.instruction(InstructionKind.YIELD, "yield", m.signature(Object.class, "value", Object.class, Object.class)).addImmediate(ImmediateKind.CONSTANT, "location");
             m.operation(OperationKind.YIELD, "Yield", """
                             Yield executes {@code value} and suspends execution at the given location, returning a {@link com.oracle.truffle.api.bytecode.ContinuationResult} containing the result.
                             The caller can resume the continuation, which continues execution after the Yield. When resuming, the caller passes a value that becomes the value produced by the Yield.
@@ -286,55 +303,52 @@ public class BytecodeDSLBuiltins {
                             .setDynamicOperands(child("value")).setInstruction(m.yieldInstruction);
         }
         m.sourceOperation = m.operation(OperationKind.SOURCE, "Source", """
-                        Source associates the children in its {@code body} with {@code source}. Together with SourceSection, it encodes source locations for operations in the program.
+                        Source associates the operations in its {@code body} with {@code source}. Together with SourceSection, it encodes source locations for operations in the program.
+                        This operation is metadata-only and does not affect the operation tree shape. Operations in its body appear as children of the enclosing operation.
                         """) //
-                        .setTransparent(true) //
                         .setVariadic(true, 0) //
                         .setOperationBeginArguments(new OperationArgument(types.Source, Encoding.CONSTANT, "source", "the source object to associate with the enclosed operations")) //
-                        .setDynamicOperands(transparentOperationChild());
+                        .setDynamicOperands(variadicBody());
 
-        String sourceDoc = """
-                        SourceSection associates the children in its {@code body} with the source section with the given character {@code index} and {@code length}.
-                        To specify an {@link Source#createUnavailableSection() unavailable source section}, provide {@code -1} for both arguments.
+        String sourceSectionDoc = """
+                        SourceSection associates the operations in its {@code body} with the source section described by its attributes.
                         This operation must be (directly or indirectly) enclosed within a Source operation.
+                        This operation is metadata-only and does not affect the operation tree shape. Operations in its body appear as children of the enclosing operation.
                         """;
 
+        List<OperationArgument> sourceSectionArguments = new ArrayList<>();
+        for (int i = 0; i < SourceSectionKind.MAX_ATTRIBUTES; i++) {
+            sourceSectionArguments.add(new OperationArgument(context.getType(int.class), Encoding.INTEGER, "attr" + (i + 1), "data attribute " + (i + 1) + " of the source section"));
+        }
+        sourceSectionArguments.add(new OperationArgument(context.getType(int.class), Encoding.INTEGER, "tag", "a tag indicating the kind of source section"));
+
         m.sourceSectionPrefixOperation = m.operation(OperationKind.SOURCE_SECTION, "SourceSectionPrefix",
-                        sourceDoc, "SourceSection") //
-                        .setTransparent(true) //
+                        sourceSectionDoc, "SourceSectionPrefix") //
+                        .setPrivate() //
                         .setVariadic(true, 0) //
-                        .setOperationBeginArguments(
-                                        new OperationArgument(context.getType(int.class), Encoding.INTEGER, "index",
-                                                        "the starting character index of the source section, or -1 if the section is unavailable"),
-                                        new OperationArgument(context.getType(int.class), Encoding.INTEGER, "length",
-                                                        "the length (in characters) of the source section, or -1 if the section is unavailable")) //
-                        .setDynamicOperands(transparentOperationChild());
+                        .setOperationBeginArguments(sourceSectionArguments.toArray(OperationArgument[]::new)) //
+                        .setDynamicOperands(variadicBody());
 
         m.sourceSectionSuffixOperation = m.operation(OperationKind.SOURCE_SECTION, "SourceSectionSuffix",
-                        sourceDoc, "SourceSection") //
-                        .setTransparent(true) //
+                        sourceSectionDoc, "SourceSectionSuffix") //
+                        .setPrivate() //
                         .setVariadic(true, 0) //
-                        .setOperationEndArguments(
-                                        new OperationArgument(context.getType(int.class), Encoding.INTEGER, "index",
-                                                        "the starting character index of the source section, or -1 if the section is unavailable"),
-                                        new OperationArgument(context.getType(int.class), Encoding.INTEGER, "length",
-                                                        "the length (in characters) of the source section, or -1 if the section is unavailable")) //
-                        .setDynamicOperands(transparentOperationChild());
+                        .setOperationEndArguments(sourceSectionArguments.toArray(OperationArgument[]::new)) //
+                        .setDynamicOperands(variadicBody());
 
         if (m.enableTagInstrumentation) {
             m.tagEnterInstruction = m.instruction(InstructionKind.TAG_ENTER, "tag.enter", m.signature(void.class));
             m.tagEnterInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
-            m.tagLeaveValueInstruction = m.instruction(InstructionKind.TAG_LEAVE, "tag.leave", m.signature(Object.class, Object.class));
+            m.tagLeaveValueInstruction = m.instruction(InstructionKind.TAG_LEAVE, "tag.leave", m.signature(Object.class, "result", Object.class, Object.class));
             m.tagLeaveValueInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
-            m.tagLeaveVoidInstruction = m.instruction(InstructionKind.TAG_LEAVE_VOID, "tag.leaveVoid", m.signature(Object.class));
+            m.tagLeaveVoidInstruction = m.instruction(InstructionKind.TAG_LEAVE_VOID, "tag.leaveVoid", m.signature(void.class));
             m.tagLeaveVoidInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
             m.tagOperation = m.operation(OperationKind.TAG, "Tag",
                             """
                                             Tag associates {@code tagged} with the given tags.
                                             When the {@link BytecodeConfig} includes one or more of the given tags, the interpreter will automatically invoke instrumentation probes when entering/leaving {@code tagged}.
                                             """) //
-                            .setTransparent(true) //
-                            .setOperationBeginArgumentVarArgs(true) //
+                            .setForwardsChildResult(true) //
                             .setOperationBeginArguments(
                                             new OperationArgument(new ArrayCodeTypeMirror(context.getDeclaredType(Class.class)), Encoding.TAGS, "newTags",
                                                             "the tags to associate with the enclosed operations"))//
@@ -346,20 +360,19 @@ public class BytecodeDSLBuiltins {
 
         }
 
-        m.clearLocalInstruction = m.instruction(InstructionKind.CLEAR_LOCAL, "clear.local", m.signature(void.class));
-        m.clearLocalInstruction.addImmediate(ImmediateKind.FRAME_INDEX, "frame_index");
-
         m.sortInstructionsByKind();
     }
 
     /*
      * Invoked when instructions are being finalized. Allows to conditionally add builtin
-     * instructions depending on the almost final model.
+     * instructions/operations depending on the almost final model.
      */
-    public static void addBuiltinsOnFinalize(BytecodeDSLModel m) {
+    public static void addBuiltinsOnFinalize(BytecodeDSLModel m, TruffleTypes types) {
+        addBackwardCompatibleOperations(m, types);
+
         if (m.hasCustomVariadic) {
-            m.loadVariadicInstruction = m.instruction(InstructionKind.LOAD_VARIADIC, "load.variadic", m.signature(void.class, Object.class));
-            m.createVariadicInstruction = m.instruction(InstructionKind.CREATE_VARIADIC, "create.variadic", m.signature(Object.class, Object.class));
+            m.loadVariadicInstruction = m.instruction(InstructionKind.LOAD_VARIADIC, "load.variadic", m.signature(void.class, "varargs", Object.class, Object[].class));
+            m.createVariadicInstruction = m.instruction(InstructionKind.CREATE_VARIADIC, "create.variadic", m.signature(Object.class));
             m.emptyVariadicInstruction = m.instruction(InstructionKind.EMPTY_VARIADIC, "empty.variadic", m.signature(Object.class));
 
             m.loadVariadicInstruction.addImmediate(ImmediateKind.INTEGER, "offset");
@@ -371,7 +384,7 @@ public class BytecodeDSLBuiltins {
             m.createVariadicInstruction.addImmediate(ImmediateKind.INTEGER, "count");
 
             if (m.hasVariadicReturn) {
-                m.splatVariadicInstruction = m.instruction(InstructionKind.SPLAT_VARIADIC, "splat.variadic", m.signature(Object.class, Object.class));
+                m.splatVariadicInstruction = m.instruction(InstructionKind.SPLAT_VARIADIC, "splat.variadic", m.signature(Object.class, "varargs", Object.class, Object[].class));
                 m.splatVariadicInstruction.addImmediate(ImmediateKind.INTEGER, "offset");
                 m.splatVariadicInstruction.addImmediate(ImmediateKind.INTEGER, "count");
 
@@ -381,21 +394,18 @@ public class BytecodeDSLBuiltins {
         }
 
         if (m.enableTagInstrumentation && m.hasYieldOperation()) {
-            m.tagYieldInstruction = m.instruction(InstructionKind.TAG_YIELD, "tag.yield", m.signature(Object.class, Object.class));
-            m.tagYieldInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
-
-            for (OperationModel yieldOperation : m.getCustomYieldOperations()) {
-                if (yieldOperation.instruction.signature.dynamicOperandCount == 0) {
-                    m.tagYieldNullInstruction = m.instruction(InstructionKind.TAG_YIELD_NULL, "tag.yieldNull", m.signature(void.class));
-                    m.tagYieldNullInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
-                    break;
-                }
-            }
-
+            configureTagYieldInstructions(m);
             m.tagResumeInstruction = m.instruction(InstructionKind.TAG_RESUME, "tag.resume", m.signature(void.class));
             m.tagResumeInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
         }
 
+        if (m.enableInstructionTracing) {
+            m.traceInstruction = m.instruction(InstructionKind.TRACE_INSTRUCTION, "trace.instruction", m.signature(void.class));
+        }
+
+    }
+
+    public static void addInvalidateBuiltinsOnFinalize(BytecodeDSLModel m) {
         // invalidate instructions should be the last instructions to add as it they depend on the
         // length of all other instructions
         if (m.isBytecodeUpdatable()) {
@@ -409,10 +419,90 @@ public class BytecodeDSLBuiltins {
             for (int i = 0; i < numShortImmediates + 1; i++) {
                 InstructionModel model = m.instruction(InstructionKind.INVALIDATE, "invalidate" + i, m.signature(void.class));
                 for (int j = 0; j < i; j++) {
-                    model.addImmediate(ImmediateKind.SHORT, "invalidated" + j);
+                    InstructionModel.InstructionImmediate imm = new InstructionModel.InstructionImmediate(ImmediateKind.SHORT, "invalidated" + j, new InstructionModel.InstructionImmediateEncoding(
+                                    ImmediateKind.SHORT.width), false, OptionalInt.empty(), Optional.empty());
+                    imm.encoding().setOffset(model.getInstructionLength());
+                    model.addImmediate(imm);
                 }
                 m.invalidateInstructions[i] = model;
+                model.finalizeModel();
             }
+        }
+    }
+
+    private static void configureTagYieldInstructions(BytecodeDSLModel m) {
+        Set<Integer> yieldResultStackOffsets = new HashSet<>();
+        boolean needsYieldNull = false;
+        if (m.enableYield) {
+            yieldResultStackOffsets.add(m.getYieldResultStackOffset(m.findOperation(OperationKind.YIELD)));
+        }
+        for (OperationModel yieldOperation : m.getCustomYieldOperations()) {
+            if (yieldOperation.instruction().signature.dynamicOperandCount() == 0) {
+                needsYieldNull = true;
+            } else {
+                yieldResultStackOffsets.add(m.getYieldResultStackOffset(yieldOperation));
+            }
+        }
+        if (!yieldResultStackOffsets.isEmpty()) {
+            m.tagYieldInstruction = m.instruction(InstructionKind.TAG_YIELD, "tag.yield", m.signature(void.class));
+            m.tagYieldInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
+            if (yieldResultStackOffsets.size() == 1) {
+                m.tagYieldInstruction.addFixedImmediate(ImmediateKind.SHORT, "result_stack_offset", yieldResultStackOffsets.iterator().next(), CodeTreeBuilder.singleString(String.valueOf(
+                                (int) yieldResultStackOffsets.iterator().next())));
+            } else {
+                m.tagYieldInstruction.addImmediate(ImmediateKind.SHORT, "result_stack_offset");
+            }
+        }
+        if (needsYieldNull) {
+            m.tagYieldNullInstruction = m.instruction(InstructionKind.TAG_YIELD_NULL, "tag.yieldNull", m.signature(void.class));
+            m.tagYieldNullInstruction.addImmediate(ImmediateKind.TAG_NODE, "tag");
+        }
+    }
+
+    /**
+     * Built-in operations introduced after the initial release of the Bytecode DSL can potentially
+     * conflict with existing user-defined operations. We add such operations after parsing the
+     * specification only if an operation with the same name is not already defined.
+     */
+    private static void addBackwardCompatibleOperations(BytecodeDSLModel m, TruffleTypes types) {
+        m.bindStackValueOperation = m.operation(OperationKind.BIND_STACKVALUE, "BindStackValue",
+                        """
+                                        BindStackValue binds its child's result while it remains live on the operand stack.
+                                        It must be directly enclosed by a custom operation or Block, ignoring Source and SourceSection metadata operations.
+                                        The returned StackValue is valid while the enclosing operation is active.
+                                        """, "BindStackValue", true);
+        if (m.bindStackValueOperation != null) {
+            m.bindStackValueOperation.setDynamicOperands(child("value"));
+        }
+
+        m.loadStackValueOperation = m.operation(OperationKind.LOAD_STACKVALUE, "LoadStackValue", """
+                        LoadStackValue reads {@code stackValue}.
+                        The stack value must belong to an active custom operation or Block in the current root.
+                        """, "LoadStackValue", true);
+        if (m.loadStackValueOperation != null) {
+            m.loadStackValueOperation.setOperationBeginArguments(new OperationArgument(types.StackValue, Encoding.STACK_VALUE, "stackValue", "the stack value to load")) //
+                            .setInstruction(m.loadStackValueInstruction);
+        }
+
+        m.storeStackValueOperation = m.operation(OperationKind.STORE_STACKVALUE, "StoreStackValue", """
+                        StoreStackValue writes the value produced by {@code value} into {@code stackValue}.
+                        The stack value must belong to an active custom operation or Block in the current root.
+                        """, "StoreStackValue", true);
+        if (m.storeStackValueOperation != null) {
+            m.storeStackValueOperation.setVoid(true) //
+                            .setOperationBeginArguments(new OperationArgument(types.StackValue, Encoding.STACK_VALUE, "stackValue", "the stack value to store to")) //
+                            .setDynamicOperands(child("value")) //
+                            .setInstruction(m.storeStackValueInstruction);
+        }
+
+        OperationModel clearLocalOperation = m.operation(OperationKind.CLEAR_LOCAL, "ClearLocal", String.format("""
+                        ClearLocal clears {@code local} in the current frame.
+                        Until a value is written to the local, a subsequent LoadLocal %s.
+                        """, loadIllegalLocalBehaviour(m)), "ClearLocal", true);
+        if (clearLocalOperation != null) {
+            clearLocalOperation.setVoid(true)//
+                            .setOperationBeginArguments(new OperationArgument(types.BytecodeLocal, Encoding.LOCAL, "local", "the local to clear"))//
+                            .setInstruction(m.clearLocalInstruction);
         }
     }
 
@@ -445,12 +535,12 @@ public class BytecodeDSLBuiltins {
                         rootClass, rootClass, innerRootBehaviour);
     }
 
-    private static String loadLocalUndefinedBehaviour(BytecodeDSLModel m) {
-        if (m.defaultLocalValue == null || m.defaultLocalValue.isEmpty()) {
-            return "throws a {@link com.oracle.truffle.api.frame.FrameSlotTypeException}";
-        } else {
-            return String.format("produces the default local value (%s)", m.defaultLocalValue);
-        }
+    private static String loadIllegalLocalBehaviour(BytecodeDSLModel m) {
+        return switch (m.loadIllegalLocalStrategy) {
+            case FRAME_SLOT_TYPE_EXCEPTION -> "throws a {@link com.oracle.truffle.api.frame.FrameSlotTypeException}";
+            case DEFAULT_VALUE -> String.format("produces the default local value (%s)", m.defaultLocalValue);
+            case CUSTOM_EXCEPTION -> String.format("throws a {@code %s}", ElementUtils.getSimpleName(m.illegalLocalException));
+        };
     }
 
     private static DynamicOperandModel child(String name) {
@@ -461,7 +551,7 @@ public class BytecodeDSLBuiltins {
         return new DynamicOperandModel(List.of(name), true, false);
     }
 
-    private static DynamicOperandModel transparentOperationChild() {
+    private static DynamicOperandModel variadicBody() {
         return new DynamicOperandModel(List.of("body"), true, true);
     }
 }

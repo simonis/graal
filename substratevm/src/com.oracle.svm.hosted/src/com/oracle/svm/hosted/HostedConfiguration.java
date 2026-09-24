@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,11 +27,11 @@ package com.oracle.svm.hosted;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 
@@ -48,41 +48,36 @@ import com.oracle.graal.pointsto.results.StrengthenGraphs;
 import com.oracle.objectfile.ObjectFile;
 import com.oracle.svm.core.MissingRegistrationSupport;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateTargetDescription;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.config.ObjectLayout.IdentityHashMode;
 import com.oracle.svm.core.graal.code.SubstrateMetaAccessExtensionProvider;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.monitor.MultiThreadedMonitorSupport;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.hosted.analysis.Inflation;
 import com.oracle.svm.hosted.analysis.flow.SVMMethodTypeFlowBuilder;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.code.CompileQueue;
 import com.oracle.svm.hosted.config.DynamicHubLayout;
 import com.oracle.svm.hosted.config.HybridLayout;
-import com.oracle.svm.hosted.config.HybridLayoutSupport;
 import com.oracle.svm.hosted.image.LIRNativeImageCodeCache;
 import com.oracle.svm.hosted.image.NativeImageCodeCache;
 import com.oracle.svm.hosted.image.NativeImageCodeCacheFactory;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.image.ObjectFileFactory;
-import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
-import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerSnapshotUtil;
-import com.oracle.svm.hosted.imagelayer.SVMImageLayerWriter;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedInstanceClass;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.util.GuestAnnotationAccess;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.spi.MetaAccessExtensionProvider;
@@ -93,7 +88,7 @@ import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class HostedConfiguration {
 
     public HostedConfiguration() {
@@ -109,48 +104,78 @@ public class HostedConfiguration {
         }
     }
 
-    public static void setDefaultIfEmpty() {
+    static void setDefaultIfEmpty() {
         setInstanceIfEmpty(new HostedConfiguration());
+
         if (!ImageSingletons.contains(CompressEncoding.class)) {
-            CompressEncoding compressEncoding = new CompressEncoding(SubstrateOptions.SpawnIsolates.getValue() ? 1 : 0, 0);
-            ImageSingletons.add(CompressEncoding.class, compressEncoding);
+            ImageSingletons.add(CompressEncoding.class, createCompressEncoding());
+        }
 
-            if (!ImageSingletons.contains(ObjectLayout.class)) {
-                ObjectLayout objectLayout = createObjectLayout(IdentityHashMode.TYPE_SPECIFIC);
-                ImageSingletons.add(ObjectLayout.class, objectLayout);
-            }
-
-            ImageSingletons.add(HybridLayoutSupport.class, new HybridLayoutSupport());
+        if (!ImageSingletons.contains(ObjectLayout.class)) {
+            ObjectLayout objectLayout = createObjectLayout();
+            ImageSingletons.add(ObjectLayout.class, objectLayout);
         }
     }
 
-    public static ObjectLayout createObjectLayout(IdentityHashMode identityHashMode) {
-        return createObjectLayout(JavaKind.Object, identityHashMode);
+    private static CompressEncoding createCompressEncoding() {
+        int compressBase = 1; // actual base is kept in a register
+        int compressShift = 0;
+        if (SubstrateOptions.useCompressedReferences() && SubstrateOptions.ConcealedOptions.UseCompressedReferenceShift.getValue()) {
+            // 8-byte object alignment, three object header bits
+            compressShift = 3;
+        }
+        return new CompressEncoding(compressBase, compressShift);
     }
 
     /**
-     * Defines the serial/epsilon GC object layout. The monitor slot and the identity hash code
-     * fields are appended to instance objects (unless there is an otherwise unused gap in the
-     * object that can be used).
+     * Defines the serial/epsilon GC object layout.
+     *
+     * The identity hash code field is optional by default (see
+     * {@link SubstrateOptions#OptionalIdentityHashCodes}) and it is only materialized
+     * during garbage collection. The field materialization may change the object size (unless there
+     * is an otherwise unused gap in the object that can be used instead) and writes a valid
+     * identity hash code into the field. Note that non-GC code may only access the identity hash
+     * code field after it was materialized (regardless if the field is placed in an unused gap or
+     * not).
+     *
+     * @see #createObjectLayout(JavaKind, IdentityHashMode)
+     */
+    public static ObjectLayout createObjectLayout() {
+        boolean useOptionalIdentityHashField = SubstrateOptions.canUseOptionalIdentityHashCodes() &&
+                        !Boolean.FALSE.equals(SubstrateOptions.OptionalIdentityHashCodes.getValue());
+        IdentityHashMode identityHashMode = useOptionalIdentityHashField ? IdentityHashMode.OPTIONAL : IdentityHashMode.TYPE_SPECIFIC;
+        JavaKind referenceKind = JavaKind.Object;
+        if (SubstrateOptions.useCompressedReferences()) {
+            referenceKind = JavaKind.Int;
+        }
+        return createObjectLayout(referenceKind, identityHashMode);
+    }
+
+    /**
+     * Defines the serial/epsilon GC object layout, using the given identity hash mode. The monitor
+     * slot is appended to instance objects unless there is an otherwise unused gap in the object
+     * that can be used.
      *
      * The layout of instance objects is:
      * <ul>
-     * <li>64 bit hub reference</li>
+     * <li>32/64 bit hub reference</li>
      * <li>instance fields (references, primitives)</li>
-     * <li>64 bit object monitor reference (if needed)</li>
-     * <li>32 bit identity hashcode (if needed)</li>
+     * <li>32/64 bit object monitor reference (if needed; may be placed in a gap between instance
+     * fields instead)</li>
+     * <li>32 bit identity hashcode (if needed; may be added at runtime or placed in a gap between
+     * instance fields instead)</li>
      * </ul>
      *
      * The layout of array objects is:
      * <ul>
-     * <li>64 bit hub reference</li>
+     * <li>32/64 bit hub reference</li>
      * <li>32 bit identity hashcode</li>
      * <li>32 bit array length</li>
      * <li>array elements (length * elementSize)</li>
      * </ul>
      */
     public static ObjectLayout createObjectLayout(JavaKind referenceKind, IdentityHashMode identityHashMode) {
-        SubstrateTargetDescription target = ConfigurationValues.getTarget();
+        SubstrateTarget target = SubstrateTarget.singleton();
         int referenceSize = target.arch.getPlatformKind(referenceKind).getSizeInBytes();
         int intSize = target.arch.getPlatformKind(JavaKind.Int).getSizeInBytes();
         int objectAlignment = 8;
@@ -192,7 +217,7 @@ public class HostedConfiguration {
     private static DynamicHubLayout createDynamicHubLayout(HostedMetaAccess hMetaAccess) {
         var dynamicHubType = hMetaAccess.lookupJavaType(Class.class);
 
-        ObjectLayout layout = ConfigurationValues.getObjectLayout();
+        ObjectLayout layout = ObjectLayout.singleton();
         var vtableField = hMetaAccess.lookupJavaField(ReflectionUtil.lookupField(DynamicHub.class, "vtable"));
         JavaKind vTableSlotStorageKind = vtableField.getType().getComponentType().getStorageKind();
         int vTableSlotSize = layout.sizeInBytes(vTableSlotStorageKind);
@@ -236,25 +261,14 @@ public class HostedConfiguration {
         return HybridLayout.isHybrid(clazz) || DynamicHubLayout.singleton().isDynamicHub(clazz);
     }
 
-    /**
-     * The hybrid array field and the type fields of the dynamic hub are directly inlined to the
-     * object to remove a level of indirection.
-     */
+    /** The type fields of the dynamic hub are directly inlined into the object. */
     public static boolean isInlinedField(HostedField field) {
-        return HybridLayout.isHybridField(field) || DynamicHubLayout.singleton().isInlinedField(field);
+        return DynamicHubLayout.singleton().isInlinedField(field);
     }
 
     public SVMHost createHostVM(OptionValues options, ImageClassLoader loader, ClassInitializationSupport classInitializationSupport, AnnotationSubstitutionProcessor annotationSubstitutions,
                     MissingRegistrationSupport missingRegistrationSupport) {
         return new SVMHost(options, loader, classInitializationSupport, annotationSubstitutions, missingRegistrationSupport);
-    }
-
-    public SVMImageLayerWriter createSVMImageLayerWriter(SVMImageLayerSnapshotUtil imageLayerSnapshotUtil, boolean useSharedLayerGraphs, boolean useSharedLayerStrengthenedGraphs) {
-        return new SVMImageLayerWriter(imageLayerSnapshotUtil, useSharedLayerGraphs, useSharedLayerStrengthenedGraphs);
-    }
-
-    public SVMImageLayerLoader createSVMImageLayerLoader(SVMImageLayerSnapshotUtil imageLayerSnapshotUtil, HostedImageLayerBuildingSupport imageLayerBuildingSupport, boolean useSharedLayerGraphs) {
-        return new SVMImageLayerLoader(imageLayerSnapshotUtil, imageLayerBuildingSupport, imageLayerBuildingSupport.getSnapshot(), imageLayerBuildingSupport.getGraphsChannel(), useSharedLayerGraphs);
     }
 
     public SVMImageLayerSnapshotUtil createSVMImageLayerSnapshotUtil(ImageClassLoader imageClassLoader) {
@@ -263,6 +277,14 @@ public class HostedConfiguration {
 
     public CompileQueue createCompileQueue(DebugContext debug, FeatureHandler featureHandler, HostedUniverse hostedUniverse, RuntimeConfiguration runtimeConfiguration, boolean deoptimizeAll) {
         return new CompileQueue(debug, featureHandler, hostedUniverse, runtimeConfiguration, deoptimizeAll, Collections.emptyList());
+    }
+
+    /**
+     * Invoked in a separate active executor pass after the normal compile queue and before later
+     * image-building phases consume compilation results. Implementations may compile additional
+     * methods.
+     */
+    public void afterCompileQueue(@SuppressWarnings("unused") DebugContext debug, @SuppressWarnings("unused") CompileQueue compileQueue) {
     }
 
     public MethodTypeFlowBuilder createMethodTypeFlowBuilder(PointsToAnalysis bb, PointsToAnalysisMethod method, MethodFlowsGraph flowsGraph, MethodFlowsGraph.GraphKind graphKind) {
@@ -292,11 +314,6 @@ public class HostedConfiguration {
                      * Ignored fields do not need a field offset.
                      */
                     allFields.add(hField);
-                } else if (HybridLayout.isHybridField(hField)) {
-                    /*
-                     * The array field of a hybrid is not materialized, so it needs no field offset.
-                     */
-                    allFields.add(hField);
                 } else if (hField.isAccessed()) {
                     rawFields.add(hField);
                     allFields.add(hField);
@@ -309,7 +326,7 @@ public class HostedConfiguration {
         return new SubstrateStrengthenGraphs(bb, universe);
     }
 
-    public void collectMonitorFieldInfo(BigBang bb, HostedUniverse hUniverse, Set<AnalysisType> immutableTypes) {
+    public void collectMonitorFieldInfo(BigBang bb, HostedUniverse hUniverse, EconomicSet<AnalysisType> immutableTypes) {
         /* First set the monitor field for types that always need it. */
         for (AnalysisType type : getForceMonitorSlotTypes(bb)) {
             assert !immutableTypes.contains(type);
@@ -320,8 +337,8 @@ public class HostedConfiguration {
         processedSynchronizedTypes(bb, hUniverse, immutableTypes);
     }
 
-    private static Set<AnalysisType> getForceMonitorSlotTypes(BigBang bb) {
-        Set<AnalysisType> forceMonitorTypes = new HashSet<>();
+    private static EconomicSet<AnalysisType> getForceMonitorSlotTypes(BigBang bb) {
+        EconomicSet<AnalysisType> forceMonitorTypes = EconomicSet.create();
         for (var entry : MultiThreadedMonitorSupport.FORCE_MONITOR_SLOT_TYPES.entrySet()) {
             Optional<AnalysisType> optionalType = bb.getMetaAccess().optionalLookupJavaType(entry.getKey());
             if (optionalType.isPresent()) {
@@ -336,7 +353,7 @@ public class HostedConfiguration {
     }
 
     /** Process the types that the analysis found as needing synchronization. */
-    protected void processedSynchronizedTypes(BigBang bb, HostedUniverse hUniverse, Set<AnalysisType> immutableTypes) {
+    protected void processedSynchronizedTypes(BigBang bb, HostedUniverse hUniverse, EconomicSet<AnalysisType> immutableTypes) {
         for (AnalysisType type : bb.getAllSynchronizedTypes()) {
             maybeSetMonitorField(hUniverse, immutableTypes, type);
         }
@@ -351,36 +368,46 @@ public class HostedConfiguration {
      *
      * Types that must be immutable cannot have a monitor field.
      */
-    protected static void maybeSetMonitorField(HostedUniverse hUniverse, Set<AnalysisType> immutableTypes, AnalysisType type) {
-        if (!type.isArray() && !immutableTypes.contains(type) && !type.isAnnotationPresent(ValueBased.class)) {
+    protected static void maybeSetMonitorField(HostedUniverse hUniverse, EconomicSet<AnalysisType> immutableTypes, AnalysisType type) {
+        if (!type.isArray() && !immutableTypes.contains(type) && !GuestAnnotationAccess.isAnnotationPresent(type, ValueBased.class)) {
             setMonitorField(hUniverse, type);
         }
     }
 
     private static void setMonitorField(HostedUniverse hUniverse, AnalysisType type) {
-        final HostedInstanceClass hostedInstanceClass = (HostedInstanceClass) hUniverse.lookup(type);
-        hostedInstanceClass.setNeedMonitorField();
+        HostedType hostedType = hUniverse.lookup(type);
+        if (hostedType instanceof HostedInstanceClass hostedInstanceClass) {
+            hostedInstanceClass.setNeedMonitorField();
+        } else {
+            assert false : "Attempted setting of monitor field on a non-instance-class type.";
+        }
     }
 
     public NativeImageCodeCacheFactory newCodeCacheFactory() {
-        return new NativeImageCodeCacheFactory() {
-            @Override
-            public NativeImageCodeCache newCodeCache(CompileQueue compileQueue, NativeImageHeap heap, Platform targetPlatform, Path tempDir) {
-                return new LIRNativeImageCodeCache(compileQueue.getCompilationResults(), heap);
-            }
-        };
+        return new DefaultNativeImageCodeCacheFactory();
     }
 
     public ObjectFileFactory newObjectFileFactory() {
-        return new ObjectFileFactory() {
-            @Override
-            public ObjectFile newObjectFile(int pageSize, Path tempDir, BigBang bb) {
-                return ObjectFile.getNativeObjectFile(pageSize);
-            }
-        };
+        return new DefaultObjectFileFactory();
     }
 
     public HeapBreakdownProvider createHeapBreakdownProvider() {
         return new HeapBreakdownProvider();
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+    private static final class DefaultNativeImageCodeCacheFactory extends NativeImageCodeCacheFactory {
+        @Override
+        public NativeImageCodeCache newCodeCache(CompileQueue compileQueue, NativeImageHeap heap, Platform targetPlatform, Path tempDir) {
+            return new LIRNativeImageCodeCache(compileQueue.getCompilationResults(), heap);
+        }
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+    private static final class DefaultObjectFileFactory implements ObjectFileFactory {
+        @Override
+        public ObjectFile newObjectFile(int pageSize, Path tempDir, BigBang bb) {
+            return ObjectFile.getNativeObjectFile(pageSize);
+        }
     }
 }

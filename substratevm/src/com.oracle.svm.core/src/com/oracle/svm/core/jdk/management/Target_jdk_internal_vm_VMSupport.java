@@ -26,15 +26,16 @@
 
 package com.oracle.svm.core.jdk.management;
 
+import java.util.Objects;
 import java.util.Properties;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
-import com.oracle.svm.core.JavaMainWrapper.JavaMainSupport;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
+import com.oracle.svm.guest.staging.JavaMainSupport;
 
 @TargetClass(jdk.internal.vm.VMSupport.class)
 public final class Target_jdk_internal_vm_VMSupport {
@@ -46,9 +47,10 @@ public final class Target_jdk_internal_vm_VMSupport {
     private static Properties initAgentProperties(Properties properties) {
         if (ImageSingletons.contains(JavaMainSupport.class)) {
             JavaMainSupport support = ImageSingletons.lookup(JavaMainSupport.class);
-            properties.setProperty("sun.jvm.args", support.getJavaCommand());
+            String javaCommand = Objects.requireNonNullElse(support.getJavaCommand(), "");
+            properties.setProperty("sun.jvm.args", javaCommand);
             properties.setProperty("sun.jvm.flags", "");
-            properties.setProperty("sun.java.command", support.getJavaCommand());
+            properties.setProperty("sun.java.command", javaCommand);
         }
         return properties;
     }

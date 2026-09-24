@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,7 @@ package com.oracle.svm.truffle.isolated;
 
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 
-import com.oracle.svm.core.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
 import com.oracle.svm.core.graal.isolated.ClientHandle;
 import com.oracle.svm.core.graal.isolated.ClientIsolateThread;
 import com.oracle.svm.core.graal.isolated.CompilerHandle;
@@ -38,6 +38,7 @@ import com.oracle.truffle.compiler.TruffleCompilationTask;
 
 import jdk.graal.compiler.truffle.TruffleCompilationIdentifier;
 import jdk.graal.compiler.truffle.TruffleDebugJavaMethod;
+import jdk.graal.compiler.truffle.TruffleGraphContext;
 import jdk.vm.ci.meta.JavaMethod;
 
 final class IsolatedTruffleCompilationIdentifier extends IsolatedObjectProxy<TruffleCompilationIdentifier> implements TruffleCompilationIdentifier {
@@ -47,11 +48,39 @@ final class IsolatedTruffleCompilationIdentifier extends IsolatedObjectProxy<Tru
     private final String[] descriptions = new String[VERBOSITIES.length];
     private final TruffleCompilationTask task;
     private final TruffleCompilable compilable;
+    /** The identifier of the graph from which this graph was derived, or {@code null} for the root. */
+    private final IsolatedTruffleCompilationIdentifier parentCompilationId;
+    private final TruffleGraphContext graphContext;
 
     IsolatedTruffleCompilationIdentifier(ClientHandle<TruffleCompilationIdentifier> handle, TruffleCompilationTask task, TruffleCompilable compilable) {
         super(handle);
         this.task = task;
         this.compilable = compilable;
+        this.parentCompilationId = null;
+        this.graphContext = TruffleGraphContext.createRoot(compilable);
+    }
+
+    private IsolatedTruffleCompilationIdentifier(IsolatedTruffleCompilationIdentifier compilationId, TruffleGraphContext graphContext) {
+        super(compilationId.handle);
+        this.task = compilationId.task;
+        this.compilable = compilationId.compilable;
+        this.parentCompilationId = compilationId;
+        this.graphContext = graphContext;
+    }
+
+    @Override
+    public IsolatedTruffleCompilationIdentifier createGraphIdentifier(TruffleGraphContext context) {
+        return new IsolatedTruffleCompilationIdentifier(this, context);
+    }
+
+    @Override
+    public TruffleGraphContext getGraphContext() {
+        return graphContext;
+    }
+
+    @Override
+    public IsolatedTruffleCompilationIdentifier getParentCompilationIdentifier() {
+        return parentCompilationId;
     }
 
     @Override

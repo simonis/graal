@@ -34,11 +34,11 @@ import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.JavaMainWrapper;
-import com.oracle.svm.core.JavaMainWrapper.JavaMainSupport;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.jdk.SystemInOutErrSupport;
-import com.oracle.svm.core.option.RuntimeOptionParser;
+import com.oracle.svm.guest.staging.option.RuntimeOptionParser;
 import com.oracle.svm.core.thread.PlatformThreads;
+import com.oracle.svm.guest.staging.JavaMainSupport;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.webimage.JSExceptionSupport.ExceptionToNonLocalizedString;
 import com.oracle.svm.webimage.functionintrinsics.JSFunctionIntrinsics;
 import com.oracle.svm.webimage.substitute.system.Target_java_lang_Throwable_Web;
@@ -53,8 +53,8 @@ import jdk.graal.compiler.debug.GraalError;
 public abstract class WebImageJavaMainSupport extends JavaMainSupport {
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    protected WebImageJavaMainSupport(Method javaMainMethod) throws IllegalAccessException {
-        super(javaMainMethod);
+    protected WebImageJavaMainSupport(Class<?> javaMainClass, Method javaMainMethod) throws IllegalAccessException {
+        super(javaMainClass, javaMainMethod);
     }
 
     /**
@@ -116,7 +116,7 @@ public abstract class WebImageJavaMainSupport extends JavaMainSupport {
 
     private static void startMainThread() {
         // Creates the main thread.
-        PlatformThreads.singleton().assignMainThread();
+        PlatformThreads.singleton().assignMainThreadObject();
         Isolates.assignStartTime();
     }
 

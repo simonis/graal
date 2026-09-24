@@ -27,8 +27,12 @@ package com.oracle.svm.webimage.print;
 
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.webimage.functionintrinsics.JSCallNode;
 import com.oracle.svm.webimage.functionintrinsics.JSFunctionIntrinsics;
 import com.oracle.svm.webimage.platform.WebImageJSPlatform;
@@ -42,6 +46,7 @@ import com.oracle.svm.webimage.platform.WebImageWasmGCPlatform;
  */
 @AutomaticallyRegisteredImageSingleton(WebImagePrintingProvider.class)
 @Platforms({WebImageJSPlatform.class, WebImageWasmGCPlatform.class})
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class WebImageJSPrintingProvider extends WebImagePrintingProvider {
     @Override
     public void print(Descriptor fd, char[] chars) {

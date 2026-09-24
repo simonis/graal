@@ -26,17 +26,16 @@ package com.oracle.svm.graal.meta;
 
 import java.nio.ByteBuffer;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 
-import jdk.graal.compiler.word.Word;
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.code.AbstractRuntimeCodeInstaller;
 import com.oracle.svm.core.code.CodeInfo;
@@ -52,21 +51,22 @@ import com.oracle.svm.core.code.InstantReferenceAdjuster;
 import com.oracle.svm.core.code.ReferenceAdjuster;
 import com.oracle.svm.core.code.RuntimeCodeCache;
 import com.oracle.svm.core.code.RuntimeCodeInfoAccess;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
 import com.oracle.svm.core.graal.code.NativeImagePatcher;
-import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.code.SubstrateCompilationResult;
+import com.oracle.svm.core.graal.code.SharedCompilationResult;
 import com.oracle.svm.core.graal.meta.SharedRuntimeMethod;
 import com.oracle.svm.core.heap.CodeReferenceMapEncoder;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.SubstrateReferenceMap;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
-import com.oracle.svm.core.option.RuntimeOptionValues;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValues;
 import com.oracle.svm.core.os.CommittedMemoryProvider;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.code.CompilationResult.CodeAnnotation;
@@ -75,7 +75,7 @@ import jdk.graal.compiler.core.common.type.CompressibleConstant;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.Indent;
 import jdk.graal.compiler.truffle.TruffleCompilerImpl;
-import jdk.vm.ci.code.TargetDescription;
+import jdk.vm.ci.code.Architecture;
 import jdk.vm.ci.code.site.Call;
 import jdk.vm.ci.code.site.ConstantReference;
 import jdk.vm.ci.code.site.DataPatch;
@@ -113,14 +113,13 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
         this.method = method;
         this.compilation = (SubstrateCompilationResult) compilation;
         this.tier = compilation.getName().endsWith(TruffleCompilerImpl.FIRST_TIER_COMPILATION_SUFFIX) ? TruffleCompilerImpl.FIRST_TIER_INDEX : TruffleCompilerImpl.LAST_TIER_INDEX;
-        this.debug = new DebugContext.Builder(RuntimeOptionValues.singleton()).build();
+        this.debug = new DebugContext.Builder(RuntimeOptionValues.singleton().get()).build();
     }
 
     private void prepareCodeMemory() {
         try (Indent _ = debug.logAndIndent("create installed code of %s.%s", method.getDeclaringClass().getName(), method.getName())) {
-            TargetDescription target = ConfigurationValues.getTarget();
-
-            if (target.arch.getPlatformKind(JavaKind.Object).getSizeInBytes() != 8) {
+            Architecture arch = SubstrateTarget.getArchitecture();
+            if (arch.getPlatformKind(JavaKind.Object).getSizeInBytes() != 8) {
                 throw VMError.shouldNotReachHere("wrong object size");
             }
 
@@ -156,7 +155,7 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
 
         ObjectConstantsHolder(CompilationResult compilation) {
             /* Conservative estimate on the maximum number of object constants we might have. */
-            int maxDataRefs = compilation.getDataSection().getSectionSize() / ConfigurationValues.getObjectLayout().getReferenceSize();
+            int maxDataRefs = compilation.getDataSection().getSectionSize() / ObjectLayout.singleton().getReferenceSize();
             int maxCodeRefs = compilation.getDataPatches().size();
             int maxTotalRefs = maxDataRefs + maxCodeRefs;
             offsets = new int[maxTotalRefs];
@@ -166,7 +165,7 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
         }
 
         void add(int offset, int length, JavaConstant constant) {
-            assert ((CompressibleConstant) constant).isCompressed() == ReferenceAccess.singleton().haveCompressedReferences() : "Object reference constants in code must be compressed";
+            assert ((CompressibleConstant) constant).isCompressed() : "Object reference constants in code must be compressed";
             offsets[count] = offset;
             lengths[count] = length;
             constants[count] = constant;
@@ -223,19 +222,11 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
         ByteBuffer dataBuffer = CTypeConversion.asByteBuffer(code.add(dataOffset), compilation.getDataSection().getSectionSize());
         compilation.getDataSection().buildDataSection(dataBuffer, (position, constant) -> {
             objectConstants.add(dataOffset + position,
-                            ConfigurationValues.getObjectLayout().getReferenceSize(),
+                            ObjectLayout.singleton().getReferenceSize(),
                             (SubstrateObjectConstant) constant);
         });
 
-        int entryPointOffset = 0;
-
-        /* If the code starts after an offset, adjust the entry point accordingly */
-        for (CompilationResult.CodeMark mark : compilation.getMarks()) {
-            if (mark.id == SubstrateBackend.SubstrateMarkId.PROLOGUE_START) {
-                assert entryPointOffset == 0;
-                entryPointOffset = mark.pcOffset;
-            }
-        }
+        int entryPointOffset = SharedCompilationResult.getEntryPointOffset(compilation);
 
         NonmovableArray<InstalledCodeObserverHandle> observerHandles = InstalledCodeObserverSupport.installObservers(codeObservers);
         RuntimeCodeInfoAccess.initialize(codeInfo, code, entryPointOffset, codeSize, dataOffset, dataSize, codeAndDataMemorySize, tier, observerHandles, false);
@@ -265,8 +256,10 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
     }
 
     private void createCodeChunkInfos(CodeInfo runtimeMethodInfo, ReferenceAdjuster adjuster) {
-        CodeInfoEncoder codeInfoEncoder = new CodeInfoEncoder(new RuntimeFrameInfoCustomization(), new CodeInfoEncoder.Encoders(false, null, false));
+        CodeInfoEncoder codeInfoEncoder = new CodeInfoEncoder(new RuntimeFrameInfoCustomization(), new CodeInfoEncoder.Encoders(false, _ -> {
+        }, false));
         codeInfoEncoder.addMethod(method, compilation, 0, compilation.getTargetCodeSize());
+
         Runnable noop = () -> {
         };
         codeInfoEncoder.encodeAllAndInstall(runtimeMethodInfo, adjuster, noop);
@@ -280,7 +273,7 @@ public class RuntimeCodeInstaller extends AbstractRuntimeCodeInstaller {
 
     private int patchData(Map<Integer, NativeImagePatcher> patcher, ObjectConstantsHolder objectConstants) {
         int patchesHandled = 0;
-        HashSet<Integer> patchedOffsets = new HashSet<>();
+        EconomicSet<Integer> patchedOffsets = EconomicSet.create();
         for (DataPatch dataPatch : compilation.getDataPatches()) {
             NativeImagePatcher patch = patcher.get(dataPatch.pcOffset);
             boolean noPriorMatch = patchedOffsets.add(dataPatch.pcOffset);

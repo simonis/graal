@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.api.bytecode;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleStackTraceElement;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -98,6 +99,9 @@ final class DefaultBytecodeStackTraceElement implements TruffleObject {
     }
 
     private SourceSection getSourceSectionImpl() {
+        if (!stackTrace.hasBytecodeIndex()) {
+            return null;
+        }
         BytecodeLocation location = BytecodeLocation.get(stackTrace);
         if (location == null) {
             return null;
@@ -117,4 +121,59 @@ final class DefaultBytecodeStackTraceElement implements TruffleObject {
         throw UnsupportedMessageException.create();
     }
 
+    @ExportMessage
+    @SuppressWarnings("static-method")
+    boolean hasLanguageId() {
+        return true;
+    }
+
+    @ExportMessage
+    String getLanguageId() {
+        return stackTrace.getTarget().getRootNode().getLanguageInfo().getId();
+    }
+
+    @ExportMessage
+    @SuppressWarnings({"unused", "static-method"})
+    @TruffleBoundary
+    Object toDisplayString(boolean allowSideEffects) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("<").append(getLanguageId()).append("> ");
+        try {
+            if (hasExecutableName()) {
+                builder.append(getExecutableName());
+            } else {
+                builder.append("Unknown");
+            }
+            if (hasSourceLocation()) {
+                SourceSection section = getSourceLocation();
+                builder.append('(');
+                builder.append(section.getSource().getName());
+                builder.append(':');
+                builder.append(section.getStartLine());
+                builder.append(')');
+            }
+        } catch (UnsupportedMessageException unsupportedMessage) {
+            throw CompilerDirectives.shouldNotReachHere(unsupportedMessage);
+        }
+        return builder.toString();
+    }
+
+    @ExportMessage
+    boolean hasBytecodeIndex() {
+        return stackTrace.getBytecodeIndex() >= 0;
+    }
+
+    @ExportMessage
+    int getBytecodeIndex() throws UnsupportedMessageException {
+        if (hasBytecodeIndex()) {
+            return stackTrace.getBytecodeIndex();
+        } else {
+            throw UnsupportedMessageException.create();
+        }
+    }
+
+    @ExportMessage
+    boolean isInternal() {
+        return stackTrace.getTarget().getRootNode().isInternal();
+    }
 }

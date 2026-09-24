@@ -24,14 +24,12 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RegisterForIsolateArgumentParser;
-
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.metaspace.Metaspace;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.NotifyGCRuntimeOptionKey;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.NotifyGCRuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.shared.option.HostedOptionKey;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -71,11 +69,14 @@ public final class SerialAndEpsilonGCOptions {
     @Option(help = "Number of bytes at the beginning of each heap chunk that are not used for payload data, i.e., can be freely used as metadata by the heap chunk provider. Serial and epsilon GC only.", type = OptionType.Debug) //
     public static final HostedOptionKey<Integer> HeapChunkHeaderPadding = new HostedOptionKey<>(0, SerialAndEpsilonGCOptions::validateSerialOrEpsilonHostedOption);
 
-    @Option(help = "Starting TLAB size (in bytes); zero means set ergonomically.", type = OptionType.Expert)//
-    public static final RuntimeOptionKey<Long> InitialTLABSize = new RuntimeOptionKey<>(8 * 1024L, SerialAndEpsilonGCOptions::validateSerialOrEpsilonRuntimeOption, RegisterForIsolateArgumentParser);
-
     @Option(help = "Print information about TLABs. Printed when The TLABs are retired before a GC, and during the resizing of the TLABs. Serial and epsilon GC only.", type = OptionType.Expert)//
     public static final HostedOptionKey<Boolean> PrintTLAB = new HostedOptionKey<>(false, SerialAndEpsilonGCOptions::validateSerialOrEpsilonHostedOption);
+
+    @Option(help = "Print information about the metaspace on shutdown. Serial and epsilon GC only.", type = OptionType.Expert)//
+    public static final HostedOptionKey<Boolean> PrintMetaspace = new HostedOptionKey<>(false, SerialAndEpsilonGCOptions::validateSerialOrEpsilonHostedOption);
+
+    @Option(help = "Terminates the VM instead of throwing OutOfMemoryError when metaspace allocation fails.", type = OptionType.Expert)//
+    public static final HostedOptionKey<Boolean> MetaspaceExhaustionIsFatal = new HostedOptionKey<>(false, SerialAndEpsilonGCOptions::validateSerialOrEpsilonHostedOption);
 
     /** Query these options only through an appropriate method. */
     public static class ConcealedOptions {
@@ -86,7 +87,7 @@ public final class SerialAndEpsilonGCOptions {
 
     @Fold
     public static int getNullRegionSize() {
-        if (SubstrateOptions.SpawnIsolates.getValue() && SubstrateOptions.UseNullRegion.getValue()) {
+        if (SubstrateOptions.UseNullRegion.getValue()) {
             /*
              * The image heap will be mapped in a way that there is a memory protected gap between
              * the heap base and the start of the image heap. The gap won't need any memory in the

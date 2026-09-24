@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.hosted.jvmti;
 
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
@@ -33,9 +32,9 @@ import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.jdk.RuntimeSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
 import com.oracle.svm.core.jvmti.JvmtiAgents;
 import com.oracle.svm.core.jvmti.JvmtiEnvs;
 import com.oracle.svm.core.jvmti.JvmtiFunctionTable;
@@ -43,9 +42,7 @@ import com.oracle.svm.core.jvmti.JvmtiFunctions;
 import com.oracle.svm.core.jvmti.JvmtiSupport;
 import com.oracle.svm.core.jvmti.headers.JvmtiInterface;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.CompilationAccessImpl;
@@ -55,9 +52,13 @@ import com.oracle.svm.hosted.c.info.StructFieldInfo;
 import com.oracle.svm.hosted.c.info.StructInfo;
 import com.oracle.svm.hosted.code.CEntryPointCallStubSupport;
 import com.oracle.svm.hosted.code.CEntryPointData;
+import com.oracle.svm.hosted.code.CEntryPointGuestValue;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -98,7 +99,7 @@ public class JvmtiFeature implements InternalFeature {
         /* Manually add the CEntryPoints, so that this is only done when JVMTI is enabled. */
         AnalysisType type = metaAccess.lookupJavaType(JvmtiFunctions.class);
         for (AnalysisMethod method : type.getDeclaredMethods(false)) {
-            VMError.guarantee(AnnotationAccess.getAnnotation(method, CEntryPoint.class) != null, "Method %s does not have a @CEntryPoint annotation.", method.format("%H.%n(%p)"));
+            VMError.guarantee(GuestAnnotationAccess.isAnnotationPresent(method, CEntryPoint.class), "Method %s does not have a @CEntryPoint annotation.", method.format("%H.%n(%p)"));
             CEntryPointCallStubSupport.singleton().registerStubForMethod(method, () -> CEntryPointData.create(method));
         }
     }
@@ -131,8 +132,8 @@ public class JvmtiFeature implements InternalFeature {
     }
 
     private static boolean isIncluded(HostedMethod method) {
-        CEntryPoint entryPoint = method.getAnnotation(CEntryPoint.class);
-        return ReflectionUtil.newInstance(entryPoint.include()).getAsBoolean();
+        CEntryPointGuestValue entryPoint = CEntryPointGuestValue.get(method);
+        return GuestAccess.get().callBooleanSupplier(entryPoint.include());
     }
 
     private static CFunctionPointer getStubFunctionPointer(CompilationAccessImpl access, HostedMethod method) {

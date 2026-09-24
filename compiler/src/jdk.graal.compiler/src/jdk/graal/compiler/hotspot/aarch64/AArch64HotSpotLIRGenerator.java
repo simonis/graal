@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2018, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -35,6 +35,7 @@ import static jdk.vm.ci.meta.JavaConstant.INT_0;
 import static jdk.vm.ci.meta.JavaConstant.LONG_0;
 
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -78,6 +79,7 @@ import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.VirtualStackSlot;
 import jdk.graal.compiler.lir.aarch64.AArch64AddressValue;
 import jdk.graal.compiler.lir.aarch64.AArch64Call;
+import jdk.graal.compiler.lir.aarch64.AArch64CRC32UpdateBytesOp;
 import jdk.graal.compiler.lir.aarch64.AArch64ControlFlow.StrategySwitchOp;
 import jdk.graal.compiler.lir.aarch64.AArch64FrameMapBuilder;
 import jdk.graal.compiler.lir.aarch64.AArch64Move;
@@ -90,6 +92,7 @@ import jdk.graal.compiler.lir.aarch64.g1.AArch64G1BarrierSetLIRGenerator;
 import jdk.graal.compiler.lir.gen.BarrierSetLIRGeneratorTool;
 import jdk.graal.compiler.lir.gen.LIRGenerationResult;
 import jdk.graal.compiler.lir.gen.MoveFactory;
+import jdk.vm.ci.aarch64.AArch64;
 import jdk.vm.ci.aarch64.AArch64Kind;
 import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.Register;
@@ -142,6 +145,21 @@ public class AArch64HotSpotLIRGenerator extends AArch64LIRGenerator implements H
     }
 
     @Override
+    public Variable emitCRC32UpdateBytes(EnumSet<?> runtimeCheckedCPUFeatures, Value crc, Value bufferAddress, Value length) {
+        RegisterValue rResult = AArch64.r0.asValue(crc.getValueKind());
+        RegisterValue rCrc = AArch64.r0.asValue(crc.getValueKind());
+        RegisterValue rBuf = AArch64.r1.asValue(bufferAddress.getValueKind());
+        RegisterValue rLen = AArch64.r2.asValue(length.getValueKind());
+        emitMove(rCrc, crc);
+        emitMove(rBuf, bufferAddress);
+        emitMove(rLen, length);
+        append(new AArch64CRC32UpdateBytesOp(rResult, rCrc, rBuf, rLen));
+        Variable result = newVariable(crc.getValueKind());
+        emitMove(result, rResult);
+        return result;
+    }
+
+    @Override
     public boolean needOnlyOopMaps() {
         // Stubs only need oop maps
         return getResult().getStub() != null;
@@ -169,12 +187,12 @@ public class AArch64HotSpotLIRGenerator extends AArch64LIRGenerator implements H
     private LIRFrameState currentRuntimeCallInfo;
 
     @Override
-    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value targetAddress, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
+    protected void emitForeignCallOp(ForeignCallLinkage linkage, Value result, Value[] arguments, Value[] temps, LIRFrameState info) {
         currentRuntimeCallInfo = info;
-        if (AArch64Call.isNearCall(linkage)) {
-            append(new AArch64Call.DirectNearForeignCallOp(linkage, result, arguments, temps, info, label));
+        if (AArch64Call.isNearCall(linkage, getCodeCache())) {
+            append(new AArch64Call.DirectNearForeignCallOp(linkage, result, arguments, temps, linkage.getAdditionalReturns(), info, label));
         } else {
-            append(new AArch64Call.DirectFarForeignCallOp(linkage, result, arguments, temps, info, label));
+            append(new AArch64Call.DirectFarForeignCallOp(linkage, result, arguments, temps, linkage.getAdditionalReturns(), info, label));
         }
 
         // Handle different return value locations
@@ -434,7 +452,8 @@ public class AArch64HotSpotLIRGenerator extends AArch64LIRGenerator implements H
     }
 
     @Override
-    public void emitReturn(JavaKind kind, Value input) {
+    public void emitReturn(JavaKind kind, Value input, AllocatableValue tailCallTarget, AllocatableValue[] additionalReturns) {
+        GraalError.guarantee(Value.ILLEGAL.equals(tailCallTarget), "Returning to a custom return address is unsupported on HotSpot");
         AllocatableValue operand = Value.ILLEGAL;
         if (input != null) {
             operand = resultOperandFor(kind, input.getValueKind());
@@ -445,7 +464,7 @@ public class AArch64HotSpotLIRGenerator extends AArch64LIRGenerator implements H
             append(new AArch64RestoreRegistersOp(saveOnEntry.getSlots(), saveOnEntry));
         }
         Register thread = getProviders().getRegisters().getThreadRegister();
-        append(new AArch64HotSpotReturnOp(operand, getStub() != null, config, thread, getResult().requiresReservedStackAccessCheck()));
+        append(new AArch64HotSpotReturnOp(operand, additionalReturns, getStub() != null, config, thread, getResult().requiresReservedStackAccessCheck()));
     }
 
     /**
@@ -510,7 +529,7 @@ public class AArch64HotSpotLIRGenerator extends AArch64LIRGenerator implements H
     }
 
     @Override
-    protected int getVMPageSize() {
+    protected int getPageSizeForReadBoundaryCheck() {
         return config.vmPageSize;
     }
 

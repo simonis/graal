@@ -25,7 +25,7 @@
 package jdk.graal.compiler.hotspot;
 
 import jdk.graal.compiler.bytecode.BytecodeProvider;
-import jdk.graal.compiler.hotspot.meta.HotSpotGraalConstantFieldProvider;
+import jdk.graal.compiler.core.common.spi.ConstantFieldProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotHostForeignCallsProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotLoweringProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotMetaAccessExtensionProvider;
@@ -38,7 +38,6 @@ import jdk.graal.compiler.hotspot.meta.HotSpotSuitesProvider;
 import jdk.graal.compiler.hotspot.word.HotSpotWordTypes;
 import jdk.graal.compiler.nodes.gc.BarrierSet;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
-import jdk.graal.compiler.nodes.spi.IdentityHashCodeProvider;
 import jdk.graal.compiler.nodes.spi.LoopsDataProvider;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.tiers.CompilerConfiguration;
@@ -84,7 +83,7 @@ public class HotSpotDecoratedBackendFactory extends HotSpotBackendFactory {
     }
 
     @Override
-    protected HotSpotGraalConstantFieldProvider createConstantFieldProvider(GraalHotSpotVMConfig config, MetaAccessProvider metaAccess) {
+    protected ConstantFieldProvider createConstantFieldProvider(GraalHotSpotVMConfig config, MetaAccessProvider metaAccess) {
         return delegate.createConstantFieldProvider(config, metaAccess);
     }
 
@@ -116,11 +115,6 @@ public class HotSpotDecoratedBackendFactory extends HotSpotBackendFactory {
     @Override
     protected HotSpotSnippetReflectionProvider createSnippetReflection(HotSpotGraalRuntimeProvider runtime, HotSpotConstantReflectionProvider constantReflection, HotSpotWordTypes wordTypes) {
         return delegate.createSnippetReflection(runtime, constantReflection, wordTypes);
-    }
-
-    @Override
-    protected IdentityHashCodeProvider createIdentityHashCodeProvider() {
-        return delegate.createIdentityHashCodeProvider();
     }
 
     @Override

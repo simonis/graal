@@ -30,19 +30,25 @@ import static com.oracle.graal.pointsto.ObjectScanner.ScanReason;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.DynamicHubSupport;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.heap.ImageHeapObjectAdder;
+import com.oracle.svm.hosted.image.ImageHeapReasonSupport;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedUniverse;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
+
+import jdk.vm.ci.meta.ResolvedJavaField;
 
 @AutomaticallyRegisteredFeature
 public class DynamicHubSupportFeature implements InternalFeature {
+    private ResolvedJavaField referenceMapEncodingField;
+
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
         ImageSingletons.add(DynamicHubSupport.class, new DynamicHubSupport());
@@ -57,14 +63,15 @@ public class DynamicHubSupportFeature implements InternalFeature {
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         BeforeAnalysisAccessImpl a = (BeforeAnalysisAccessImpl) access;
         a.registerAsInHeap(DynamicHubSupport.class);
-        a.registerAsRead(ReflectionUtil.lookupField(DynamicHubSupport.class, "referenceMapEncoding"), "needed by the GC");
+        referenceMapEncodingField = JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(DynamicHubSupport.class), "referenceMapEncoding");
+        a.registerAsRead(a.getUniverse().lookup(referenceMapEncodingField), "needed by the GC");
     }
 
     @Override
     public void beforeCompilation(BeforeCompilationAccess access) {
         BeforeCompilationAccessImpl a = (BeforeCompilationAccessImpl) access;
         ScanReason reason = new OtherReason("Manual rescan triggered before compilation from " + DynamicHubSupport.class);
-        a.getHeapScanner().rescanField(DynamicHubSupport.currentLayer(), ReflectionUtil.lookupField(DynamicHubSupport.class, "referenceMapEncoding"), reason);
+        a.getHeapScanner().rescanField(DynamicHubSupport.currentLayer(), referenceMapEncodingField, reason);
     }
 
     /**
@@ -77,6 +84,6 @@ public class DynamicHubSupportFeature implements InternalFeature {
     private static void addReferenceMapEncodingToImageHeap(NativeImageHeap heap, HostedUniverse hUniverse) {
         byte[] referenceMapEncoding = DynamicHubSupport.currentLayer().getReferenceMapEncoding();
         ImageHeapConstant singletonConstant = (ImageHeapConstant) hUniverse.getSnippetReflection().forObject(referenceMapEncoding);
-        heap.addConstant(singletonConstant, false, "Registered as a required heap constant within DynamicHubSupportFeature");
+        heap.addConstant(singletonConstant, false, ImageHeapReasonSupport.singleton().description("Registered as a required heap constant within DynamicHubSupportFeature"));
     }
 }

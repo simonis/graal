@@ -33,10 +33,12 @@ import java.util.function.Function;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.shared.singletons.LayeredImageSingletonSupport;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
 
 import jdk.graal.compiler.nodes.ConstantNode;
 import jdk.graal.compiler.nodes.ValueNode;
@@ -54,7 +56,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
  * builds have at most exactly one singleton, so we can optimize these calls accordingly.
  */
 @AutomaticallyRegisteredFeature
-public class NonLayeredImageSingletonFeature implements InternalFeature, FeatureSingleton {
+public class NonLayeredImageSingletonFeature implements InternalFeature {
 
     ConcurrentHashMap<Class<?>, Object> multiLayeredArrays = new ConcurrentHashMap<>();
 

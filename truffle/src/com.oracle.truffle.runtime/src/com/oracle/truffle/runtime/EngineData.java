@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -80,6 +80,8 @@ import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueue
 import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueFirstTierPriority;
 import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueInvalidatedBonus;
 import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueOSRBonus;
+import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueRateHalfLife;
+import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueStaleTaskDelay;
 import static com.oracle.truffle.runtime.OptimizedRuntimeOptions.TraversingQueueWeightingBothTiers;
 import static com.oracle.truffle.runtime.OptimizedTruffleRuntime.getRuntime;
 
@@ -91,12 +93,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.nio.ByteBuffer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.logging.Level;
 
 import org.graalvm.collections.Pair;
 import org.graalvm.options.OptionValues;
+import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
 
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
@@ -164,6 +168,8 @@ public final class EngineData {
     @CompilationFinal public double traversingFirstTierBonus;
     @CompilationFinal public double traversingInvalidatedBonus;
     @CompilationFinal public double traversingOSRBonus;
+    @CompilationFinal public long traversingRateHalfLifeNs;
+    @CompilationFinal public long traversingStaleTaskMaxNoActivityNs;
     @CompilationFinal public boolean propagateCallAndLoopCount;
     @CompilationFinal public int propagateCallAndLoopCountMaxDepth;
     @CompilationFinal public int maximumCompilations;
@@ -174,6 +180,7 @@ public final class EngineData {
     @CompilationFinal public int callThresholdInFirstTier;
     @CompilationFinal public int callAndLoopThresholdInFirstTier;
     @CompilationFinal public long interpreterCallStackHeadRoom;
+    volatile long patchEpochNanos;
 
     public BooleanSupplier cancelledPredicate;
 
@@ -209,19 +216,8 @@ public final class EngineData {
         return this.closed;
     }
 
-    public static IllegalArgumentException sandboxPolicyException(SandboxPolicy sandboxPolicy, String reason, String fix) {
-        Objects.requireNonNull(sandboxPolicy);
-        Objects.requireNonNull(reason);
-        Objects.requireNonNull(fix);
-        String spawnIsolateHelp;
-        if (sandboxPolicy.isStricterOrEqual(SandboxPolicy.ISOLATED)) {
-            spawnIsolateHelp = " If you switch to a less strict sandbox policy you can still spawn an isolate with an isolated heap using Builder.option(\"engine.SpawnIsolate\",\"true\").";
-        } else {
-            spawnIsolateHelp = "";
-        }
-        String message = String.format("The validation for the given sandbox policy %s failed. %s " +
-                        "In order to resolve this %s or switch to a less strict sandbox policy using Builder.sandbox(SandboxPolicy).%s", sandboxPolicy, reason, fix, spawnIsolateHelp);
-        return new IllegalArgumentException(message);
+    void onEnginePatchSuccess() {
+        patchEpochNanos = System.nanoTime();
     }
 
     public void preinitializeContext() {
@@ -312,6 +308,10 @@ public final class EngineData {
         return getRuntime().getEngineCacheSupport().onStoreCache(this, targetPath, cancelledWord);
     }
 
+    public ByteBuffer persistCache(Engine.CancellationCallback callback) {
+        return getRuntime().getEngineCacheSupport().persistCache(this, callback);
+    }
+
     private void loadOptions(OptionValues options, SandboxPolicy sandboxPolicy) {
         this.engineOptions = options;
 
@@ -346,12 +346,14 @@ public final class EngineData {
         maximumCompilations = options.get(MaximumCompilations);
         traversingInvalidatedBonus = options.get(TraversingQueueInvalidatedBonus);
         traversingOSRBonus = options.get(TraversingQueueOSRBonus);
+        traversingRateHalfLifeNs = options.get(TraversingQueueRateHalfLife) * 1_000_000;
 
         this.returnTypeSpeculation = options.get(ReturnTypeSpeculation);
         this.argumentTypeSpeculation = options.get(ArgumentTypeSpeculation);
         this.traceCompilation = options.get(TraceCompilation);
         this.traceCompilationDetails = options.get(TraceCompilationDetails);
         this.backgroundCompilation = options.get(BackgroundCompilation) && !compileAOTOnCreate;
+        traversingStaleTaskMaxNoActivityNs = backgroundCompilation ? options.get(TraversingQueueStaleTaskDelay) * 1_000_000 : 0;
         this.callThresholdInInterpreter = computeCallThresholdInInterpreter(options);
         this.callAndLoopThresholdInInterpreter = computeCallAndLoopThresholdInInterpreter(options);
         this.callThresholdInFirstTier = computeCallThresholdInFirstTier(options);
@@ -474,7 +476,8 @@ public final class EngineData {
     private void validateOptions(SandboxPolicy sandboxPolicy) {
         if (sandboxPolicy.isStricterOrEqual(SandboxPolicy.CONSTRAINED) && compilationFailureAction != ExceptionAction.Silent && compilationFailureAction != ExceptionAction.Print) {
             throw OptimizedRuntimeAccessor.ENGINE.createPolyglotEngineException(
-                            sandboxPolicyException(sandboxPolicy, "The engine.CompilationFailureAction option is set to " + compilationFailureAction.name() + ", but must be set to Silent or Print.",
+                            OptimizedRuntimeAccessor.ENGINE.sandboxPolicyException(sandboxPolicy,
+                                            "The engine.CompilationFailureAction option is set to " + compilationFailureAction.name() + ", but must be set to Silent or Print.",
                                             "use the default value (Silent) by removing Builder.option(\"engine.CompilationFailureAction\", ...) or set it to Print"));
         }
         if (compilationFailureAction == ExceptionAction.Throw && backgroundCompilation) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,7 +37,6 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -73,6 +72,7 @@ import org.graalvm.collections.EconomicMap;
 
 import com.oracle.truffle.runtime.hotspot.libgraal.LibGraal;
 
+import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.api.test.ModuleSupport;
 import jdk.graal.compiler.bytecode.Bytecodes;
@@ -277,7 +277,7 @@ public final class CompileTheWorld extends LibGraalCompilationDriver {
                         Options.ScratchDir.getValue(harnessOptions),
                         Options.Verbose.hasBeenSet(harnessOptions) ? Options.Verbose.getValue(harnessOptions) : !Options.MultiThreaded.getValue(harnessOptions),
                         harnessOptions,
-                        new OptionValues(compilerOptions, parseOptions(Options.Config.getValue(harnessOptions))));
+                        compilerOptions.derive(parseOptions(Options.Config.getValue(harnessOptions))));
     }
 
     /**
@@ -841,12 +841,7 @@ public final class CompileTheWorld extends LibGraalCompilationDriver {
             return false;
         }
         // Skip @Snippets for now
-        for (Annotation annotation : javaMethod.getAnnotations()) {
-            if (annotation.annotationType().equals(Snippet.class)) {
-                return false;
-            }
-        }
-        return true;
+        return AnnotationValueSupport.getAnnotationValue(javaMethod, Snippet.class) == null;
     }
 
     private int getHugeMethodLimit(GraalHotSpotVMConfig c) {

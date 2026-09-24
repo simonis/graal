@@ -24,7 +24,16 @@
  */
 package com.oracle.svm.core.heap.dump;
 
-import static com.oracle.svm.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
+import static com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.AllocationFailed;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.AssertionError;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.FileFlushFailed;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.FileWriteFailed;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.GetFilePositionFailed;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.SetFilePositionFailed;
+import static com.oracle.svm.core.heap.dump.HeapDumpWriter.HeapDumpError.UnexpectedError;
+
+import java.io.Serial;
 
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
@@ -35,9 +44,13 @@ import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
+import org.graalvm.word.impl.ObjectAccess;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.NeverInline;
+import com.oracle.svm.shared.NeverInline;
 import com.oracle.svm.core.StaticFieldsSupport;
+import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
@@ -50,8 +63,8 @@ import com.oracle.svm.core.code.RuntimeCodeInfoMemory;
 import com.oracle.svm.core.code.SimpleCodeInfoQueryResult;
 import com.oracle.svm.core.collections.GrowableWordArray;
 import com.oracle.svm.core.collections.GrowableWordArrayAccess;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
+import com.oracle.svm.core.deopt.VirtualFrame;
 import com.oracle.svm.core.heap.CodeReferenceMapDecoder;
 import com.oracle.svm.core.heap.FillerArray;
 import com.oracle.svm.core.heap.FillerObject;
@@ -61,7 +74,7 @@ import com.oracle.svm.core.heap.ObjectReferenceVisitor;
 import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.ReferenceMapIndex;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.dump.HeapDumpMetadata.ClassInfo;
 import com.oracle.svm.core.heap.dump.HeapDumpMetadata.ClassInfoAccess;
 import com.oracle.svm.core.heap.dump.HeapDumpMetadata.FieldInfo;
@@ -73,14 +86,14 @@ import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.jdk.UninterruptibleUtils.CharReplacer;
 import com.oracle.svm.core.jdk.UninterruptibleUtils.ReplaceDotWithSlash;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.metaspace.Metaspace;
 import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.os.BufferedFileOperationSupport;
 import com.oracle.svm.core.os.BufferedFileOperationSupport.BufferedFile;
 import com.oracle.svm.core.os.RawFileOperationSupport.RawFileDescriptor;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.stack.JavaStackWalker;
 import com.oracle.svm.core.stack.StackFrameVisitor;
 import com.oracle.svm.core.thread.PlatformThreads;
@@ -88,14 +101,13 @@ import com.oracle.svm.core.thread.RecurringCallbackSupport;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.threadlocal.VMThreadLocalSupport;
-import com.oracle.svm.core.util.TimeUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.TimeUtils;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
 
 /**
  * This class dumps the image heap and the Java heap into a file (HPROF binary format), similar to
@@ -410,15 +422,14 @@ public class HeapDumpWriter {
     private final ThreadLocalsVisitor threadLocalsVisitor = new ThreadLocalsVisitor();
 
     private BufferedFile f;
-    private long topLevelRecordBegin = -1;
-    private long subRecordBegin = -1;
-    private boolean error;
+    private long topLevelRecordBegin;
+    private long subRecordBegin;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public HeapDumpWriter() {
     }
 
-    public boolean dumpHeap(RawFileDescriptor fd) {
+    public HeapDumpError dumpHeap(RawFileDescriptor fd) {
         assert VMOperation.isInProgressAtSafepoint();
         assert RecurringCallbackSupport.isCallbackUnsupportedOrTimerSuspended();
 
@@ -431,45 +442,48 @@ public class HeapDumpWriter {
         }
     }
 
-    private boolean dumpHeap0(RawFileDescriptor fd) {
-        boolean initialized = initialize(fd);
+    private HeapDumpError dumpHeap0(RawFileDescriptor fd) {
+        HeapDumpError error = dumpHeap1(fd);
+        /* teardown must always be executed, even if the initialization failed. */
+        teardown(error);
+        return error;
+    }
+
+    private HeapDumpError dumpHeap1(RawFileDescriptor fd) {
         try {
-            if (initialized) {
-                return writeHeapDump();
-            } else {
-                Log.log().string("An error occurred while initializing the heap dump infrastructure. No heap data will be dumped.").newline();
-                return false;
-            }
-        } finally {
-            /* teardown must always be executed, even if the initialization failed. */
-            teardown();
+            initialize(fd);
+            writeHeapDump();
+            return null;
+        } catch (AssertionError e) {
+            return AssertionError;
+        } catch (HeapDumpException e) {
+            return e.getAndClearError();
+        } catch (Throwable e) {
+            return UnexpectedError;
         }
     }
 
-    private boolean initialize(RawFileDescriptor fd) {
-        assert topLevelRecordBegin == -1 && subRecordBegin == -1 && !error;
+    private void initialize(RawFileDescriptor fd) {
+        topLevelRecordBegin = -1;
+        subRecordBegin = -1;
 
-        this.f = file().allocate(fd, NmtCategory.HeapDump);
+        f = file().allocate(fd, NmtCategory.HeapDump);
         if (f.isNull()) {
-            return false;
+            throw HeapDumpException.throwSingleton(AllocationFailed);
         }
-        return HeapDumpMetadata.singleton().initialize();
+        HeapDumpMetadata.singleton().initialize();
     }
 
-    private void teardown() {
+    private void teardown(HeapDumpError error) {
         HeapDumpMetadata.singleton().teardown();
 
-        assert f.isNull() || error || file().getUnflushedDataSize(f) == 0;
+        assert f.isNull() || error != null || file().getUnflushedDataSize(f) == 0;
         file().free(f);
         this.f = Word.nullPointer();
-
-        this.topLevelRecordBegin = -1;
-        this.subRecordBegin = -1;
-        this.error = false;
     }
 
     @NeverInline("Starting a stack walk in the caller frame.")
-    private boolean writeHeapDump() {
+    private void writeHeapDump() {
         /*
          * Only read the stack pointer for the current thread once. This ensures consistency for all
          * the information that we dump about the stack of the current thread.
@@ -495,12 +509,6 @@ public class HeapDumpWriter {
         endTopLevelRecord();
 
         flush();
-
-        if (error) {
-            Log.log().string("An error occurred while writing the heap dump data. The data in the heap dump file may be corrupt.").newline();
-            return false;
-        }
-        return true;
     }
 
     private void writeHeader() {
@@ -827,7 +835,7 @@ public class HeapDumpWriter {
     }
 
     private void writeObject(Object obj) {
-        DynamicHub hub = KnownIntrinsics.readHub(obj);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
         int layoutEncoding = hub.getLayoutEncoding();
         if (LayoutEncoding.isArray(layoutEncoding)) {
             if (LayoutEncoding.isPrimitiveArray(layoutEncoding)) {
@@ -1034,37 +1042,37 @@ public class HeapDumpWriter {
 
     private void writeByte(byte value) {
         boolean success = file().writeByte(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeShort(short value) {
         boolean success = file().writeShort(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeChar(char value) {
         boolean success = file().writeChar(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeInt(int value) {
         boolean success = file().writeInt(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeLong(long value) {
         boolean success = file().writeLong(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeFloat(float value) {
         boolean success = file().writeFloat(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeDouble(double value) {
         boolean success = file().writeDouble(f, value);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeType(HProfType type) {
@@ -1090,7 +1098,7 @@ public class HeapDumpWriter {
          * GC_CLASS_DUMP and a GC_INSTANCE_DUMP record with the same id but that breaks VisualVM in
          * a weird way. So, we generate an artificial id for GC_CLASS_DUMP entries.
          */
-        Word hubAddress = Word.objectToUntrackedPointer(hub);
+        Word hubAddress = Word.objectToUntrackedWord(hub);
         if (hubAddress.isNonNull()) {
             hubAddress = hubAddress.add(1);
         }
@@ -1113,7 +1121,7 @@ public class HeapDumpWriter {
             assert wordSize() == 4;
             success = file().writeInt(f, (int) value);
         }
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void writeUTF8(String value) {
@@ -1122,44 +1130,43 @@ public class HeapDumpWriter {
 
     private void writeUTF8(String value, CharReplacer replacer) {
         boolean success = file().writeUTF8(f, value, replacer);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private void write(Pointer data, UnsignedWord size) {
         boolean success = file().write(f, data, size);
-        handleError(success);
+        throwOnError(success, FileWriteFailed);
     }
 
     private long getPosition() {
         long result = file().position(f);
-        handleError(result >= 0);
+        throwOnError(result >= 0, GetFilePositionFailed);
         return result;
     }
 
     private void setPosition(long newPos) {
         boolean success = file().seek(f, newPos);
-        handleError(success);
+        throwOnError(success, SetFilePositionFailed);
     }
 
     private void flush() {
         boolean success = file().flush(f);
-        handleError(success);
+        throwOnError(success, FileFlushFailed);
     }
 
-    private void handleError(boolean success) {
+    private static void throwOnError(boolean success, HeapDumpError error) {
         if (!success) {
-            error = true;
+            throw HeapDumpException.throwSingleton(error);
         }
     }
 
-    @Fold
     static BufferedFileOperationSupport file() {
         return BufferedFileOperationSupport.bigEndian();
     }
 
     @Fold
     static int wordSize() {
-        return ConfigurationValues.getTarget().wordSize;
+        return SubstrateTarget.getWordSize();
     }
 
     /**
@@ -1192,7 +1199,6 @@ public class HeapDumpWriter {
 
         @SuppressWarnings("hiding")
         public void initialize(int threadSerialNum, long nextFrameId, boolean markGCRoots) {
-            assert nextFrameId > 0;
             assert threadSerialNum > 0;
             assert nextFrameId > 0;
 
@@ -1231,7 +1237,14 @@ public class HeapDumpWriter {
         protected boolean visitDeoptimizedFrame(Pointer originalSP, CodePointer deoptStubIP, DeoptimizedFrame deoptimizedFrame) {
             markAsGCRoot(deoptimizedFrame);
 
-            for (DeoptimizedFrame.VirtualFrame frame = deoptimizedFrame.getTopFrame(); frame != null; frame = frame.getCaller()) {
+            if (SubstrateOptions.useRistretto() && deoptimizedFrame.getTargetTier() == DeoptimizedFrame.DeoptTargetTier.Interpreter) {
+                VMError.guarantee(SubstrateOptions.useRistretto(), "Interpreter deoptimized frames require Ristretto");
+                // TODO GR-73232 - skip interpreter deopt frames for now
+                return true;
+            }
+            assert deoptimizedFrame.getTargetTier() == DeoptimizedFrame.DeoptTargetTier.BaselineCompiledCode : deoptimizedFrame.getTargetTier();
+
+            for (VirtualFrame frame = deoptimizedFrame.getTopFrame(); frame != null; frame = frame.getCaller()) {
                 visitFrame(frame.getFrameInfo());
                 nextFrameId++;
             }
@@ -1282,6 +1295,15 @@ public class HeapDumpWriter {
                 /* Position of the stack frame in the stack trace. */
                 writeInt(getWrittenFrames());
             }
+        }
+
+        @Override
+        public void visitDerivedReference(Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+            /*
+             * HPROF has no representation for interior Java frame roots. The default
+             * visitDerivedReferenceBase emits the base object as the Java-frame root, so the
+             * interior derived address is intentionally omitted.
+             */
         }
 
         private void visitFrame(FrameInfoQueryResult frame) {
@@ -1372,7 +1394,7 @@ public class HeapDumpWriter {
             }
 
             if (isLarge(obj)) {
-                boolean added = GrowableWordArrayAccess.add(largeObjects, Word.objectToUntrackedPointer(obj), NmtCategory.HeapDump);
+                boolean added = GrowableWordArrayAccess.add(largeObjects, Word.objectToUntrackedWord(obj), NmtCategory.HeapDump);
                 if (!added) {
                     Log.log().string("Failed to add an element to the large object list. Heap dump will be incomplete.").newline();
                 }
@@ -1391,7 +1413,7 @@ public class HeapDumpWriter {
         }
 
         private UnsignedWord getObjectSize(Object obj) {
-            int layoutEncoding = KnownIntrinsics.readHub(obj).getLayoutEncoding();
+            int layoutEncoding = DynamicHubIntrinsics.readHub(obj).getLayoutEncoding();
             if (LayoutEncoding.isArray(layoutEncoding)) {
                 int elementSize;
                 if (LayoutEncoding.isPrimitiveArray(layoutEncoding)) {
@@ -1436,6 +1458,15 @@ public class HeapDumpWriter {
                 markAsJniGlobalGCRoot(obj);
             }
         }
+
+        @Override
+        public void visitDerivedReference(Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+            /*
+             * The default visitDerivedReferenceBase emits the base object as the JNI global root.
+             * The derived slot is only an interior address and cannot be represented as an HPROF
+             * object root.
+             */
+        }
     }
 
     private class ThreadLocalsVisitor implements ObjectReferenceVisitor {
@@ -1468,6 +1499,15 @@ public class HeapDumpWriter {
             }
         }
 
+        @Override
+        public void visitDerivedReference(Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+            /*
+             * The default visitDerivedReferenceBase emits the base object as the thread-local root.
+             * The derived slot is only an interior address and cannot be represented as an HPROF
+             * object root.
+             */
+        }
+
         private void markThreadLocalAsGCRoot(Object obj) {
             int recordSize = 1 + wordSize() + 4 + 4;
             startSubRecord(HProfSubRecord.GC_ROOT_JNI_LOCAL, recordSize);
@@ -1479,5 +1519,50 @@ public class HeapDumpWriter {
     }
 
     private static final class UnknownClass {
+    }
+
+    static final class HeapDumpException extends RuntimeException {
+        @Serial private static final long serialVersionUID = 1;
+        private static final HeapDumpException SINGLETON = new HeapDumpException();
+
+        private HeapDumpError error;
+
+        @Platforms(Platform.HOSTED_ONLY.class)
+        private HeapDumpException() {
+        }
+
+        public static HeapDumpException throwSingleton(HeapDumpError value) {
+            assert SINGLETON.error == null;
+            SINGLETON.error = value;
+            throw SINGLETON;
+        }
+
+        public HeapDumpError getAndClearError() {
+            HeapDumpError result = error;
+            error = null;
+
+            assert result != null;
+            return result;
+        }
+    }
+
+    public enum HeapDumpError {
+        AllocationFailed("Insufficient native memory"),
+        FileWriteFailed("I/O error while writing heap dump file"),
+        FileFlushFailed("I/O error while flushing heap dump file"),
+        GetFilePositionFailed("I/O error while getting position in heap dump file"),
+        SetFilePositionFailed("I/O error while setting position in heap dump file"),
+        AssertionError("An AssertionError occurred"),
+        UnexpectedError("An unexpected error occurred");
+
+        private final String message;
+
+        HeapDumpError(String message) {
+            this.message = message;
+        }
+
+        public String getMessage() {
+            return message;
+        }
     }
 }

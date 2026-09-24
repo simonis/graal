@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.genscavenge.graal;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect.NO_SIDE_EFFECT;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.FREQUENT_PROBABILITY;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.NOT_FREQUENT_PROBABILITY;
@@ -38,8 +38,9 @@ import java.util.Map;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
 import com.oracle.svm.core.genscavenge.SerialGCOptions;
 import com.oracle.svm.core.genscavenge.remset.RememberedSet;
@@ -51,7 +52,9 @@ import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
+import com.oracle.svm.shared.Uninterruptible;
 
+import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.api.replacements.Snippet.ConstantParameter;
 import jdk.graal.compiler.core.common.GraalOptions;
@@ -76,7 +79,7 @@ import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
 import jdk.graal.compiler.replacements.Snippets;
 import jdk.graal.compiler.replacements.gc.WriteBarrierSnippets;
-import jdk.graal.compiler.word.Word;
+import jdk.graal.compiler.word.WordCastNode;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
@@ -156,7 +159,7 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
 
     @Snippet
     public static void postWriteBarrierSnippet(Object object, Address address, @ConstantParameter boolean shouldOutline, @ConstantParameter boolean precise, @ConstantParameter boolean eliminated) {
-        boolean shouldVerify = SerialGCOptions.VerifyWriteBarriers.getValue();
+        boolean shouldVerify = getWriteBarriersValue();
         if (!shouldVerify && eliminated) {
             return;
         }
@@ -183,7 +186,7 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
             return;
         }
 
-        Word addr = Word.fromAddress(address);
+        Word addr = WordCastNode.castToWord(address);
 
         if (shouldOutline && !eliminated) {
             callPostWriteBarrierStub(POST_WRITE_BARRIER, fixedObject, addr);
@@ -202,6 +205,16 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
 
     }
 
+    /**
+     * Workaround for {@code CheckSVMInvariant} since HostedOptionValue.getValue() is no longer
+     * folded on hotspot, which makes {@code SVMInvariantsCheck} complain. Factoring it out in its
+     * own {@link Fold} method avoids this issue.
+     */
+    @Fold
+    static Boolean getWriteBarriersValue() {
+        return SerialGCOptions.VerifyWriteBarriers.getValue();
+    }
+
     @Snippet
     public static void arrayRangePostWriteBarrierSnippet(Object object, Address address, long length, @ConstantParameter int elementStride, @ConstantParameter boolean shouldOutline) {
         if (probability(NOT_FREQUENT_PROBABILITY, length == 0)) {
@@ -217,7 +230,7 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
             return;
         }
 
-        Word addr = Word.fromAddress(address);
+        Word addr = WordCastNode.castToWord(address);
         Word startAddress = WriteBarrierSnippets.getPointerToFirstArrayElement(addr, length, elementStride);
         Word endAddress = WriteBarrierSnippets.getPointerToLastArrayElement(addr, length, elementStride);
 
@@ -287,14 +300,23 @@ public class BarrierSnippets extends SubstrateTemplates implements Snippets {
     }
 
     private static boolean shouldOutline(WriteBarrierNode barrier) {
-        if (SerialGCOptions.OutlineWriteBarriers.getValue() != null) {
-            return SerialGCOptions.OutlineWriteBarriers.getValue();
+        SubstrateGCOptions.OutlineWriteBarriers outlining = SubstrateGCOptions.WriteBarrierOutlining.getValue();
+        if (outlining == SubstrateGCOptions.OutlineWriteBarriers.Always) {
+            return true;
+        } else if (outlining == SubstrateGCOptions.OutlineWriteBarriers.Never) {
+            return false;
         }
-        if (GraalOptions.ReduceCodeSize.getValue(barrier.getOptions())) {
+
+        OptionValues graphOptions = barrier.graph().getOptions();
+        if (GraalOptions.ReduceCodeSize.getValue(graphOptions) && outlining == SubstrateGCOptions.OutlineWriteBarriers.Auto) {
             return true;
         }
-        // Newly allocated objects are likely young, so we can outline the execution after
-        // checking hasRememberedSet
+
+        /*
+         * Newly allocated objects are likely in the young generation, so we can outline the write
+         * barrier with minimal performance impact.
+         */
+        assert outlining == SubstrateGCOptions.OutlineWriteBarriers.Auto || outlining == SubstrateGCOptions.OutlineWriteBarriers.YoungOnly;
         return barrier instanceof SerialWriteBarrierNode serialBarrier && serialBarrier.getBaseStatus().likelyYoung();
     }
 

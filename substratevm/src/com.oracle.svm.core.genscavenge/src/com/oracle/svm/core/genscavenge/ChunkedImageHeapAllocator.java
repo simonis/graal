@@ -27,12 +27,11 @@ package com.oracle.svm.core.genscavenge;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.image.ImageHeapObject;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.util.VMError;
+import org.graalvm.word.impl.Word;
 
 class ChunkedImageHeapAllocator {
     abstract static class Chunk {
@@ -148,7 +147,7 @@ class ChunkedImageHeapAllocator {
         this.position = position;
 
         /* Cache to prevent frequent lookups of the object layout from ImageSingletons. */
-        this.minimumObjectSize = ConfigurationValues.getObjectLayout().getMinImageHeapObjectSize();
+        this.minimumObjectSize = ObjectLayout.singleton().getMinImageHeapObjectSize();
     }
 
     public long getPosition() {
@@ -164,31 +163,22 @@ class ChunkedImageHeapAllocator {
         return chunkBegin + UnsignedUtils.safeToInt(UnalignedHeapChunk.calculateObjectStartOffset(Word.unsigned(objSize)));
     }
 
-    public void maybeStartAlignedChunk() {
-        if (currentAlignedChunk == null) {
-            startNewAlignedChunk();
-        }
+    public AlignedChunk maybeStartAlignedChunk() {
+        return currentAlignedChunk != null ? currentAlignedChunk : startNewAlignedChunk();
     }
 
-    public void startNewAlignedChunk() {
+    public AlignedChunk startNewAlignedChunk() {
         finishAlignedChunk();
         alignBetweenChunks(alignedChunkAlignment);
         long chunkBegin = allocateRaw(alignedChunkSize);
         currentAlignedChunk = new AlignedChunk(chunkBegin);
         alignedChunks.add(currentAlignedChunk);
+        return currentAlignedChunk;
     }
 
     private void alignBetweenChunks(int multiple) {
         assert currentAlignedChunk == null;
         allocateRaw(computePadding(position, multiple));
-    }
-
-    public long getRemainingBytesInAlignedChunk() {
-        return currentAlignedChunk.getUnallocatedBytes();
-    }
-
-    public long allocateObjectInAlignedChunk(ImageHeapObject obj, boolean writable) {
-        return currentAlignedChunk.allocate(obj, writable);
     }
 
     public void finishAlignedChunk() {

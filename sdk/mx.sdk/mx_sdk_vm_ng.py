@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2025, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # The Universal Permissive License (UPL), Version 1.0
@@ -43,7 +43,7 @@ import os
 import shutil
 import sys
 from abc import ABCMeta, abstractmethod
-from os import listdir, linesep
+from os import listdir
 from os.path import join, exists, isfile, basename, relpath, isdir, isabs, dirname, normpath
 from typing import Tuple
 
@@ -120,10 +120,10 @@ def _get_dyn_attribute(dep, attr_name, default):
         suite = dep.suite
         func_name = attr
     if suite.extensions is None:
-        raise mx.abort(f"Could not resolve {attr_name} '{attr}': {suite.name} has no extension (mx_{suite.name}.py)", context=dep)
+        mx.abort(f"Could not resolve {attr_name} '{attr}': {suite.name} has no extension (mx_{suite.name}.py)", context=dep)
     func = getattr(suite.extensions, func_name, None)
     if not func:
-        raise mx.abort(f"Could not resolve {attr_name} '{attr}' in {suite.extensions.__file__}", context=dep)
+        mx.abort(f"Could not resolve {attr_name} '{attr}' in {suite.extensions.__file__}", context=dep)
     return func(), attr
 
 
@@ -185,7 +185,7 @@ class StandaloneLicenses(mx.Project):
 class StandaloneLicensesBuildTask(mx.BuildTask):
     subject: StandaloneLicenses
     def __str__(self):
-        return 'Building {}'.format(self.subject.name)
+        return f'Building {self.subject.name}'
 
     def newestOutput(self):
         return mx.TimeStampFile.newest(file for file, _ in self.subject.getArchivableResults())
@@ -193,7 +193,7 @@ class StandaloneLicensesBuildTask(mx.BuildTask):
     def needsBuild(self, newestInput):
         witness_file = self.witness_file()
         if exists(witness_file):
-            with open(witness_file, 'r') as f:
+            with open(witness_file, encoding='utf-8') as f:
                 contents = f.read()
         else:
             contents = None
@@ -215,7 +215,7 @@ class StandaloneLicensesBuildTask(mx.BuildTask):
     def build(self):
         witness_file = self.witness_file()
         mx_util.ensure_dirname_exists(witness_file)
-        with open(witness_file, 'w') as f:
+        with open(witness_file, 'w', encoding='utf-8') as f:
             f.write(self.witness_contents())
 
     def clean(self, forBuild=False):
@@ -264,14 +264,14 @@ class NativeImageProject(mx.Project, metaclass=ABCMeta):
         explicit_build_args = getattr(self, 'build_args', [])
         dyn_build_args, dynamicBuildArgs = _get_dyn_attribute(self, 'dynamicBuildArgs', [])
         if not (isinstance(dyn_build_args, list) and all(isinstance(d, str) for d in dyn_build_args)):
-            raise mx.abort(f"dynamicBuildArgs `{dynamicBuildArgs}` did not return a list of strings", context=self)
+            mx.abort(f"dynamicBuildArgs `{dynamicBuildArgs}` did not return a list of strings", context=self)
         return [mx_subst.string_substitutions.substitute(a) for a in explicit_build_args] + dyn_build_args
 
     def resolveDeps(self):
         super().resolveDeps()
         dyn_deps, dynamicDependencies = _get_dyn_attribute(self, 'dynamicDependencies', [])
         if not (isinstance(dyn_deps, list) and all(isinstance(d, str) for d in dyn_deps)):
-            raise mx.abort(f"dynamicDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
+            mx.abort(f"dynamicDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
         self._resolveDepsHelper(dyn_deps)
         self.deps += dyn_deps
         if not _can_build_native_images():
@@ -284,7 +284,7 @@ class NativeImageProject(mx.Project, metaclass=ABCMeta):
             build_artifacts_file = join(build_directory, 'build-artifacts.json')
             if exists(build_artifacts_file):
                 # include any additional JDK libraries
-                with open(build_artifacts_file, 'r') as f:
+                with open(build_artifacts_file, encoding='utf-8') as f:
                     build_artifacts = json.load(f)
 
                 def _yield_files(file_type, prefix=None):
@@ -380,16 +380,21 @@ class LanguageLibraryProject(NativeImageLibraryProject):
         build_args += [
             '-R:+EnableSignalHandling',
             '-R:+InstallSegfaultHandler',
-        ] + mx_sdk_vm_impl.svm_experimental_options(['-H:+InstallExitHandlers'])
+        ] + mx_sdk_vm_impl.svm_experimental_options(['-H:-InitializeVM', '-H:+InstallExitHandlers'])
 
         # Monitoring flags
         if get_bootstrap_graalvm_version() >= mx.VersionSpec("24.0"):
-            build_args += ['--enable-monitoring=jvmstat,heapdump,jfr,threaddump']
+            monitoring_features = ['jvmstat', 'heapdump', 'jfr', 'threaddump']
         else:
-            build_args += ['--enable-monitoring=jvmstat,heapdump,jfr']
+            monitoring_features = ['jvmstat', 'heapdump', 'jfr']
+        if mx.is_windows():
+            monitoring_features.remove('jvmstat')
+        build_args += ['--enable-monitoring=' + ','.join(monitoring_features)]
+        if get_bootstrap_graalvm_version() < mx.VersionSpec("24.0"):
             build_args += mx_sdk_vm_impl.svm_experimental_options(['-H:+DumpThreadStacksOnSignal'])
 
-        build_args += mx_sdk_vm_impl.svm_experimental_options(['-H:+DumpRuntimeCompilationOnSignal'])
+        if not mx.is_windows():
+            build_args += mx_sdk_vm_impl.svm_experimental_options(['-H:+DumpRuntimeCompilationOnSignal'])
         build_args += [
             '-R:-UsePerfData', # See GR-25329, reduces startup instructions significantly
         ]
@@ -432,11 +437,11 @@ class NativeImageBuildTask(mx.BuildTask):
         profiles = mx_sdk_vm_impl._image_profiles(canonical_name)
         if profiles:
             if not is_nativeimage_ee():
-                raise mx.abort("Image profiles can not be used if PGO is not supported.")
+                mx.abort("Image profiles can not be used if PGO is not supported.")
             basenames = [basename(p) for p in profiles]
             if len(set(basenames)) != len(profiles):
-                raise mx.abort("Profiles for an image must have unique filenames.\nThis is not the case for {}: {}.".format(canonical_name, profiles))
-            build_args += ['--pgo=' + ','.join(('${.}/' + n for n in basenames))]
+                mx.abort(f"Profiles for an image must have unique filenames.\nThis is not the case for {canonical_name}: {profiles}.")
+            build_args += ['--pgo=' + ','.join('${.}/' + n for n in basenames)]
 
         if mx_sdk_vm_impl._debug_images():
             build_args += ['-ea', '-O0']
@@ -455,12 +460,11 @@ class NativeImageBuildTask(mx.BuildTask):
             experimental_build_args += ['-H:NativeLinkerOption=' + e for e in self.args.alt_ldflags.split()]
         classpath_and_modulepath = mx.get_runtime_jvm_args(self.subject.deps, include_system_properties=False)
         build_args += classpath_and_modulepath + [
-            '--no-fallback',
             '-march=compatibility',  # Target maximum portability
             '--parallelism=' + str(self.parallelism),
             '--link-at-build-time',
             # we want "25.0.0-dev" and not "dev" (the default used in NativeImage#prepareImageBuildArgs)
-            '-Dorg.graalvm.version={}'.format(_suite.release_version()),
+            f'-Dorg.graalvm.version={get_bootstrap_graalvm_version()}',
         ] + mx_sdk_vm_impl.svm_experimental_options(experimental_build_args)
         if os.environ.get('JVMCI_VERSION_CHECK'):
             # Propagate this env var when running native image from mx
@@ -478,7 +482,7 @@ class NativeImageBuildTask(mx.BuildTask):
         previous_build_args = []
         command_file = self._get_command_file()
         if exists(command_file):
-            with open(command_file) as f:
+            with open(command_file, encoding='utf-8') as f:
                 previous_build_args = [l.rstrip('\r\n') for l in f.readlines()]
         cmd = self.get_build_command()
         if previous_build_args != cmd:
@@ -496,7 +500,7 @@ class NativeImageBuildTask(mx.BuildTask):
         if _external_bootstrap_graalvm:
             native_image_bin = _find_native_image_command(_external_bootstrap_graalvm)
             if not native_image_bin:
-                raise mx.abort(f"Couldn't find native-image in provided $BOOTSTRAP_GRAALVM")
+                mx.abort("Couldn't find native-image in provided $BOOTSTRAP_GRAALVM")
         else:
             stage1 = mx_sdk_vm_impl.get_stage1_graalvm_distribution()
             native_image_project_name = mx_sdk_vm_impl.GraalVmLauncher.launcher_project_name(mx_sdk.LauncherConfig(mx.exe_suffix('native-image'), [], "", []), stage1=True)
@@ -505,18 +509,42 @@ class NativeImageBuildTask(mx.BuildTask):
         native_image_command = [native_image_bin] + build_args
         return native_image_command
 
+    def _get_args_file(self):
+        return self.subject.output_file() + '.args'
+
+    @staticmethod
+    def _quote_argfile_arg(arg):
+        if arg == '':
+            return '""'
+        if not any(ch.isspace() or ch in ('#', '"', "'") for ch in arg):
+            return arg
+        escaped = arg.replace('\\', '\\\\').replace('\"', '\\\"')
+        return f'"{escaped}"'
+
+    def _write_args_file(self, args_file, args):
+        with open(args_file, 'w', encoding='utf-8') as f:
+            for arg in args:
+                f.write(self._quote_argfile_arg(arg))
+                f.write('\n')
+
     def build(self):
         mx_util.ensure_dir_exists(self.subject.build_directory())
         native_image_command = self.get_build_command()
+        run_command = native_image_command
+        if mx.is_windows():
+            args_file = self._get_args_file()
+            self._write_args_file(args_file, native_image_command[1:])
+            run_command = [native_image_command[0], '@' + args_file]
 
         # Prefix native-image builds that print straight to stdout or stderr with [<output_filename>:<pid>]
         out = mx.PrefixCapture(lambda l: mx.log(l, end=''), self.subject.output_file_name())
         err = mx.PrefixCapture(lambda l: mx.log(l, end='', file=sys.stderr), out.identifier)
 
-        mx.run(native_image_command, nonZeroIsFatal=True, out=out, err=err)
+        mx.run(run_command, nonZeroIsFatal=True, out=out, err=err)
 
-        with open(self._get_command_file(), 'w') as f:
-            f.writelines((l + linesep for l in native_image_command))
+        with open(self._get_command_file(), 'w', encoding='utf-8') as f:
+            # Use '\n' and let text mode translate it to the platform-native line ending.
+            f.writelines(l + '\n' for l in native_image_command)
 
 
     def _get_command_file(self):
@@ -526,14 +554,17 @@ class NativeImageBuildTask(mx.BuildTask):
         build_directory = self.subject.build_directory()
         if exists(build_directory):
             mx.rmtree(build_directory)
+        args_file = self._get_args_file()
+        if exists(args_file):
+            os.remove(args_file)
 
     def __str__(self):
-        return 'Building {}'.format(self.subject.name)
+        return f'Building {self.subject.name}'
 
 
 def _require(kw_args, name, suite, dependency_name):
     if name not in kw_args:
-        raise mx.abort("Attribute '" + name + "' is required", context=f"'{dependency_name}' in '{suite.name}'")
+        mx.abort("Attribute '" + name + "' is required", context=f"'{dependency_name}' in '{suite.name}'")
     return kw_args.pop(name)
 
 def _require_path(kw_args, name, suite, dependency_name):
@@ -549,7 +580,7 @@ def _pop_list(kw_args, name, suite, dependency_name):
         return []
     v = kw_args.pop(name)
     if not isinstance(v, list):
-        raise mx.abort("Attribute '" + name + "' must be a list", context=f"'{dependency_name}' in '{suite.name}'")
+        mx.abort("Attribute '" + name + "' must be a list", context=f"'{dependency_name}' in '{suite.name}'")
     return v
 
 class ThinLauncherProject(mx_native.DefaultNativeProject):
@@ -565,6 +596,7 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
         self.relative_extracted_lib_paths = {k: v.replace('/', os.sep) for k, v in kw_args.pop('relative_extracted_lib_paths', {}).items()}
         self.liblang_relpath = _pop_path(kw_args, 'relative_liblang_path', None)
         self.setup_relative_resources = kw_args.pop('setup_relative_resources', None)
+        self.windows_manifest = join(_suite.dir, 'src', 'org.graalvm.launcher.native', 'manifest', 'launcher.manifest')
 
         if not kw_args.get('multitarget'):
             # We use our LLVM toolchain on Linux by default because we want to statically link the C++ standard library,
@@ -588,11 +620,11 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
             **kw_args
         )
         if len(self.jar_distributions) < 1:
-            raise self.abort("ThinLauncherProject requires at least one element in 'jar_distributions'")
+            self.abort("ThinLauncherProject requires at least one element in 'jar_distributions'")
         if self.setup_relative_resources and 'relative_root' not in self.setup_relative_resources:
-            raise self.abort("'setup_relative_resources' must have a 'relative_root' attribute")
+            self.abort("'setup_relative_resources' must have a 'relative_root' attribute")
         if self.setup_relative_resources and 'components_from' not in self.setup_relative_resources:
-            raise self.abort("'setup_relative_resources' must have a 'components_from' attribute")
+            self.abort("'setup_relative_resources' must have a 'components_from' attribute")
 
     def resolveDeps(self):
         if self.setup_relative_resources:
@@ -619,7 +651,7 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
             '-O3', # Note: no -g to save 0.2MB on Linux
             '-DCP_SEP=' + os.pathsep,
             '-DDIR_SEP=' + ('\\\\' if mx.is_windows() else '/'),
-            '-DGRAALVM_VERSION=' + _suite.release_version(),
+            f'-DGRAALVM_VERSION={get_bootstrap_graalvm_version()}',
             ]
         if not mx.is_windows():
             _dynamic_cflags += ['-pthread']
@@ -651,7 +683,7 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
                 main_module = dist.moduleInfo['name']
 
         if not main_module:
-            mx.abort("The distribution with main class {} among {} must have export: {}".format(self.main_class, self.jar_distributions, main_module_export))
+            mx.abort(f"The distribution with main class {self.main_class} among {self.jar_distributions} must have export: {main_module_export}")
 
         _dynamic_cflags.append('-DLAUNCHER_MAIN_MODULE=' + main_module)
         _dynamic_cflags.append('-DLAUNCHER_CLASS=' + self.main_class)
@@ -709,7 +741,7 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
         if self.setup_relative_resources:
             resources_project = mx.dependency(self.setup_relative_resources['components_from'])
             if not isinstance(resources_project, ExtractedEngineResources):
-                raise self.abort("'components_from' must refer to a ExtractedEngineResources project")
+                self.abort("'components_from' must refer to a ExtractedEngineResources project")
             relative_root = self.setup_relative_resources['relative_root']
             output_dir = resources_project.output_dir()
             for component in os.listdir(output_dir):
@@ -723,14 +755,17 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
                 '-DLAUNCHER_EXTRACTED_LIB_PATHS="{\\"' + '\\", \\"'.join(extracted_lib_paths) + '\\"}"',
                 ]
 
-        if len(self.default_vm_args) > 0:
-            _dynamic_cflags += ['-DLAUNCHER_DEFAULT_VM_ARGS="{\\"' + '\\", \\"'.join(self.default_vm_args) + '\\"}"']
+        default_vm_args = [arg for arg in [mx_subst.string_substitutions.substitute(arg) for arg in self.default_vm_args] if arg]
+        if len(default_vm_args) > 0:
+            _dynamic_cflags += ['-DLAUNCHER_DEFAULT_VM_ARGS="{\\"' + '\\", \\"'.join(default_vm_args) + '\\"}"']
 
         return super().cflags + _dynamic_cflags
 
     @property
     def ldflags(self):
         _dynamic_ldflags = []
+        if mx.is_windows():
+            _dynamic_ldflags += ['/MANIFEST:EMBED', '/MANIFESTINPUT:' + self.windows_manifest]
         if not mx.is_windows():
             _dynamic_ldflags += ['-pthread']
         if self.uses_musl_swcfi_toolchain:
@@ -822,7 +857,7 @@ class JavaHomeBuildTask(mx.BuildTask):
     def needsBuild(self, newestInput):
         witness_file = self.witness_file()
         if exists(witness_file):
-            with open(witness_file, 'r') as f:
+            with open(witness_file, encoding='utf-8') as f:
                 contents = f.read()
         else:
             contents = None
@@ -842,7 +877,7 @@ class JavaHomeBuildTask(mx.BuildTask):
     def build(self):
         witness_file = self.witness_file()
         mx_util.ensure_dirname_exists(witness_file)
-        with open(witness_file, 'w') as f:
+        with open(witness_file, 'w', encoding='utf-8') as f:
             f.write(self.witness_contents())
 
     def clean(self, forBuild=False):
@@ -934,7 +969,7 @@ set(CMAKE_AR {binpath}/ar)
                         },
                     }
                     cmake_dependencies = []
-                    cmake_native_toolchain = dict(**ninja_native_toolchain)
+                    cmake_native_toolchain = {**ninja_native_toolchain}
                     cmake_native_toolchain['kind'] = 'cmake'
                     cmake_name = 'BOOTSTRAP_' + e.upper().replace('-', '_') + '_CMAKE_TOOLCHAIN'
                     register_distribution(mx.LayoutDirDistribution(_suite, cmake_name, cmake_dependencies, cmake_layout, path=None, theLicense=None, platformDependent=True, native_toolchain=cmake_native_toolchain, native=True, maven=False))
@@ -948,15 +983,15 @@ class DynamicPOMDistribution(mx_pomdistribution.POMDistribution):
         runtime_deps = _pop_list(kw_args, 'runtimeDependencies', suite, name)
         super().__init__(suite, name, deps + dist_deps, runtime_deps, theLicense, **kw_args)
         if excl:
-            raise mx.abort("'exclude' is not supported on pom distributions", context=self)
+            mx.abort("'exclude' is not supported on pom distributions", context=self)
         if platformDependent:
-            raise mx.abort("'platformDependent' cannot be true for pom distributions", context=self)
+            mx.abort("'platformDependent' cannot be true for pom distributions", context=self)
 
     def resolveDeps(self):
         super().resolveDeps()
         dyn_deps, dynamicDependencies = _get_dyn_attribute(self, 'dynamicDistDependencies', [])
         if not (isinstance(dyn_deps, list) and all(isinstance(d, str) for d in dyn_deps)):
-            raise mx.abort(f"dynamicDistDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
+            mx.abort(f"dynamicDistDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
         self._resolveDepsHelper(dyn_deps)
         self.deps += dyn_deps
 
@@ -972,7 +1007,7 @@ class ExtractedEngineResources(mx.ArchivableProject):
         super().resolveDeps()
         dyn_deps, dynamicDependencies = _get_dyn_attribute(self, 'dynamicDependencies', [])
         if not (isinstance(dyn_deps, list) and all(isinstance(d, str) for d in dyn_deps)):
-            raise mx.abort(f"dynamicDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
+            mx.abort(f"dynamicDependencies `{dynamicDependencies}` did not return a list of strings", context=self)
         self._resolveDepsHelper(dyn_deps)
         self.deps += dyn_deps
 
@@ -1008,7 +1043,7 @@ class ExtractedEngineResourcesBuildTask(mx.BuildTask):
             return True, f"{newestInput} is newer than the output directory"
         witness_file = self.witness_file()
         if exists(witness_file):
-            with open(witness_file, 'r') as f:
+            with open(witness_file, encoding='utf-8') as f:
                 contents = f.read()
         else:
             contents = None
@@ -1031,7 +1066,7 @@ class ExtractedEngineResourcesBuildTask(mx.BuildTask):
                 mx.rmtree(component_dir)
         witness_file = self.witness_file()
         mx_util.ensure_dirname_exists(witness_file)
-        with open(witness_file, 'w') as f:
+        with open(witness_file, 'w', encoding='utf-8') as f:
             f.write(self.witness_contents())
 
     def clean(self, forBuild=False):
@@ -1047,7 +1082,7 @@ class ExtractedEngineResourcesBuildTask(mx.BuildTask):
 
 def _make_windows_link(link_target):
     link_template_name = join(_suite.mxDir, 'vm', 'exe_link_template.cmd')
-    with open(link_template_name, 'r') as template:
+    with open(link_template_name, encoding='utf-8') as template:
         _template_subst = mx_subst.SubstitutionEngine(mx_subst.string_substitutions)
         _template_subst.register_no_arg('target', normpath(link_target))
         return _template_subst.substitute(template.read())
@@ -1112,7 +1147,6 @@ class DeliverableStandaloneArchive(DeliverableArchiveSuper):
         mapping = {
             'graal-js': 'js',
             'graal-nodejs': 'nodejs',
-            'truffleruby': 'ruby',
             'graalpython': 'python',
         }
         if not language_id and suite.name in mapping:
@@ -1159,7 +1193,7 @@ class DeliverableStandaloneArchive(DeliverableArchiveSuper):
             }
         }
         self.standalone_dir_dist = standalone_dir_dist
-        maven = { 'groupId': 'org.graalvm', 'tag': 'standalone' } if suite.name != 'truffleruby' else {}
+        maven = { 'groupId': 'org.graalvm', 'tag': 'standalone' }
 
         assert theLicense is None, "the 'license' attribute is ignored for DeliverableStandaloneArchive"
         theLicense = ['GFTC' if is_enterprise() else 'UPL']

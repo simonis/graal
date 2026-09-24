@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # The Universal Permissive License (UPL), Version 1.0
@@ -40,11 +40,11 @@
 #
 
 suite = {
-  "mxversion": "7.55.2",
+  "mxversion": "7.81.0",
   "name" : "wasm",
   "groupId" : "org.graalvm.wasm",
-  "version" : "25.1.0",
-  "release" : False,
+  "version_from" : "truffle",
+  "release_from" : "truffle",
   "versionConflictResolution" : "latest",
   "url" : "http://graalvm.org/webassembly",
   "developer" : {
@@ -68,6 +68,7 @@ suite = {
       },
     ],
   },
+  "capture_suite_commit_info": False,
   "libraries": {
     "JOL": {
       "digest" : "sha512:8adfb561c82f9b198d1d8b7bea605fc8f4418d3e199d0d6262014dc75cee5b1a2ff59ec838b6322f5ee981e7094dbc3c9fa61ee5e8bfe7793aa927e2a900c6ec",
@@ -151,6 +152,9 @@ suite = {
         "org.graalvm.wasm.utils",
         "truffle:TRUFFLE_TCK",
         "mx:JUNIT",
+      ],
+      "requires" : [
+        "java.logging",
       ],
       "checkstyle" : "org.graalvm.wasm",
       "javaCompliance" : "17+",
@@ -252,6 +256,11 @@ suite = {
 
     "graalwasm_thin_launcher": {
       "class": "ThinLauncherProject",
+      "multitarget": [
+        {"os": ["linux"], "libc": ["glibc", "default"], "compiler": ["llvm-toolchain", "host", "*"]},
+        {"os": ["linux"], "libc": ["musl"], "variant": ["swcfi"]},
+        {"os": ["windows", "darwin"], "libc": ["default"]},
+      ],
       "mainClass": "org.graalvm.wasm.launcher.WasmLauncher",
       "jar_distributions": ["wasm:WASM_LAUNCHER"],
       "relative_home_paths": {
@@ -275,7 +284,7 @@ suite = {
         # Configure launcher
         "-Dorg.graalvm.launcher.class=org.graalvm.wasm.launcher.WasmLauncher",
       ],
-      "dynamicBuildArgs": "libwasmvm_build_args",
+      "dynamicBuildArgs": "libwasmvm_dynamic_build_args",
     },
   },
 
@@ -303,6 +312,10 @@ suite = {
         "requires": [
           "org.graalvm.collections",
           "static jdk.incubator.vector", # Vector API
+        ],
+        "exports" : [
+          # Export WasmStruct supertype to Truffle Static Object class generator
+          "org.graalvm.wasm.struct",
         ],
       },
       "subDir" : "src",
@@ -523,7 +536,7 @@ suite = {
           "extracted-dependency:WASM_GRAALVM_SUPPORT",
           "dependency:graalwasm_licenses/*",
         ],
-        "bin/<exe:wasm>": "dependency:graalwasm_thin_launcher",
+        "bin/<exe:wasm>": "dependency:graalwasm_thin_launcher/<os>-<arch>/<multitarget_libc_selection>/<exe:graalwasm_thin_launcher>",
         "release": "dependency:sdk:STANDALONE_JAVA_HOME/release",
       },
     },
@@ -586,6 +599,7 @@ suite = {
 
     "GRAALWASM_JVM_STANDALONE_RELEASE_ARCHIVE": {
         "class": "DeliverableStandaloneArchive",
+        "deploy": False,
         "platformDependent": True,
         "standalone_dist": "GRAALWASM_JVM_STANDALONE",
         "language_id": "wasm",

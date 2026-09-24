@@ -27,15 +27,19 @@ package com.oracle.svm.hosted.image;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.objectfile.ObjectFile;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.meta.MethodOffset;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.imagelayer.LayeredDispatchTableFeature;
 import com.oracle.svm.hosted.meta.HostedMethod;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class MethodPointerRelocationProvider {
 
     private final boolean imageLayer = ImageLayerBuildingSupport.buildingImageLayer();
@@ -46,6 +50,13 @@ public class MethodPointerRelocationProvider {
 
     public void markMethodPointerRelocation(ObjectFile.ProgbitsSectionImpl section, int offset, ObjectFile.RelocationKind relocationKind, HostedMethod target,
                     long addend, MethodPointer methodPointer, boolean isInjectedNotCompiled) {
+        if (imageLayer && section.getElement().getOwner().getFormat() == ObjectFile.Format.PECOFF && target.isCompiledInPriorLayer()) {
+            /*
+             * PE/COFF image layers do not export ordinary prior-layer method symbols. Avoid
+             * emitting relocations to those symbols.
+             */
+            return;
+        }
         String symbolName;
         if (imageLayer) {
             symbolName = LayeredDispatchTableFeature.singleton().getSymbolName(methodPointer, target, isInjectedNotCompiled);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,7 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexGeneralPurposeRMVOp
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRMOp.VPBROADCASTD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPXORD;
 import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.QWORD;
+import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.XMM;
 import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.YMM;
 import static jdk.graal.compiler.asm.amd64.AVXKind.AVXSize.ZMM;
 import static jdk.vm.ci.code.ValueUtil.asRegister;
@@ -37,8 +38,8 @@ import java.util.EnumSet;
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.asm.amd64.AMD64Address;
 import jdk.graal.compiler.asm.amd64.AMD64Assembler.ConditionFlag;
+import jdk.graal.compiler.asm.amd64.AMD64BaseAssembler;
 import jdk.graal.compiler.asm.amd64.AMD64MacroAssembler;
-import jdk.graal.compiler.asm.amd64.AVXKind;
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.Stride;
 import jdk.graal.compiler.lir.LIRInstructionClass;
@@ -55,7 +56,7 @@ import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.Value;
 
 // @formatter:off
-@SyncPort(from = "https://github.com/openjdk/jdk/blob/f3b34d32d6ea409f8c8f0382e8f01e746366f842/src/hotspot/cpu/x86/c2_MacroAssembler_x86.cpp#L3940-L4183",
+@SyncPort(from = "https://github.com/openjdk/jdk25u/blob/c59e44a7aa2aeff0823830b698d524523b996650/src/hotspot/cpu/x86/c2_MacroAssembler_x86.cpp#L4131-L4374",
           sha1 = "1aa453c52215c1fc8d467460a93fa590f9edab15")
 // @formatter:on
 @Opcode("AMD64_COUNT_POSITIVES")
@@ -103,6 +104,9 @@ public final class AMD64CountPositivesOp extends AMD64ComplexVectorOp {
         if (ZMM.fitsWithin(vectorSize)) {
             this.maskValue1 = tool.newVariable(LIRKind.value(AMD64Kind.MASK64));
             this.maskValue2 = tool.newVariable(LIRKind.value(AMD64Kind.MASK64));
+        } else if (supports(tool.target(), runtimeCheckedCPUFeatures, AMD64BaseAssembler.FULL_AVX512_FEATURES)) {
+            this.maskValue1 = tool.newVariable(LIRKind.value(AMD64Kind.MASK64));
+            this.maskValue2 = Value.ILLEGAL;
         } else {
             this.maskValue1 = Value.ILLEGAL;
             this.maskValue2 = Value.ILLEGAL;
@@ -214,7 +218,7 @@ public final class AMD64CountPositivesOp extends AMD64ComplexVectorOp {
 
                 masm.bind(labelCompareWideVectors);
                 masm.vmovdqu(vec1, new AMD64Address(ary1, len, Stride.S1));
-                masm.vptest(vec1, vec2, AVXKind.AVXSize.YMM);
+                emitPtest(masm, YMM, maskValue1, vec1, vec2);
                 masm.jccb(ConditionFlag.NotZero, labelBreakLoop);
                 masm.addqAndJcc(len, 32, ConditionFlag.NotZero, labelCompareWideVectors, true);
 
@@ -224,7 +228,7 @@ public final class AMD64CountPositivesOp extends AMD64ComplexVectorOp {
                 masm.movl(len, result);
                 masm.andl(len, 0x0000001f);
                 masm.vmovdqu(vec1, new AMD64Address(ary1, len, Stride.S1, -32));
-                masm.vptest(vec1, vec2, AVXKind.AVXSize.YMM);
+                emitPtest(masm, YMM, maskValue1, vec1, vec2);
                 masm.jcc(ConditionFlag.Zero, labelDone);
                 masm.jmp(labelTailStart);
 
@@ -258,7 +262,7 @@ public final class AMD64CountPositivesOp extends AMD64ComplexVectorOp {
 
                 masm.bind(labelCompareWideVectors);
                 masm.movdqu(vec1, new AMD64Address(ary1, len, Stride.S1));
-                masm.ptest(vec1, vec2);
+                emitPtest(masm, XMM, maskValue1, vec1, vec2);
                 masm.jccb(ConditionFlag.NotZero, labelBreakLoop);
                 masm.addqAndJcc(len, 16, ConditionFlag.NotZero, labelCompareWideVectors, true);
 
@@ -268,7 +272,7 @@ public final class AMD64CountPositivesOp extends AMD64ComplexVectorOp {
                 masm.movl(len, result);
                 masm.andl(len, 0x0000000f); // tail count (in bytes)
                 masm.movdqu(vec1, new AMD64Address(ary1, len, Stride.S1, -16));
-                masm.ptest(vec1, vec2);
+                emitPtest(masm, XMM, maskValue1, vec1, vec2);
                 masm.jcc(ConditionFlag.Zero, labelDone);
                 masm.jmpb(labelTailStart);
 

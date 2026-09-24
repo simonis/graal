@@ -88,7 +88,7 @@ import com.oracle.truffle.polyglot.EngineAccessor.AbstractClassLoaderSupplier;
 final class InternalResourceCache {
 
     private static final char[] FILE_SYSTEM_SPECIAL_CHARACTERS = {'/', '\\', ':'};
-    private static final Map<Collection<AbstractClassLoaderSupplier>, Map<String, Map<String, Supplier<InternalResourceCache>>>> optionalInternalResourcesCaches = new HashMap<>();
+    private static final Map<AbstractClassLoaderSupplier, Map<String, Map<String, Supplier<InternalResourceCache>>>> optionalInternalResourcesCaches = new HashMap<>();
     private static final Map<String, Map<String, Supplier<InternalResourceCache>>> nativeImageCache = TruffleOptions.AOT ? new HashMap<>() : null;
 
     /**
@@ -128,6 +128,10 @@ final class InternalResourceCache {
         return resourceId;
     }
 
+    Path getOwningRoot() {
+        return owningRoot == null ? null : owningRoot.path();
+    }
+
     Path getPathOrNull() {
         return path;
     }
@@ -139,7 +143,7 @@ final class InternalResourceCache {
                 synchronized (this) {
                     result = path;
                     if (result == null) {
-                        result = installResource((resource) -> EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> polyglotEngine.inEnginePreInitialization));
+                        result = installResource((resource) -> EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> polyglotEngine.inEnginePreInitialization, false));
                         path = result;
                     }
                 }
@@ -202,10 +206,10 @@ final class InternalResourceCache {
     }
 
     /**
-     * Installs truffleattach library. Used reflectively by
-     * {@code com.oracle.truffle.runtime.JDKSupport}. The {@code JDKSupport} is initialized before
-     * the Truffle runtime is created and accessor classes are initialized. For this reason, it
-     * cannot use {@code EngineSupport} to call this method, nor can this method use any accessor.
+     * Installs {@code truffleattach} library. Used by{@link JDKSupport}. The {@code JDKSupport} is
+     * initialized before the Truffle runtime is created and accessor classes are initialized. For
+     * this reason, it cannot use {@code EngineSupport} to call this method, nor can this method use
+     * any accessor.
      */
     static Path installRuntimeResource(InternalResource resource, String id) throws IOException {
         InternalResourceCache cache = createRuntimeResourceCache(resource, id);
@@ -219,7 +223,12 @@ final class InternalResourceCache {
         }
     }
 
-    private static InternalResourceCache createRuntimeResourceCache(InternalResource resource, String id) {
+    /**
+     * Creates an {@link InternalResourceCache} for the {@code truffleattach} library. This method
+     * is used by {@link JDKSupport} to diagnose the cause of {@code truffleattach} library
+     * installation failure.
+     */
+    static InternalResourceCache createRuntimeResourceCache(InternalResource resource, String id) {
         assert verifyAnnotationConsistency(resource, id) : resource.getClass() + " must be annotated by @InternalResource.Id(\"" + id + "\"";
         InternalResourceCache cache = new InternalResourceCache(PolyglotEngineImpl.ENGINE_ID, id, () -> resource);
         InternalResourceRoots.initializeRuntimeResource(cache);
@@ -236,9 +245,9 @@ final class InternalResourceCache {
 
     private static InternalResource.Env createInternalResourceEnvReflectively(InternalResource resource) {
         try {
-            Constructor<InternalResource.Env> newEnv = InternalResource.Env.class.getDeclaredConstructor(InternalResource.class, BooleanSupplier.class);
+            Constructor<InternalResource.Env> newEnv = InternalResource.Env.class.getDeclaredConstructor(InternalResource.class, BooleanSupplier.class, boolean.class);
             newEnv.setAccessible(true);
-            return newEnv.newInstance(resource, (BooleanSupplier) () -> TruffleOptions.AOT);
+            return newEnv.newInstance(resource, (BooleanSupplier) () -> false, false);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Failed to instantiate InternalResource.Env", e);
         }
@@ -251,7 +260,7 @@ final class InternalResourceCache {
         assert !ImageInfo.inImageRuntimeCode() || aggregatedFileListHash != null : "InternalResource#unpackFiles must not be called in the image execution time.";
         InternalResource resource = resourceFactory.get();
         InternalResource.Env env = resourceEnvProvider.apply(resource);
-        String versionHash = aggregatedFileListHash == null || env.inNativeImageBuild() ? resource.versionHash(env)
+        String versionHash = aggregatedFileListHash == null || ImageInfo.inImageBuildtimeCode() ? resource.versionHash(env)
                         : aggregatedFileListHash;
         if (versionHash.getBytes().length > 128) {
             throw new IOException("The version hash length is restricted to a maximum of 128 bytes.");
@@ -267,7 +276,7 @@ final class InternalResourceCache {
             }
             Path owner = Files.createDirectories(Objects.requireNonNull(parent));
             Path tmpDir = Files.createTempDirectory(owner, null);
-            if (aggregatedFileListResource == null || env.inNativeImageBuild()) {
+            if (aggregatedFileListResource == null || ImageInfo.inImageBuildtimeCode()) {
                 resource.unpackFiles(env, tmpDir);
             } else {
                 env.unpackResourceFiles(aggregatedFileListResource, tmpDir, Path.of("META-INF", "resources", sanitize(id), sanitize(resourceId)));
@@ -283,8 +292,11 @@ final class InternalResourceCache {
                 // instead of FileAlreadyExistsException. We need to check if this is the case.
                 if (Files.isDirectory(target)) {
                     unlink(tmpDir);
+                } else {
+                    throw fsException;
                 }
             }
+            verifyResourceRoot(target);
         } else {
             if (InternalResourceRoots.isTraceInternalResourceEvents()) {
                 InternalResourceRoots.logInternalResourceEvent("Resolved a directory for the internal resource %s::%s to: %s, using existing resource files.",
@@ -335,7 +347,7 @@ final class InternalResourceCache {
      */
     static void initializeNativeImageState(ClassLoader nativeImageClassLoader) {
         assert TruffleOptions.AOT : "Only supported during image generation";
-        nativeImageCache.putAll(collectOptionalResources(List.of(new EngineAccessor.StrongClassLoaderSupplier(nativeImageClassLoader))));
+        nativeImageCache.putAll(collectOptionalResources(new EngineAccessor.StrongClassLoaderSupplier(nativeImageClassLoader)));
     }
 
     /**
@@ -400,7 +412,7 @@ final class InternalResourceCache {
         unlink(root);
         Files.createDirectories(root);
         InternalResource resource = resourceFactory.get();
-        InternalResource.Env env = EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> false);
+        InternalResource.Env env = EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> false, true);
         resource.unpackFiles(env, root);
         if (isEmpty(root)) {
             Files.deleteIfExists(root);
@@ -444,7 +456,7 @@ final class InternalResourceCache {
         unlink(root);
         Files.createDirectories(root);
         InternalResource resource = resourceFactory.get();
-        InternalResource.Env env = EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> false);
+        InternalResource.Env env = EngineAccessor.LANGUAGE.createInternalResourceEnv(resource, () -> false, true);
         resource.unpackFiles(env, root);
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         StringBuilder fileList = new StringBuilder();
@@ -493,12 +505,12 @@ final class InternalResourceCache {
     }
 
     static Collection<String> getEngineResourceIds() {
-        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.locatorOrDefaultLoaders()).get(PolyglotEngineImpl.ENGINE_ID);
+        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.loader()).get(PolyglotEngineImpl.ENGINE_ID);
         return engineResources != null ? engineResources.keySet() : List.of();
     }
 
     static Collection<InternalResourceCache> getEngineResources() {
-        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.locatorOrDefaultLoaders()).get(PolyglotEngineImpl.ENGINE_ID);
+        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.loader()).get(PolyglotEngineImpl.ENGINE_ID);
         if (engineResources != null) {
             return engineResources.values().stream().map(Supplier::get).collect(Collectors.toList());
         } else {
@@ -507,35 +519,32 @@ final class InternalResourceCache {
     }
 
     static InternalResourceCache getEngineResource(String resourceId) {
-        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.locatorOrDefaultLoaders()).get(PolyglotEngineImpl.ENGINE_ID);
+        Map<String, Supplier<InternalResourceCache>> engineResources = loadOptionalInternalResources(EngineAccessor.loader()).get(PolyglotEngineImpl.ENGINE_ID);
         Supplier<InternalResourceCache> resourceSupplier = engineResources != null ? engineResources.get(resourceId) : null;
         return resourceSupplier != null ? resourceSupplier.get() : null;
     }
 
-    static Map<String, Map<String, Supplier<InternalResourceCache>>> loadOptionalInternalResources(List<AbstractClassLoaderSupplier> suppliers) {
+    static Map<String, Map<String, Supplier<InternalResourceCache>>> loadOptionalInternalResources(AbstractClassLoaderSupplier classLoaderSupplier) {
         if (TruffleOptions.AOT) {
             assert nativeImageCache != null;
             return nativeImageCache;
         }
         synchronized (InternalResourceCache.class) {
-            Map<String, Map<String, Supplier<InternalResourceCache>>> cache = optionalInternalResourcesCaches.get(suppliers);
+            Map<String, Map<String, Supplier<InternalResourceCache>>> cache = optionalInternalResourcesCaches.get(classLoaderSupplier);
             if (cache == null) {
-                cache = collectOptionalResources(suppliers);
-                optionalInternalResourcesCaches.put(suppliers, cache);
+                cache = collectOptionalResources(classLoaderSupplier);
+                optionalInternalResourcesCaches.put(classLoaderSupplier, cache);
             }
             return cache;
         }
     }
 
-    private static Map<String, Map<String, Supplier<InternalResourceCache>>> collectOptionalResources(List<AbstractClassLoaderSupplier> suppliers) {
+    private static Map<String, Map<String, Supplier<InternalResourceCache>>> collectOptionalResources(AbstractClassLoaderSupplier classLoaderSupplier) {
         Map<String, Map<String, Supplier<InternalResourceCache>>> cache = new HashMap<>();
-        for (EngineAccessor.AbstractClassLoaderSupplier supplier : suppliers) {
-            ClassLoader loader = supplier.get();
-            if (loader == null) {
-                continue;
-            }
+        ClassLoader loader = classLoaderSupplier.get();
+        if (loader != null) {
             for (InternalResourceProvider p : ServiceLoader.load(InternalResourceProvider.class, loader)) {
-                if (supplier.accepts(p.getClass())) {
+                if (classLoaderSupplier.accepts(p.getClass())) {
                     JDKSupport.exportTransitivelyTo(p.getClass().getModule());
                     String componentId = EngineAccessor.LANGUAGE_PROVIDER.getInternalResourceComponentId(p);
                     String resourceId = EngineAccessor.LANGUAGE_PROVIDER.getInternalResourceId(p);

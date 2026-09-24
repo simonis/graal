@@ -26,7 +26,7 @@
 
 package com.oracle.svm.core.nmt;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
@@ -35,22 +35,27 @@ import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
-import com.oracle.svm.core.jdk.RuntimeSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
 import com.oracle.svm.core.memory.NativeMemory;
 import com.oracle.svm.core.os.ImageHeapProvider;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.Word;
 
 /**
  * This class implements native memory tracking (NMT). There are two components to NMT: tracking
  * memory allocations (malloc/realloc/calloc), and tracking virtual memory usage (not supported
  * yet).
- * 
+ *
  * For tracking memory allocations, we have an internal API (see {@link NativeMemory}) that adds a
  * custom {@link NmtMallocHeader header} to each allocation if NMT is enabled. This header stores
  * data that is needed to properly untrack the memory when it is freed.
@@ -60,6 +65,7 @@ import jdk.graal.compiler.word.Word;
  * exactly the size committed/uncommitted. In Hotspot, this assumption is not made, and an internal
  * model of virtual memory is maintained.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public class NativeMemoryTracking {
     private static final UnsignedWord ALIGNMENT = Word.unsigned(16);
     private static final int MAGIC = 0xF0F1F2F3;
@@ -111,14 +117,8 @@ public class NativeMemoryTracking {
         NmtMallocHeader mallocHeader = (NmtMallocHeader) outerPtr;
         mallocHeader.setAllocationSize(size);
         mallocHeader.setCategory(category.ordinal());
-        assert setMagic(mallocHeader);
-        return getInnerPointer(mallocHeader);
-    }
-
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    private static boolean setMagic(NmtMallocHeader mallocHeader) {
         mallocHeader.setMagic(MAGIC);
-        return true;
+        return getInnerPointer(mallocHeader);
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
@@ -144,7 +144,10 @@ public class NativeMemoryTracking {
         }
 
         NmtMallocHeader header = getHeader(innerPtr);
-        untrack(header.getAllocationSize(), header.getCategory());
+        UnsignedWord size = header.getAllocationSize();
+        int category = header.getCategory();
+        untrack(size, category);
+        header.setMagic(0);
         return header;
     }
 
@@ -158,7 +161,7 @@ public class NativeMemoryTracking {
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static NmtMallocHeader getHeader(PointerBase innerPtr) {
         NmtMallocHeader result = (NmtMallocHeader) ((Pointer) innerPtr).subtract(sizeOfNmtHeader());
-        assert result.getMagic() == MAGIC : "bad NMT malloc header";
+        VMError.guarantee(result.getMagic() == MAGIC, "Bad NMT header: invalid magic");
         return result;
     }
 
@@ -293,6 +296,7 @@ public class NativeMemoryTracking {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private NmtMallocMemoryInfo getMallocInfo(int category) {
+        VMError.guarantee(category >= 0 && category < mallocCategories.length, "Bad NMT header: invalid category");
         return mallocCategories[category];
     }
 
@@ -303,12 +307,7 @@ public class NativeMemoryTracking {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private NmtVirtualMemoryInfo getVirtualInfo(NmtCategory category) {
-        return getVirtualInfo(category.ordinal());
-    }
-
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    private NmtVirtualMemoryInfo getVirtualInfo(int category) {
-        return virtualMemCategories[category];
+        return virtualMemCategories[category.ordinal()];
     }
 
     public static RuntimeSupport.Hook initializationHook() {
@@ -318,7 +317,7 @@ public class NativeMemoryTracking {
         };
     }
 
-    public static RuntimeSupport.Hook shutdownHook() {
+    public static RuntimeSupport.Hook teardownHook() {
         return _ -> {
             NativeMemoryTracking.singleton().printStatistics();
         };

@@ -42,8 +42,8 @@ import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.PointerBase;
 
 import com.oracle.svm.core.OS;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.jdk.PlatformNativeLibrarySupport;
 import com.oracle.svm.core.jni.headers.JNIEnvironment;
@@ -55,10 +55,10 @@ import com.oracle.svm.core.jni.headers.JNIJavaVMPointer;
 import com.oracle.svm.core.jni.headers.JNIMethodId;
 import com.oracle.svm.core.jni.headers.JNIObjectHandle;
 import com.oracle.svm.core.jni.headers.JNIVersion;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalWord;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalWord;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.interpreter.DebuggerSupport;
 import com.oracle.svm.interpreter.InterpreterOptions;
 import com.oracle.svm.interpreter.debug.DebuggerEvents;
@@ -74,10 +74,10 @@ import com.oracle.svm.jdwp.bridge.nativebridge.NativeObjectHandles;
 import com.oracle.svm.jdwp.resident.impl.ResidentJDWP;
 
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
-import jdk.graal.compiler.word.Word;
 import jdk.internal.misc.Signal;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
+import org.graalvm.word.impl.Word;
 
 public class DebuggingOnDemandHandler implements Signal.Handler {
 
@@ -239,7 +239,7 @@ public class DebuggingOnDemandHandler implements Signal.Handler {
 
             if (result != JNIErrors.JNI_OK()) {
                 Log.log().string("CreateJavaVM failed: ").signed(result).newline();
-                LibC.exit(LibC.EXIT_CODE_ABORT);
+                LibC.abort();
             }
 
             debuggerServerJavaVM = (JNI.JavaVM) jvmptr.read();
@@ -517,7 +517,7 @@ public class DebuggingOnDemandHandler implements Signal.Handler {
     private static void abortOnJNIException(JNIEnvironmentPointer dbgEnv) {
         if (dbgEnv.read().getFunctions().getExceptionCheck().invoke(dbgEnv.read())) {
             dbgEnv.read().getFunctions().getExceptionDescribe().invoke(dbgEnv.read());
-            LibC.exit(LibC.EXIT_CODE_ABORT);
+            LibC.abort();
         }
     }
 

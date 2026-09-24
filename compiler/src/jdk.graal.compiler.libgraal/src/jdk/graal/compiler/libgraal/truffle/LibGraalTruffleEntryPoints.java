@@ -29,7 +29,6 @@ import java.util.function.Supplier;
 
 import com.oracle.truffle.compiler.TruffleCompilationTask;
 import jdk.graal.compiler.libgraal.LibGraalSupportImpl;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import org.graalvm.jniutils.JNI.JByteArray;
 import org.graalvm.jniutils.JNI.JClass;
@@ -43,6 +42,7 @@ import org.graalvm.jniutils.JNIUtil;
 import org.graalvm.nativeimage.ObjectHandles;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CEntryPoint.IsolateThreadContext;
+import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CLongPointer;
 import org.graalvm.word.PointerBase;
 
@@ -64,6 +64,7 @@ import org.graalvm.nativeimage.libgraal.LibGraalRuntime;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
 import jdk.vm.ci.hotspot.HotSpotVMConfigAccess;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import org.graalvm.word.impl.Word;
 
 /**
  * Truffle specific {@link CEntryPoint} implementations.
@@ -104,10 +105,12 @@ public class LibGraalTruffleEntryPoints {
     @SuppressWarnings({"unused", "try"})
     @CEntryPoint(name = "Java_com_oracle_truffle_runtime_hotspot_libgraal_TruffleToLibGraalCalls_registerRuntime", include = LibGraalFeature.IsEnabled.class)
     @TruffleToLibGraal(Id.RegisterRuntime)
-    public static boolean registerRuntime(JNIEnv env, JClass hsClazz, @IsolateThreadContext long isolateThreadAddress, JObject truffleRuntime) {
+    public static boolean registerRuntime(JNIEnv env, JClass hsClazz, @IsolateThreadContext long isolateThreadAddress, JObject truffleRuntime,
+                    JObject javaInstrumentationActive) {
         try (JNIMethodScope s = openScope(Id.RegisterRuntime, env)) {
             long truffleRuntimeWeakRef = JNIUtil.NewWeakGlobalRef(env, truffleRuntime, "TruffleCompilerRuntime").rawValue();
-            return LibGraalTruffleHostEnvironmentLookup.registerRuntime(truffleRuntimeWeakRef);
+            long activeAddress = JNIUtil.GetDirectBufferAddress(env, javaInstrumentationActive).rawValue();
+            return LibGraalTruffleHostEnvironmentLookup.registerRuntime(truffleRuntimeWeakRef, activeAddress);
         } catch (Throwable t) {
             JNIExceptionWrapper.throwInHotSpot(env, t);
             return false;
@@ -118,10 +121,11 @@ public class LibGraalTruffleEntryPoints {
     @CEntryPoint(name = "Java_com_oracle_truffle_runtime_hotspot_libgraal_TruffleToLibGraalCalls_initializeRuntime", include = LibGraalFeature.IsEnabled.class)
     @TruffleToLibGraal(Id.InitializeRuntime)
     public static long initializeRuntime(JNIEnv env, JClass hsClazz, @IsolateThreadContext long isolateThreadAddress,
-                    JObject truffleRuntime, JClass hsClassLoaderDelegate) {
+                    JObject truffleRuntime, JClass hsClassLoaderDelegate, JObject javaInstrumentationActive) {
         try (JNIMethodScope s = openScope(Id.InitializeRuntime, env)) {
             ResolvedJavaType classLoaderDelegate = HotSpotJVMCIRuntime.runtime().asResolvedJavaType(hsClassLoaderDelegate.rawValue());
-            HSTruffleCompilerRuntime hsTruffleRuntime = new HSTruffleCompilerRuntime(env, truffleRuntime, classLoaderDelegate, hsClassLoaderDelegate);
+            CCharPointer activeAddress = (CCharPointer) JNIUtil.GetDirectBufferAddress(env, javaInstrumentationActive);
+            HSTruffleCompilerRuntime hsTruffleRuntime = new HSTruffleCompilerRuntime(env, truffleRuntime, classLoaderDelegate, hsClassLoaderDelegate, activeAddress);
             LibGraalSupportImpl.registerTruffleCompilerRuntime(hsTruffleRuntime);
             return LibGraalObjectHandles.create(hsTruffleRuntime);
         } catch (Throwable t) {
@@ -153,7 +157,7 @@ public class LibGraalTruffleEntryPoints {
 
     @SuppressWarnings("unused")
     @CEntryPoint(name = "Java_com_oracle_truffle_runtime_hotspot_libgraal_TruffleToLibGraalCalls_initializeCompiler", include = LibGraalFeature.IsEnabled.class)
-    @TruffleToLibGraal(Id.InitializeRuntime)
+    @TruffleToLibGraal(Id.InitializeCompiler)
     public static void initializeCompiler(JNIEnv env, JClass hsClazz, @IsolateThreadContext long isolateThreadAddress, long compilerHandle, JObject hsCompilable,
                     boolean firstInitialization) {
         try (JNIMethodScope scope = openScope(Id.InitializeCompiler, env)) {
@@ -323,7 +327,7 @@ public class LibGraalTruffleEntryPoints {
         return JNIUtil.NewGlobalRef(env, JNIUtil.findClass(env, "java/lang/String"), "Class<java.lang.String>");
     }
 
-    @CEntryPoint(name = "Java_com_oracle_truffle_runtime_hotspot_libgraal_TruffleToLibGraalCalls2_getCompilationId", include = LibGraalFeature.IsEnabled.class)
+    @CEntryPoint(name = "Java_com_oracle_truffle_runtime_hotspot_libgraal_TruffleToLibGraalCalls_getCompilationId", include = LibGraalFeature.IsEnabled.class)
     @SuppressWarnings({"unused", "try"})
     @TruffleToLibGraal(Id.GetCompilationId)
     public static long getCompilationId(JNIEnv env, JClass hsClazz, @IsolateThreadContext long isolateThreadAddress, long handle) {

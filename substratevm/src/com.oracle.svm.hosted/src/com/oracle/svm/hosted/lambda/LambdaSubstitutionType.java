@@ -24,13 +24,8 @@
  */
 package com.oracle.svm.hosted.lambda;
 
-import java.util.List;
-
-import com.oracle.svm.core.jdk.LambdaFormHiddenMethod;
 import com.oracle.svm.hosted.annotation.CustomSubstitutionType;
-import com.oracle.svm.hosted.annotation.SubstrateAnnotationExtractor;
 
-import jdk.graal.compiler.annotation.AnnotationValue;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
@@ -47,12 +42,5 @@ public class LambdaSubstitutionType extends CustomSubstitutionType {
     @Override
     public String getName() {
         return stableName;
-    }
-
-    private static final List<AnnotationValue> INJECTED_ANNOTATIONS = SubstrateAnnotationExtractor.prepareInjectedAnnotations(LambdaFormHiddenMethod.Holder.INSTANCE);
-
-    @Override
-    public List<AnnotationValue> getInjectedAnnotations() {
-        return INJECTED_ANNOTATIONS;
     }
 }

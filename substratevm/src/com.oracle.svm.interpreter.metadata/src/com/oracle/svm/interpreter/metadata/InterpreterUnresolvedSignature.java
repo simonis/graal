@@ -27,8 +27,10 @@ package com.oracle.svm.interpreter.metadata;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
+import com.oracle.svm.core.SubstrateMetadata;
 import com.oracle.svm.interpreter.metadata.serialization.VisibleForSerialization;
 
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
@@ -38,10 +40,13 @@ import jdk.vm.ci.meta.UnresolvedJavaType;
  * Unresolved signature that doesn't contain any resolved type references, except for primitive
  * types. Primitive types are always and can only be resolved types.
  */
-public final class InterpreterUnresolvedSignature implements Signature {
+public final class InterpreterUnresolvedSignature implements Signature, SubstrateMetadata {
 
     private final JavaType returnType;
     private final JavaType[] parameterTypes;
+    private final JavaKind returnKind;
+    private final JavaKind[] parameterKinds;
+    private final int parameterSlotCount;
 
     @Platforms(Platform.HOSTED_ONLY.class) private Signature originalSignature;
 
@@ -60,6 +65,9 @@ public final class InterpreterUnresolvedSignature implements Signature {
         assert primitiveOrUnresolved(parameterTypes);
         this.returnType = returnType;
         this.parameterTypes = parameterTypes;
+        this.returnKind = returnType.getJavaKind();
+        this.parameterKinds = computeParameterKinds(parameterTypes);
+        this.parameterSlotCount = computeParameterSlotCount(parameterKinds);
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -94,16 +102,33 @@ public final class InterpreterUnresolvedSignature implements Signature {
     }
 
     public int slotsForParameters(boolean receiver) {
-        int slots = 0;
+        return receiver ? parameterSlotCount + 1 : parameterSlotCount;
+    }
 
-        if (receiver) {
-            ++slots;
+    private static JavaKind[] computeParameterKinds(JavaType[] parameterTypes) {
+        JavaKind[] kinds = new JavaKind[parameterTypes.length];
+        for (int i = 0; i < parameterTypes.length; i++) {
+            kinds[i] = parameterTypes[i].getJavaKind();
         }
+        return kinds;
+    }
 
-        for (JavaType parameterType : parameterTypes) {
-            slots += parameterType.getJavaKind().getSlotCount();
+    private static int computeParameterSlotCount(JavaKind[] parameterKinds) {
+        int slots = 0;
+        for (JavaKind parameterKind : parameterKinds) {
+            slots += parameterKind.getSlotCount();
         }
         return slots;
+    }
+
+    @Override
+    public JavaKind getParameterKind(int index) {
+        return parameterKinds[index];
+    }
+
+    @Override
+    public JavaKind getReturnKind() {
+        return returnKind;
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -50,8 +50,12 @@ import javax.lang.model.element.Element;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.TypeMirror;
 
 import com.oracle.truffle.dsl.processor.java.ElementUtils;
+import com.oracle.truffle.dsl.processor.java.model.CodeNames;
+import com.oracle.truffle.dsl.processor.java.model.CodeTypeElement;
+import com.oracle.truffle.dsl.processor.java.model.CodeTypeMirror.DeclaredCodeTypeMirror;
 
 public class TruffleTypes {
 
@@ -96,6 +100,7 @@ public class TruffleTypes {
     public static final String OptionDescriptor_Name = "org.graalvm.options.OptionDescriptor";
     public static final String OptionDescriptors_Name = "org.graalvm.options.OptionDescriptors";
     public static final String OptionKey_Name = "org.graalvm.options.OptionKey";
+    public static final String ConstantOptionKey_Name = "org.graalvm.options.ConstantOptionKey";
     public static final String OptionMap_Name = "org.graalvm.options.OptionMap";
     public static final String OptionStability_Name = "org.graalvm.options.OptionStability";
     public static final String SandboxPolicy_Name = "org.graalvm.polyglot.SandboxPolicy";
@@ -106,6 +111,7 @@ public class TruffleTypes {
     public final DeclaredType OptionDescriptor = c.getDeclaredType(OptionDescriptor_Name);
     public final DeclaredType OptionDescriptors = c.getDeclaredType(OptionDescriptors_Name);
     public final DeclaredType OptionKey = c.getDeclaredType(OptionKey_Name);
+    public final DeclaredType ConstantOptionKey = c.getDeclaredType(ConstantOptionKey_Name);
     public final DeclaredType OptionMap = c.getDeclaredType(OptionMap_Name);
     public final DeclaredType OptionStability = c.getDeclaredType(OptionStability_Name);
     public final DeclaredType SandboxPolicy = c.getDeclaredType(SandboxPolicy_Name);
@@ -120,6 +126,9 @@ public class TruffleTypes {
     public static final String CompilerDirectives_CompilationFinal_Name = "com.oracle.truffle.api.CompilerDirectives.CompilationFinal";
     public static final String CompilerDirectives_Name = "com.oracle.truffle.api.CompilerDirectives";
     public static final String CompilerDirectives_TruffleBoundary_Name = "com.oracle.truffle.api.CompilerDirectives.TruffleBoundary";
+    public static final String CompilerDirectives_ValueType_Name = "com.oracle.truffle.api.CompilerDirectives.ValueType";
+    public static final String CompilerDirectives_EarlyInline_Name = "com.oracle.truffle.api.CompilerDirectives.EarlyInline";
+    public static final String CompilerDirectives_EarlyEscapeAnalysis_Name = "com.oracle.truffle.api.CompilerDirectives.EarlyEscapeAnalysis";
     public static final String DenyReplace_Name = "com.oracle.truffle.api.nodes.DenyReplace";
     public static final String DirectCallNode_Name = "com.oracle.truffle.api.nodes.DirectCallNode";
     public static final String EncapsulatingNodeReference_Name = "com.oracle.truffle.api.nodes.EncapsulatingNodeReference";
@@ -137,6 +146,12 @@ public class TruffleTypes {
     public static final String HostCompilerDirectives_BytecodeInterpreterSwitch_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterSwitch";
     public static final String HostCompilerDirectives_InliningCutoff_Name = "com.oracle.truffle.api.HostCompilerDirectives.InliningCutoff";
     public static final String HostCompilerDirectives_InliningRoot_Name = "com.oracle.truffle.api.HostCompilerDirectives.InliningRoot";
+    public static final String HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandlerConfig";
+    public static final String HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandlerConfig.Argument";
+    public static final String HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_ExpansionKind_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandlerConfig.Argument.ExpansionKind";
+    public static final String HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_Field_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandlerConfig.Argument.Field";
+    public static final String HostCompilerDirectives_BytecodeInterpreterFetchOpcode_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterFetchOpcode";
+    public static final String HostCompilerDirectives_BytecodeInterpreterHandler_Name = "com.oracle.truffle.api.HostCompilerDirectives.BytecodeInterpreterHandler";
 
     public static final String InternalResource_Name = "com.oracle.truffle.api.InternalResource";
     public static final String InternalResource_Id_Name = "com.oracle.truffle.api.InternalResource.Id";
@@ -153,6 +168,7 @@ public class TruffleTypes {
     public static final String Option_Group_Name = "com.oracle.truffle.api.Option.Group";
     public static final String Option_Name = "com.oracle.truffle.api.Option";
     public static final String Profile_Name = "com.oracle.truffle.api.profiles.Profile";
+    public static final String RootCallTarget_Name = "com.oracle.truffle.api.RootCallTarget";
     public static final String RootNode_Name = "com.oracle.truffle.api.nodes.RootNode";
     public static final String IndirectCallNode_Name = "com.oracle.truffle.api.nodes.IndirectCallNode";
     public static final String InlinedProfile_Name = "com.oracle.truffle.api.profiles.InlinedProfile";
@@ -185,6 +201,9 @@ public class TruffleTypes {
     public final DeclaredType CompilerDirectives = c.getDeclaredType(CompilerDirectives_Name);
     public final DeclaredType CompilerDirectives_CompilationFinal = c.getDeclaredType(CompilerDirectives_CompilationFinal_Name);
     public final DeclaredType CompilerDirectives_TruffleBoundary = c.getDeclaredType(CompilerDirectives_TruffleBoundary_Name);
+    public final DeclaredType CompilerDirectives_ValueType = c.getDeclaredType(CompilerDirectives_ValueType_Name);
+    public final DeclaredType CompilerDirectives_EarlyInline = c.getDeclaredType(CompilerDirectives_EarlyInline_Name);
+    public final DeclaredType CompilerDirectives_EarlyEscapeAnalysis = c.getDeclaredType(CompilerDirectives_EarlyEscapeAnalysis_Name);
     public final DeclaredType DenyReplace = c.getDeclaredType(DenyReplace_Name);
     public final DeclaredType DirectCallNode = c.getDeclaredType(DirectCallNode_Name);
     public final DeclaredType EncapsulatingNodeReference = c.getDeclaredType(EncapsulatingNodeReference_Name);
@@ -202,6 +221,14 @@ public class TruffleTypes {
     public final DeclaredType HostCompilerDirectives_BytecodeInterpreterSwitch = c.getDeclaredType(HostCompilerDirectives_BytecodeInterpreterSwitch_Name);
     public final DeclaredType HostCompilerDirectives_InliningCutoff = c.getDeclaredType(HostCompilerDirectives_InliningCutoff_Name);
     public final DeclaredType HostCompilerDirectives_InliningRoot = c.getDeclaredType(HostCompilerDirectives_InliningRoot_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterHandlerConfig = c.getDeclaredType(HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument = c.getDeclaredType(HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_ExpansionKind = c.getDeclaredType(
+                    HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_ExpansionKind_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_Field = c.getDeclaredType(
+                    HostCompilerDirectives_BytecodeInterpreterHandlerConfig_Argument_Field_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterFetchOpcode = c.getDeclaredType(HostCompilerDirectives_BytecodeInterpreterFetchOpcode_Name);
+    public final DeclaredType HostCompilerDirectives_BytecodeInterpreterHandler = c.getDeclaredType(HostCompilerDirectives_BytecodeInterpreterHandler_Name);
     public final DeclaredType InternalResource = c.getDeclaredType(InternalResource_Name);
     public final DeclaredType InternalResource_Id = c.getDeclaredType(InternalResource_Id_Name);
     public final DeclaredType InvalidAssumptionException = c.getDeclaredType(InvalidAssumptionException_Name);
@@ -215,6 +242,7 @@ public class TruffleTypes {
     public final DeclaredType NodeInterface = c.getDeclaredType(NodeInterface_Name);
     public final DeclaredType NodeUtil = c.getDeclaredType(NodeUtil_Name);
     public final DeclaredType Profile = c.getDeclaredTypeOptional(Profile_Name);
+    public final DeclaredType RootCallTarget = c.getDeclaredType(RootCallTarget_Name);
     public final DeclaredType RootNode = c.getDeclaredType(RootNode_Name);
     public final DeclaredType IndirectCallNode = c.getDeclaredType(IndirectCallNode_Name);
     public final DeclaredType InlinedProfile = c.getDeclaredTypeOptional(InlinedProfile_Name);
@@ -237,6 +265,10 @@ public class TruffleTypes {
     public final DeclaredType UnexpectedResultException = c.getDeclaredType(UnexpectedResultException_Name);
     public final DeclaredType VirtualFrame = c.getDeclaredType(VirtualFrame_Name);
     public final DeclaredType HostLanguage = c.getDeclaredTypeOptional(HostLanguage_Name);
+
+    // impl
+    public static final String FrameWithoutBoxing_Name = "com.oracle.truffle.api.impl.FrameWithoutBoxing";
+    public final DeclaredType FrameWithoutBoxing = c.getDeclaredType(FrameWithoutBoxing_Name);
 
     // DSL API
     public static final String Bind_Name = "com.oracle.truffle.api.dsl.Bind";
@@ -371,11 +403,13 @@ public class TruffleTypes {
     public static final String BytecodeEncodingException_Name = "com.oracle.truffle.api.bytecode.BytecodeEncodingException";
     public static final String BytecodeLabel_Name = "com.oracle.truffle.api.bytecode.BytecodeLabel";
     public static final String BytecodeLocal_Name = "com.oracle.truffle.api.bytecode.BytecodeLocal";
+    public static final String StackValue_Name = "com.oracle.truffle.api.bytecode.StackValue";
     public static final String BytecodeParser_Name = "com.oracle.truffle.api.bytecode.BytecodeParser";
     public static final String BytecodeRootNode_Name = "com.oracle.truffle.api.bytecode.BytecodeRootNode";
     public static final String BytecodeRootNodes_Name = "com.oracle.truffle.api.bytecode.BytecodeRootNodes";
     public static final String BytecodeNode_Name = "com.oracle.truffle.api.bytecode.BytecodeNode";
     public static final String BytecodeLocation_Name = "com.oracle.truffle.api.bytecode.BytecodeLocation";
+    public static final String BytecodeTransition_Name = "com.oracle.truffle.api.bytecode.BytecodeTransition";
     public static final String BytecodeTier_Name = "com.oracle.truffle.api.bytecode.BytecodeTier";
     public static final String BytecodeSupport_Name = "com.oracle.truffle.api.bytecode.BytecodeSupport";
     public static final String BytecodeSupport_ConstantsBuffer_Name = "com.oracle.truffle.api.bytecode.BytecodeSupport.ConstantsBuffer";
@@ -397,9 +431,12 @@ public class TruffleTypes {
     public static final String OperationProxy_Name = "com.oracle.truffle.api.bytecode.OperationProxy";
     public static final String OperationProxy_Proxyable_Name = "com.oracle.truffle.api.bytecode.OperationProxy.Proxyable";
     public static final String Prolog_Name = "com.oracle.truffle.api.bytecode.Prolog";
+    public static final String Return_Name = "com.oracle.truffle.api.bytecode.Return";
     public static final String ShortCircuitOperation_Name = "com.oracle.truffle.api.bytecode.ShortCircuitOperation";
     public static final String Variadic_Name = "com.oracle.truffle.api.bytecode.Variadic";
     public static final String Instrumentation_Name = "com.oracle.truffle.api.bytecode.Instrumentation";
+    public static final String InstructionTracer_Name = "com.oracle.truffle.api.bytecode.InstructionTracer";
+    public static final String InstructionTracer_InstructionAccess_Name = "com.oracle.truffle.api.bytecode.InstructionTracer.InstructionAccess";
     public static final String Yield_Name = "com.oracle.truffle.api.bytecode.Yield";
 
     public static final String Instruction_Argument_Kind_Name = "com.oracle.truffle.api.bytecode.Instruction.Argument.Kind";
@@ -407,6 +444,9 @@ public class TruffleTypes {
     public static final String Instruction_Argument_BranchProfile_Name = "com.oracle.truffle.api.bytecode.Instruction.Argument.BranchProfile";
     public static final String BytecodeIntrospection_Name = "com.oracle.truffle.api.bytecode.BytecodeIntrospection";
     public static final String Instruction_Name = "com.oracle.truffle.api.bytecode.Instruction";
+    public static final String InstructionDescriptor_Name = "com.oracle.truffle.api.bytecode.InstructionDescriptor";
+    public static final String InstructionDescriptor_ArgumentDescriptor_Name = "com.oracle.truffle.api.bytecode.InstructionDescriptor.ArgumentDescriptor";
+    public static final String BytecodeDescriptor_Name = "com.oracle.truffle.api.bytecode.BytecodeDescriptor";
     public static final String SourceInformation_Name = "com.oracle.truffle.api.bytecode.SourceInformation";
     public static final String SourceInformationTree_Name = "com.oracle.truffle.api.bytecode.SourceInformationTree";
     public static final String LocalVariable_Name = "com.oracle.truffle.api.bytecode.LocalVariable";
@@ -431,6 +471,8 @@ public class TruffleTypes {
     public static final String ByteArraySupport_Name = "com.oracle.truffle.api.memory.ByteArraySupport";
     public static final String FrameExtensions_Name = "com.oracle.truffle.api.frame.FrameExtensions";
 
+    public static final String GenerateInstructionRewriter_Name = "com.oracle.truffle.api.bytecode.test.GenerateInstructionRewriter";
+
     public final DeclaredType BytecodeBuilder = c.getDeclaredTypeOptional(BytecodeBuilder_Name);
     public final DeclaredType BytecodeConfig = c.getDeclaredTypeOptional(BytecodeConfig_Name);
     public final DeclaredType BytecodeConfigEncoder = c.getDeclaredTypeOptional(BytecodeConfigEncoder_Name);
@@ -438,11 +480,13 @@ public class TruffleTypes {
     public final DeclaredType BytecodeConfig_Builder = c.getDeclaredTypeOptional(BytecodeConfig_Builder_Name);
     public final DeclaredType BytecodeLabel = c.getDeclaredTypeOptional(BytecodeLabel_Name);
     public final DeclaredType BytecodeLocal = c.getDeclaredTypeOptional(BytecodeLocal_Name);
+    public final DeclaredType StackValue = c.getDeclaredTypeOptional(StackValue_Name);
     public final DeclaredType BytecodeParser = c.getDeclaredTypeOptional(BytecodeParser_Name);
     public final DeclaredType BytecodeRootNode = c.getDeclaredTypeOptional(BytecodeRootNode_Name);
     public final DeclaredType BytecodeRootNodes = c.getDeclaredTypeOptional(BytecodeRootNodes_Name);
     public final DeclaredType BytecodeNode = c.getDeclaredTypeOptional(BytecodeNode_Name);
     public final DeclaredType BytecodeLocation = c.getDeclaredTypeOptional(BytecodeLocation_Name);
+    public final DeclaredType BytecodeTransition = c.getDeclaredTypeOptional(BytecodeTransition_Name);
     public final DeclaredType BytecodeTier = c.getDeclaredTypeOptional(BytecodeTier_Name);
     public final DeclaredType BytecodeSupport = c.getDeclaredTypeOptional(BytecodeSupport_Name);
     public final DeclaredType BytecodeSupport_ConstantsBuffer = c.getDeclaredTypeOptional(BytecodeSupport_ConstantsBuffer_Name);
@@ -462,17 +506,23 @@ public class TruffleTypes {
     public final DeclaredType Operation = c.getDeclaredTypeOptional(Operation_Name);
     public final DeclaredType OperationProxy = c.getDeclaredTypeOptional(OperationProxy_Name);
     public final DeclaredType Prolog = c.getDeclaredTypeOptional(Prolog_Name);
+    public final DeclaredType Return = c.getDeclaredTypeOptional(Return_Name);
     public final DeclaredType OperationProxy_Proxyable = c.getDeclaredTypeOptional(OperationProxy_Proxyable_Name);
     public final DeclaredType ShortCircuitOperation = c.getDeclaredTypeOptional(ShortCircuitOperation_Name);
     public final DeclaredType Variadic = c.getDeclaredTypeOptional(Variadic_Name);
     public final DeclaredType Instrumentation = c.getDeclaredTypeOptional(Instrumentation_Name);
+    public final DeclaredType InstructionTracer = c.getDeclaredTypeOptional(InstructionTracer_Name);
+    public final DeclaredType InstructionTracer_InstructionAccess = c.getDeclaredTypeOptional(InstructionTracer_InstructionAccess_Name);
     public final DeclaredType Yield = c.getDeclaredTypeOptional(Yield_Name);
 
-    public final DeclaredType Instruction_Argument = c.getDeclaredTypeOptional(Instruction_Argument_Name);
+    public final DeclaredType Instruction_Argument = customType(c.getDeclaredTypeOptional(Instruction_Argument_Name), "com.oracle.truffle.api.bytecode", "Instruction.Argument");
     public final DeclaredType Instruction_Argument_BranchProfile = c.getDeclaredTypeOptional(Instruction_Argument_BranchProfile_Name);
     public final DeclaredType Instruction_Argument_Kind = c.getDeclaredTypeOptional(Instruction_Argument_Kind_Name);
     public final DeclaredType BytecodeIntrospection = c.getDeclaredTypeOptional(BytecodeIntrospection_Name);
     public final DeclaredType Instruction = c.getDeclaredTypeOptional(Instruction_Name);
+    public final DeclaredType InstructionDescriptor = c.getDeclaredTypeOptional(InstructionDescriptor_Name);
+    public final DeclaredType InstructionDescriptor_ArgumentDescriptor = c.getDeclaredTypeOptional(InstructionDescriptor_ArgumentDescriptor_Name);
+    public final DeclaredType BytecodeDescriptor = c.getDeclaredTypeOptional(BytecodeDescriptor_Name);
     public final DeclaredType SourceInformation = c.getDeclaredTypeOptional(SourceInformation_Name);
     public final DeclaredType SourceInformationTree = c.getDeclaredTypeOptional(SourceInformationTree_Name);
     public final DeclaredType LocalVariable = c.getDeclaredTypeOptional(LocalVariable_Name);
@@ -496,6 +546,19 @@ public class TruffleTypes {
     public final DeclaredType BytecodeDSLAccess = c.getDeclaredTypeOptional(BytecodeDSLAccess_Name);
     public final DeclaredType ByteArraySupport = c.getDeclaredTypeOptional(ByteArraySupport_Name);
     public final DeclaredType FrameExtensions = c.getDeclaredTypeOptional(FrameExtensions_Name);
+
+    public final DeclaredType GenerateInstructionRewriter = c.getDeclaredTypeOptional(GenerateInstructionRewriter_Name);
+
+    public static DeclaredCodeTypeMirror customType(TypeMirror type, String packageName, String name) {
+        if (type == null) {
+            return null;
+        }
+        CodeTypeElement element = CodeTypeElement.cloneShallow(ElementUtils.castTypeElement(type));
+        element.setEnclosingElement(ElementUtils.findPackageElement(element));
+        element.setPackageName(CodeNames.of(packageName));
+        element.setSimpleName(CodeNames.of(name));
+        return new DeclaredCodeTypeMirror(element);
+    }
 
     // Library API
     public static final String CachedLibrary_Name = "com.oracle.truffle.api.library.CachedLibrary";
@@ -580,11 +643,9 @@ public class TruffleTypes {
     // OM API
     public static final String DynamicObjectFactory_Name = "com.oracle.truffle.api.object.DynamicObjectFactory";
     public static final String DynamicObject_Name = "com.oracle.truffle.api.object.DynamicObject";
-    public static final String ObjectType_Name = "com.oracle.truffle.api.object.ObjectType";
 
     public final DeclaredType DynamicObjectFactory = c.getDeclaredTypeOptional(DynamicObjectFactory_Name);
     public final DeclaredType DynamicObject = c.getDeclaredTypeOptional(DynamicObject_Name);
-    public final DeclaredType ObjectType = c.getDeclaredTypeOptional(ObjectType_Name);
 
     // Utilities API
     public static final String TruffleWeakReference_Name = "com.oracle.truffle.api.utilities.TruffleWeakReference";

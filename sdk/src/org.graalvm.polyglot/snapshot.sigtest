@@ -131,11 +131,6 @@ meth public java.util.function.Predicate<{java.util.function.Predicate%0}> or(ja
 meth public static <%0 extends java.lang.Object> java.util.function.Predicate<{%%0}> isEqual(java.lang.Object)
 meth public static <%0 extends java.lang.Object> java.util.function.Predicate<{%%0}> not(java.util.function.Predicate<? super {%%0}>)
 
-CLSS public abstract interface !annotation jdk.internal.vm.annotation.AOTSafeClassInitializer
- anno 0 java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy value=RUNTIME)
- anno 0 java.lang.annotation.Target(java.lang.annotation.ElementType[] value=[TYPE])
-intf java.lang.annotation.Annotation
-
 CLSS public final org.graalvm.polyglot.Context
 innr public final Builder
 intf java.lang.AutoCloseable
@@ -144,6 +139,7 @@ meth public !varargs static org.graalvm.polyglot.Context$Builder newBuilder(java
 meth public boolean equals(java.lang.Object)
 meth public boolean initialize(java.lang.String)
 meth public int hashCode()
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.Engine getEngine()
 meth public org.graalvm.polyglot.Value asValue(java.lang.Object)
 meth public org.graalvm.polyglot.Value eval(java.lang.String,java.lang.CharSequence)
@@ -165,6 +161,7 @@ hfds ALL_HOST_CLASSES,EMPTY,NO_HOST_CLASSES,UNSET_HOST_LOOKUP,creatorContext,cur
 
 CLSS public final org.graalvm.polyglot.Context$Builder
  outer org.graalvm.polyglot.Context
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.Context build()
 meth public org.graalvm.polyglot.Context$Builder allowAllAccess(boolean)
 meth public org.graalvm.polyglot.Context$Builder allowCreateProcess(boolean)
@@ -190,6 +187,7 @@ meth public org.graalvm.polyglot.Context$Builder engine(org.graalvm.polyglot.Eng
 meth public org.graalvm.polyglot.Context$Builder environment(java.lang.String,java.lang.String)
 meth public org.graalvm.polyglot.Context$Builder environment(java.util.Map<java.lang.String,java.lang.String>)
 meth public org.graalvm.polyglot.Context$Builder err(java.io.OutputStream)
+meth public org.graalvm.polyglot.Context$Builder exceptionHandler(java.util.function.Consumer<org.graalvm.polyglot.PolyglotException>)
 meth public org.graalvm.polyglot.Context$Builder extendHostAccess(org.graalvm.polyglot.HostAccess,java.util.function.Consumer<org.graalvm.polyglot.HostAccess$Builder>)
 meth public org.graalvm.polyglot.Context$Builder extendIO(org.graalvm.polyglot.io.IOAccess,java.util.function.Consumer<org.graalvm.polyglot.io.IOAccess$Builder>)
 meth public org.graalvm.polyglot.Context$Builder fileSystem(org.graalvm.polyglot.io.FileSystem)
@@ -207,13 +205,15 @@ meth public org.graalvm.polyglot.Context$Builder processHandler(org.graalvm.poly
 meth public org.graalvm.polyglot.Context$Builder resourceLimits(org.graalvm.polyglot.ResourceLimits)
 meth public org.graalvm.polyglot.Context$Builder sandbox(org.graalvm.polyglot.SandboxPolicy)
 meth public org.graalvm.polyglot.Context$Builder serverTransport(org.graalvm.polyglot.io.MessageTransport)
+meth public org.graalvm.polyglot.Context$Builder spawnIsolate(boolean)
 meth public org.graalvm.polyglot.Context$Builder timeZone(java.time.ZoneId)
 meth public org.graalvm.polyglot.Context$Builder useSystemExit(boolean)
 supr java.lang.Object
-hfds allowAllAccess,allowCreateProcess,allowCreateThread,allowExperimentalOptions,allowHostAccess,allowHostClassLoading,allowIO,allowInnerContextOptions,allowNativeAccess,allowValueSharing,arguments,currentWorkingDirectory,customFileSystem,customLogHandler,environment,environmentAccess,err,hostAccess,hostClassFilter,hostClassLoader,in,ioAccess,messageTransport,options,out,permittedLanguages,polyglotAccess,processHandler,resourceLimits,sandboxPolicy,sharedEngine,useSystemExit,zone
+hfds allowAllAccess,allowCreateProcess,allowCreateThread,allowExperimentalOptions,allowHostAccess,allowHostClassLoading,allowIO,allowInnerContextOptions,allowNativeAccess,allowValueSharing,arguments,currentWorkingDirectory,customFileSystem,customLogHandler,environment,environmentAccess,err,exceptionHandler,hostAccess,hostClassFilter,hostClassLoader,in,ioAccess,messageTransport,options,out,permittedLanguages,polyglotAccess,processHandler,resourceLimits,sandboxPolicy,sharedEngine,spawnIsolate,useSystemExit,zone
 
 CLSS public final org.graalvm.polyglot.Engine
 innr public final Builder
+innr public abstract interface static CancellationCallback
 intf java.lang.AutoCloseable
 meth public !varargs static boolean copyResources(java.nio.file.Path,java.lang.String[]) throws java.io.IOException
 meth public !varargs static org.graalvm.polyglot.Engine create(java.lang.String[])
@@ -222,10 +222,13 @@ meth public boolean storeCache(java.nio.file.Path)
 meth public boolean storeCache(java.nio.file.Path,org.graalvm.nativeimage.c.type.WordPointer)
 meth public java.lang.String getImplementationName()
 meth public java.lang.String getVersion()
+meth public java.lang.String toString()
+meth public java.nio.ByteBuffer persistCache(org.graalvm.polyglot.Engine$CancellationCallback)
 meth public java.util.Map<java.lang.String,org.graalvm.polyglot.Instrument> getInstruments()
 meth public java.util.Map<java.lang.String,org.graalvm.polyglot.Language> getLanguages()
 meth public java.util.Set<org.graalvm.polyglot.Source> getCachedSources()
 meth public org.graalvm.options.OptionDescriptors getOptions()
+meth public static boolean supportsCompilation()
 meth public static java.nio.file.Path findHome()
 meth public static org.graalvm.polyglot.Engine create()
 meth public static org.graalvm.polyglot.Engine$Builder newBuilder()
@@ -235,11 +238,18 @@ supr java.lang.Object
 hfds EMPTY,ENGINES,creatorEngine,currentAPI,dispatch,initializationException,receiver,shutdownHookInitialized
 hcls APIAccessImpl,CleanableReference,ContextReference,EngineReference,EngineShutDownHook,ImplHolder,PolyglotInvalid
 
+CLSS public abstract interface static org.graalvm.polyglot.Engine$CancellationCallback
+ outer org.graalvm.polyglot.Engine
+ anno 0 java.lang.FunctionalInterface()
+meth public abstract boolean shouldCancel()
+
 CLSS public final org.graalvm.polyglot.Engine$Builder
  outer org.graalvm.polyglot.Engine
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.Engine build()
 meth public org.graalvm.polyglot.Engine$Builder allowExperimentalOptions(boolean)
 meth public org.graalvm.polyglot.Engine$Builder err(java.io.OutputStream)
+meth public org.graalvm.polyglot.Engine$Builder exceptionHandler(java.util.function.Consumer<org.graalvm.polyglot.PolyglotException>)
 meth public org.graalvm.polyglot.Engine$Builder in(java.io.InputStream)
 meth public org.graalvm.polyglot.Engine$Builder logHandler(java.io.OutputStream)
 meth public org.graalvm.polyglot.Engine$Builder logHandler(java.util.logging.Handler)
@@ -248,9 +258,10 @@ meth public org.graalvm.polyglot.Engine$Builder options(java.util.Map<java.lang.
 meth public org.graalvm.polyglot.Engine$Builder out(java.io.OutputStream)
 meth public org.graalvm.polyglot.Engine$Builder sandbox(org.graalvm.polyglot.SandboxPolicy)
 meth public org.graalvm.polyglot.Engine$Builder serverTransport(org.graalvm.polyglot.io.MessageTransport)
+meth public org.graalvm.polyglot.Engine$Builder spawnIsolate(boolean)
 meth public org.graalvm.polyglot.Engine$Builder useSystemProperties(boolean)
 supr java.lang.Object
-hfds allowExperimentalOptionSystemPropertyValue,allowExperimentalOptions,boundEngine,customLogHandler,err,in,messageTransport,options,out,permittedLanguages,sandboxPolicy,useSystemProperties
+hfds allowExperimentalOptionSystemPropertyValue,allowExperimentalOptions,boundEngine,customLogHandler,err,exceptionHandler,in,messageTransport,options,out,permittedLanguages,sandboxPolicy,spawnIsolate,useSystemProperties
 
 CLSS public final org.graalvm.polyglot.EnvironmentAccess
 fld public final static org.graalvm.polyglot.EnvironmentAccess INHERIT
@@ -279,13 +290,14 @@ meth public java.lang.String toString()
 meth public static org.graalvm.polyglot.HostAccess$Builder newBuilder()
 meth public static org.graalvm.polyglot.HostAccess$Builder newBuilder(org.graalvm.polyglot.HostAccess)
 supr java.lang.Object
-hfds EMPTY,accessAnnotations,allowAccessInheritance,allowAllClassImplementations,allowAllInterfaceImplementations,allowArrayAccess,allowBigIntegerNumberAccess,allowBufferAccess,allowIterableAccess,allowIteratorAccess,allowListAccess,allowMapAccess,allowMutableTargetMappings,allowPublic,disableMethodScoping,disableMethodScopingAnnotations,excludeTypes,impl,implementableAnnotations,implementableTypes,members,methodLookup,methodScopingDefault,name,targetMappings
+hfds EMPTY,accessAnnotations,allowAccessInheritance,allowAllClassImplementations,allowAllInterfaceImplementations,allowArrayAccess,allowBigIntegerNumberAccess,allowBufferAccess,allowIterableAccess,allowIteratorAccess,allowListAccess,allowMapAccess,allowMutableTargetMappings,allowPublic,disableMethodScoping,disableMethodScopingAnnotations,excludeTypes,impl,implementableAnnotations,implementableTypes,members,methodLookup,methodScopingDefault,name,publicAccessPredicates,targetMappings
 
 CLSS public final org.graalvm.polyglot.HostAccess$Builder
  outer org.graalvm.polyglot.HostAccess
 meth public !varargs org.graalvm.polyglot.HostAccess$Builder allowMutableTargetMappings(org.graalvm.polyglot.HostAccess$MutableTargetMapping[])
 meth public <%0 extends java.lang.Object, %1 extends java.lang.Object> org.graalvm.polyglot.HostAccess$Builder targetTypeMapping(java.lang.Class<{%%0}>,java.lang.Class<{%%1}>,java.util.function.Predicate<{%%0}>,java.util.function.Function<{%%0},{%%1}>)
 meth public <%0 extends java.lang.Object, %1 extends java.lang.Object> org.graalvm.polyglot.HostAccess$Builder targetTypeMapping(java.lang.Class<{%%0}>,java.lang.Class<{%%1}>,java.util.function.Predicate<{%%0}>,java.util.function.Function<{%%0},{%%1}>,org.graalvm.polyglot.HostAccess$TargetMappingPrecedence)
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.HostAccess build()
 meth public org.graalvm.polyglot.HostAccess$Builder allowAccess(java.lang.reflect.Executable)
 meth public org.graalvm.polyglot.HostAccess$Builder allowAccess(java.lang.reflect.Field)
@@ -303,6 +315,7 @@ meth public org.graalvm.polyglot.HostAccess$Builder allowIteratorAccess(boolean)
 meth public org.graalvm.polyglot.HostAccess$Builder allowListAccess(boolean)
 meth public org.graalvm.polyglot.HostAccess$Builder allowMapAccess(boolean)
 meth public org.graalvm.polyglot.HostAccess$Builder allowPublicAccess(boolean)
+meth public org.graalvm.polyglot.HostAccess$Builder allowPublicAccess(java.util.function.Predicate<java.lang.reflect.Member>)
 meth public org.graalvm.polyglot.HostAccess$Builder denyAccess(java.lang.Class<?>)
 meth public org.graalvm.polyglot.HostAccess$Builder denyAccess(java.lang.Class<?>,boolean)
 meth public org.graalvm.polyglot.HostAccess$Builder disableMethodScoping(java.lang.reflect.Executable)
@@ -310,7 +323,7 @@ meth public org.graalvm.polyglot.HostAccess$Builder disableMethodScopingAnnotate
 meth public org.graalvm.polyglot.HostAccess$Builder methodScoping(boolean)
 meth public org.graalvm.polyglot.HostAccess$Builder useModuleLookup(java.lang.invoke.MethodHandles$Lookup)
 supr java.lang.Object
-hfds accessAnnotations,allowAccessInheritance,allowAllClassImplementations,allowAllImplementations,allowArrayAccess,allowBigIntegerNumberAccess,allowBufferAccess,allowIterableAccess,allowIteratorAccess,allowListAccess,allowMapAccess,allowMutableTargetMappings,allowPublic,disableMethodScoping,disableMethodScopingAnnotations,excludeTypes,implementableTypes,implementationAnnotations,members,methodLookup,methodScopingDefault,name,targetMappings
+hfds accessAnnotations,allowAccessInheritance,allowAllClassImplementations,allowAllImplementations,allowArrayAccess,allowBigIntegerNumberAccess,allowBufferAccess,allowIterableAccess,allowIteratorAccess,allowListAccess,allowMapAccess,allowMutableTargetMappings,allowPublic,disableMethodScoping,disableMethodScopingAnnotations,excludeTypes,implementableTypes,implementationAnnotations,members,methodLookup,methodScopingDefault,name,publicAccessPredicates,targetMappings
 
 CLSS public abstract interface static !annotation org.graalvm.polyglot.HostAccess$DisableMethodScoping
  outer org.graalvm.polyglot.HostAccess
@@ -361,6 +374,7 @@ meth public java.lang.String getId()
 meth public java.lang.String getName()
 meth public java.lang.String getVersion()
 meth public java.lang.String getWebsite()
+meth public java.lang.String toString()
 meth public org.graalvm.options.OptionDescriptors getOptions()
 meth public org.graalvm.options.OptionDescriptors getSourceOptions()
 supr java.lang.Object
@@ -376,6 +390,7 @@ meth public java.lang.String getImplementationName()
 meth public java.lang.String getName()
 meth public java.lang.String getVersion()
 meth public java.lang.String getWebsite()
+meth public java.lang.String toString()
 meth public java.util.Set<java.lang.String> getMimeTypes()
 meth public org.graalvm.options.OptionDescriptors getOptions()
 meth public org.graalvm.options.OptionDescriptors getSourceOptions()
@@ -386,6 +401,7 @@ CLSS public final org.graalvm.polyglot.PolyglotAccess
 fld public final static org.graalvm.polyglot.PolyglotAccess ALL
 fld public final static org.graalvm.polyglot.PolyglotAccess NONE
 innr public final Builder
+meth public java.lang.String toString()
 meth public static org.graalvm.polyglot.PolyglotAccess$Builder newBuilder()
 supr java.lang.Object
 hfds allAccess,bindingsAccess,evalAccess
@@ -394,6 +410,7 @@ CLSS public final org.graalvm.polyglot.PolyglotAccess$Builder
  outer org.graalvm.polyglot.PolyglotAccess
 meth public !varargs org.graalvm.polyglot.PolyglotAccess$Builder allowEvalBetween(java.lang.String[])
 meth public !varargs org.graalvm.polyglot.PolyglotAccess$Builder denyEvalBetween(java.lang.String[])
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.PolyglotAccess build()
 meth public org.graalvm.polyglot.PolyglotAccess$Builder allowBindingsAccess(java.lang.String)
 meth public org.graalvm.polyglot.PolyglotAccess$Builder allowEval(java.lang.String,java.lang.String)
@@ -452,12 +469,14 @@ hfds context
 
 CLSS public final org.graalvm.polyglot.ResourceLimits
 innr public final Builder
+meth public java.lang.String toString()
 meth public static org.graalvm.polyglot.ResourceLimits$Builder newBuilder()
 supr java.lang.Object
 hfds EMPTY,receiver
 
 CLSS public final org.graalvm.polyglot.ResourceLimits$Builder
  outer org.graalvm.polyglot.ResourceLimits
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.ResourceLimits build()
 meth public org.graalvm.polyglot.ResourceLimits$Builder onLimit(java.util.function.Consumer<org.graalvm.polyglot.ResourceLimitEvent>)
 meth public org.graalvm.polyglot.ResourceLimits$Builder statementLimit(long,java.util.function.Predicate<org.graalvm.polyglot.Source>)
@@ -518,6 +537,7 @@ hfds EMPTY,IMPL,dispatch,receiver
 
 CLSS public org.graalvm.polyglot.Source$Builder
  outer org.graalvm.polyglot.Source
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.Source build() throws java.io.IOException
 meth public org.graalvm.polyglot.Source buildLiteral()
 meth public org.graalvm.polyglot.Source$Builder cached(boolean)
@@ -598,6 +618,7 @@ meth public boolean hasIteratorNextElement()
 meth public boolean hasMember(java.lang.String)
 meth public boolean hasMembers()
 meth public boolean hasMetaParents()
+meth public boolean hasStaticScope()
 meth public boolean isBoolean()
 meth public boolean isBufferWritable()
 meth public boolean isDate()
@@ -659,6 +680,7 @@ meth public org.graalvm.polyglot.Value getIteratorNextElement()
 meth public org.graalvm.polyglot.Value getMember(java.lang.String)
 meth public org.graalvm.polyglot.Value getMetaObject()
 meth public org.graalvm.polyglot.Value getMetaParents()
+meth public org.graalvm.polyglot.Value getStaticScope()
 meth public short asShort()
 meth public short readBufferShort(java.nio.ByteOrder,long)
 meth public static org.graalvm.polyglot.Value asValue(java.lang.Object)
@@ -729,6 +751,8 @@ meth public long getFileStoreTotalSpace(java.nio.file.Path) throws java.io.IOExc
 meth public long getFileStoreUnallocatedSpace(java.nio.file.Path) throws java.io.IOException
 meth public long getFileStoreUsableSpace(java.nio.file.Path) throws java.io.IOException
 meth public static org.graalvm.polyglot.io.FileSystem allowInternalResourceAccess(org.graalvm.polyglot.io.FileSystem)
+ anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="25.1")
+meth public static org.graalvm.polyglot.io.FileSystem allowInternalResources(org.graalvm.polyglot.io.FileSystem)
 meth public static org.graalvm.polyglot.io.FileSystem allowLanguageHomeAccess(org.graalvm.polyglot.io.FileSystem)
  anno 0 java.lang.Deprecated(boolean forRemoval=false, java.lang.String since="")
 meth public static org.graalvm.polyglot.io.FileSystem newDefaultFileSystem()
@@ -762,6 +786,7 @@ hfds allowHostFileAccess,allowHostSocketAccess,fileSystem,name
 
 CLSS public final static org.graalvm.polyglot.io.IOAccess$Builder
  outer org.graalvm.polyglot.io.IOAccess
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.io.IOAccess build()
 meth public org.graalvm.polyglot.io.IOAccess$Builder allowHostFileAccess(boolean)
 meth public org.graalvm.polyglot.io.IOAccess$Builder allowHostSocketAccess(boolean)
@@ -833,6 +858,7 @@ hfds dispatch,receiver
 CLSS public final org.graalvm.polyglot.management.ExecutionListener
 innr public final Builder
 intf java.lang.AutoCloseable
+meth public java.lang.String toString()
 meth public static org.graalvm.polyglot.management.ExecutionListener$Builder newBuilder()
 meth public void close()
 supr java.lang.Object
@@ -840,6 +866,7 @@ hfds EMPTY,creatorEngine,dispatch,receiver
 
 CLSS public final org.graalvm.polyglot.management.ExecutionListener$Builder
  outer org.graalvm.polyglot.management.ExecutionListener
+meth public java.lang.String toString()
 meth public org.graalvm.polyglot.management.ExecutionListener attach(org.graalvm.polyglot.Engine)
 meth public org.graalvm.polyglot.management.ExecutionListener$Builder collectExceptions(boolean)
 meth public org.graalvm.polyglot.management.ExecutionListener$Builder collectInputValues(boolean)

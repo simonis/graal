@@ -37,14 +37,21 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.svm.core.CPUFeatureAccess;
-import com.oracle.svm.core.SubstrateTargetDescription;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.jdk.RuntimeSupport;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.LayeredImageSingletonSupport;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.MultiLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -71,6 +78,11 @@ import jdk.vm.ci.riscv64.RISCV64;
 class RuntimeCPUFeatureCheckFeature implements InternalFeature {
 
     @Override
+    public boolean isInConfiguration(IsInConfigurationAccess access) {
+        return ImageLayerBuildingSupport.firstImageBuild();
+    }
+
+    @Override
     public void duringSetup(DuringSetupAccess access) {
         RuntimeSupport.getRuntimeSupport().addInitializationHook(new RuntimeCPUFeatureCheckInitializer());
     }
@@ -91,7 +103,9 @@ class RuntimeCPUFeatureCheckFeature implements InternalFeature {
 final class RuntimeCPUFeatureCheckInitializer implements RuntimeSupport.Hook {
     @Override
     public void execute(boolean isFirstIsolate) {
-        RuntimeCPUFeatureCheckImpl.instance().reinitialize();
+        for (var impl : RuntimeCPUFeatureCheckImpl.layeredSingletons()) {
+            impl.reinitialize();
+        }
     }
 }
 
@@ -104,17 +118,29 @@ final class RuntimeCPUFeatureCheckInitializer implements RuntimeSupport.Hook {
  */
 @AutomaticallyRegisteredImageSingleton
 @NodeIntrinsicFactory
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = MultiLayer.class, other = PartiallyLayerAware.class)
 public final class RuntimeCPUFeatureCheckImpl {
 
-    public static RuntimeCPUFeatureCheckImpl instance() {
-        return ImageSingletons.lookup(RuntimeCPUFeatureCheckImpl.class);
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public static RuntimeCPUFeatureCheckImpl currentLayer() {
+        return LayeredImageSingletonSupport.singleton().lookup(RuntimeCPUFeatureCheckImpl.class, false, true);
+    }
+
+    static RuntimeCPUFeatureCheckImpl[] layeredSingletons() {
+        return MultiLayeredImageSingleton.getAllLayers(RuntimeCPUFeatureCheckImpl.class);
+    }
+
+    /// Gets the singleton installed for the topmost runtime image layer.
+    public static RuntimeCPUFeatureCheckImpl runtimeLastLayer() {
+        var singletons = layeredSingletons();
+        return singletons[singletons.length - 1];
     }
 
     /**
      * Stores the CPU features available at run time.
      *
      * The field is {@linkplain RuntimeCPUFeatureCheckInitializer initialized at run time} and
-     * accessed via an {@linkplain #instance() image singleton}.
+     * accessed via an {@linkplain #layeredSingletons() image singleton}.
      *
      * We only emit run time checks for a limited set features. To compress the encoding, only
      * features specified by {@link RuntimeCPUFeatureCheck#getSupportedFeatures(Architecture)} are
@@ -153,7 +179,7 @@ public final class RuntimeCPUFeatureCheckImpl {
     @Platforms(Platform.HOSTED_ONLY.class)
     @SuppressWarnings("rawtypes")
     RuntimeCPUFeatureCheckImpl() {
-        Architecture arch = ConfigurationValues.getTarget().arch;
+        Architecture arch = SubstrateTarget.getArchitecture();
         Set<? extends Enum<?>> supportedFeatures = RuntimeCPUFeatureCheck.getSupportedFeatures(arch);
         int size = supportedFeatures.size();
         if (size == 0) {
@@ -244,12 +270,21 @@ public final class RuntimeCPUFeatureCheckImpl {
     }
 
     private byte getEncodingUnchecked(Enum<?> feature) {
-        return feature.ordinal() < enumToBitIndex.length ? enumToBitIndex[feature.ordinal()] : -1;
+        return enumToBitIndex != null && feature.ordinal() < enumToBitIndex.length ? enumToBitIndex[feature.ordinal()] : -1;
+    }
+
+    /// Determines whether `feature` is available on the current CPU.
+    ///
+    /// Returns `false` when `feature` is not eligible for a runtime CPU feature check. The
+    /// `cpuFeatureMask` stores unavailable features as set bits.
+    public boolean isAvailableAtRuntime(Enum<?> feature) {
+        byte encoding = getEncodingUnchecked(feature);
+        return encoding >= 0 && (cpuFeatureMask & (1 << encoding)) == 0;
     }
 
     private int getEncoding(Enum<?> feature) {
         if (SubstrateUtil.HOSTED) {
-            GraalError.guarantee(enumToBitIndex != null, "No features registered for run time feature check for platform %s", ConfigurationValues.getTarget().arch);
+            GraalError.guarantee(enumToBitIndex != null, "No features registered for run time feature check for platform %s", SubstrateTarget.getArchitecture());
         }
         byte code = getEncodingUnchecked(feature);
         if (SubstrateUtil.HOSTED) {
@@ -299,9 +334,9 @@ public final class RuntimeCPUFeatureCheckImpl {
              */
             MetaAccessProvider metaAccess = b.getMetaAccess();
             ResolvedJavaField field = getMaskField(metaAccess);
-            ConstantNode object = b.add(ConstantNode.forConstant(b.getSnippetReflection().forObject(instance()), metaAccess));
+            ConstantNode object = b.add(ConstantNode.forConstant(b.getSnippetReflection().forObject(currentLayer()), metaAccess));
             ValueNode featureMask = b.add(LoadFieldNode.create(null, object, field));
-            int mask = instance().computeFeatureMask(features);
+            int mask = currentLayer().computeFeatureMask(features);
             GraalError.guarantee(JavaKind.Int.equals(field.getType().getJavaKind()), "Expected field to be an int");
             LogicNode featureBitIsZero = b.add(IntegerTestNode.create(featureMask, ConstantNode.forInt(mask), NodeView.DEFAULT));
             ValueNode condition = b.add(ConditionalNode.create(featureBitIsZero, ConstantNode.forBoolean(true), ConstantNode.forBoolean(false), NodeView.DEFAULT));
@@ -347,7 +382,7 @@ public final class RuntimeCPUFeatureCheckImpl {
      */
     @Fold
     public static boolean shouldCreateRuntimeFeatureCheck(EnumSet<?> features) {
-        SubstrateTargetDescription target = ConfigurationValues.getTarget();
+        SubstrateTarget target = SubstrateTarget.singleton();
         return containsAll(target.getRuntimeCheckedCPUFeatures(), features) && containsAll(RuntimeCPUFeatureCheck.getSupportedFeatures(target.arch), features);
     }
 
@@ -358,7 +393,7 @@ public final class RuntimeCPUFeatureCheckImpl {
 
     @Fold
     static EnumSet<?> getStaticFeatures() {
-        Architecture arch = ConfigurationValues.getTarget().arch;
+        Architecture arch = SubstrateTarget.getArchitecture();
         if (arch instanceof AMD64) {
             return ((AMD64) arch).getFeatures();
         } else if (arch instanceof AArch64) {

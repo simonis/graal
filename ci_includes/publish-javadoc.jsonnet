@@ -6,6 +6,8 @@
   local javadoc_publisher = {
     name: 'graal-publish-javadoc-' + self.jdk_name,
     run+: [
+      ["bash", "-c", "git rev-parse --abbrev-ref HEAD | grep -Eq '^(master|release/)' || { echo 'This job only runs on master or release/* branches'; exit 1; }"],
+      ["git", "fetch", "--quiet", "--no-tags", "origin", "+refs/tags/*:refs/tags/*"],
       ["cd", "./sdk"],
       ["mx", "build"],
       ["mx", "javadoc"],
@@ -20,7 +22,7 @@
       ["zip", "-r", "javadoc.zip", "javadoc"],
       ["cd", "../compiler"],
       ["mx", "build"],
-      ["mx", "javadoc", "--projects", "jdk.graal.compiler", "--packages", "jdk.graal.compiler.graphio,org.graalvm.word,org.graalvm.collections,com.oracle.truffle.compiler,org.graalvm.nativeimage,com.oracle.svm.core.annotate"],
+      ["mx", "javadoc", "--projects", "jdk.graal.compiler", "--packages", "jdk.graal.compiler.graphio,jdk.graal.compiler.options,org.graalvm.word,org.graalvm.collections,com.oracle.truffle.compiler,org.graalvm.nativeimage,com.oracle.svm.core.annotate"],
       ["cd", "src/jdk.graal.compiler/"],
       ["zip", "-r", "../../graphio-javadoc.zip", "javadoc"],
       ["cd", "../../.."],
@@ -28,16 +30,8 @@
       ["cd", ".."],
       ["git", "clone", ["mx", "urlrewrite", "https://github.com/graalvm/graalvm-website.git"]],
       ["cd", "graalvm-website"],
-      # dev-only
-      ["rm", "-rf", "sdk/javadoc", "truffle/javadoc", "tools/javadoc", "graphio/javadoc"],
-      ["git", "status" ],
-      ["unzip", "-o", "-d", "sdk", "$GRAAL_REPO/sdk/javadoc.zip"],
-      ["unzip", "-o", "-d", "truffle", "$GRAAL_REPO/truffle/javadoc.zip"],
-      ["unzip", "-o", "-d", "tools", "$GRAAL_REPO/tools/javadoc.zip"],
-      ["unzip", "-o", "-d", "graphio", "$GRAAL_REPO/compiler/graphio-javadoc.zip"],
-      ["git", "add", "sdk/javadoc", "truffle/javadoc", "tools/javadoc", "graphio/javadoc"],
       # dev or release
-      ["set-export", "GRAAL_VERSION", "dev"],
+      ["set-export", "GRAAL_VERSION", "25.4"],
       ["rm", "-rf", "$GRAAL_VERSION/javadoc"],
       ["mkdir", "-p", "$GRAAL_VERSION/javadoc"],
       ["unzip", "-o", "-d", "$GRAAL_VERSION/javadoc/tmp", "$GRAAL_REPO/sdk/javadoc.zip"],
@@ -59,7 +53,7 @@
   },
 
   local all_builds = [
-    common.post_merge + linux_amd64 + common.labsjdkLatest + javadoc_publisher,
+    common.on_demand + linux_amd64 + common.labsjdkLatest + javadoc_publisher,
   ],
   // adds a "defined_in" field to all builds mentioning the location of this current file
   builds:: utils.add_defined_in(all_builds, std.thisFile),

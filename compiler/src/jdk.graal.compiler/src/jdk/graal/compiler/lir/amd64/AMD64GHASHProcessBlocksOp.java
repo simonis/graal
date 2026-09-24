@@ -24,6 +24,8 @@
  */
 package jdk.graal.compiler.lir.amd64;
 
+import static jdk.graal.compiler.lir.amd64.AMD64LIRHelper.pointerConstant;
+import static jdk.graal.compiler.lir.amd64.AMD64LIRHelper.recordExternalAddress;
 import static jdk.vm.ci.amd64.AMD64.rax;
 import static jdk.vm.ci.amd64.AMD64.xmm0;
 import static jdk.vm.ci.amd64.AMD64.xmm1;
@@ -41,8 +43,8 @@ import static jdk.vm.ci.amd64.AMD64.xmm7;
 import static jdk.vm.ci.amd64.AMD64.xmm8;
 import static jdk.vm.ci.amd64.AMD64.xmm9;
 import static jdk.vm.ci.code.ValueUtil.asRegister;
-import static jdk.graal.compiler.lir.amd64.AMD64LIRHelper.pointerConstant;
-import static jdk.graal.compiler.lir.amd64.AMD64LIRHelper.recordExternalAddress;
+
+import java.util.EnumSet;
 
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.asm.amd64.AMD64Address;
@@ -56,7 +58,6 @@ import jdk.graal.compiler.lir.SyncPort;
 import jdk.graal.compiler.lir.asm.ArrayDataPointerConstant;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.lir.gen.LIRGeneratorTool;
-
 import jdk.vm.ci.amd64.AMD64;
 import jdk.vm.ci.amd64.AMD64Kind;
 import jdk.vm.ci.code.Register;
@@ -64,8 +65,8 @@ import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.Value;
 
 // @formatter:off
-@SyncPort(from = "https://github.com/openjdk/jdk/blob/4994bd594299e91e804438692e068b1c5dd5cc02/src/hotspot/cpu/x86/stubGenerator_x86_64_ghash.cpp#L33-L538",
-          sha1 = "08a9206ec007eb5dc3ad1b39535e5621091f00fb")
+@SyncPort(from = "https://github.com/openjdk/jdk25u/blob/c59e44a7aa2aeff0823830b698d524523b996650/src/hotspot/cpu/x86/stubGenerator_x86_64_ghash.cpp#L33-L538",
+          sha1 = "6af76ea94a4ac76b08ec956ac969cb606713b785")
 // @formatter:on
 public final class AMD64GHASHProcessBlocksOp extends AMD64LIRInstruction {
 
@@ -82,6 +83,7 @@ public final class AMD64GHASHProcessBlocksOp extends AMD64LIRInstruction {
     @Temp protected Value[] temps;
 
     public AMD64GHASHProcessBlocksOp(LIRGeneratorTool tool,
+                    EnumSet<AMD64.CPUFeature> runtimeCheckedCPUFeatures,
                     AllocatableValue stateValue,
                     AllocatableValue htblValue,
                     AllocatableValue originalDataValue,
@@ -96,7 +98,7 @@ public final class AMD64GHASHProcessBlocksOp extends AMD64LIRInstruction {
         this.dataValue = tool.newVariable(originalDataValue.getValueKind());
         this.blocksValue = tool.newVariable(originalBlocksValue.getValueKind());
 
-        if (((AMD64) tool.target().arch).getFeatures().contains(AMD64.CPUFeature.AVX)) {
+        if (AMD64ComplexVectorOp.supports(tool.target(), runtimeCheckedCPUFeatures, AMD64.CPUFeature.AVX)) {
             this.temps = new Value[]{
                             rax.asValue(),
                             xmm0.asValue(),

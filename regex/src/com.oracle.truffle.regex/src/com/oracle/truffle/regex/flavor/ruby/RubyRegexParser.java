@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -61,12 +61,14 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.regex.AbstractRegexObject;
 import com.oracle.truffle.regex.RegexFlags;
 import com.oracle.truffle.regex.RegexLanguage;
+import com.oracle.truffle.regex.RegexRootNode;
 import com.oracle.truffle.regex.RegexSource;
 import com.oracle.truffle.regex.RegexSyntaxException;
 import com.oracle.truffle.regex.RegexSyntaxException.ErrorCode;
 import com.oracle.truffle.regex.UnsupportedRegexException;
 import com.oracle.truffle.regex.charset.CodePointSet;
 import com.oracle.truffle.regex.charset.CodePointSetAccumulator;
+import com.oracle.truffle.regex.tregex.TRegexOptions;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
 import com.oracle.truffle.regex.tregex.buffer.IntArrayBuffer;
 import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
@@ -77,7 +79,7 @@ import com.oracle.truffle.regex.tregex.parser.RegexParser;
 import com.oracle.truffle.regex.tregex.parser.RegexValidator;
 import com.oracle.truffle.regex.tregex.parser.Token;
 import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
-import com.oracle.truffle.regex.tregex.string.Encodings;
+import com.oracle.truffle.regex.tregex.string.Encoding;
 import com.oracle.truffle.regex.util.TBitSet;
 
 /**
@@ -123,7 +125,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         for (char ctypeChar : new Character[]{'d', 'h', 's', 'w'}) {
             CodePointSet charSet = UNICODE_CHAR_CLASSES.get(ctypeChar);
             char complementCTypeChar = Character.toUpperCase(ctypeChar);
-            CodePointSet complementCharSet = charSet.createInverse(Encodings.UTF_32);
+            CodePointSet complementCharSet = charSet.createInverse(Encoding.UTF_32);
             UNICODE_CHAR_CLASSES.put(complementCTypeChar, complementCharSet);
             ASCII_CHAR_CLASSES.put(ctypeChar, asciiRange.createIntersectionSingleRange(charSet));
             ASCII_CHAR_CLASSES.put(complementCTypeChar, complementCharSet.union(nonAsciiRange));
@@ -131,12 +133,12 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
 
         UNICODE_POSIX_CHAR_CLASSES = new HashMap<>(14);
         ASCII_POSIX_CHAR_CLASSES = new HashMap<>(14);
-        CompilationBuffer buffer = new CompilationBuffer(Encodings.UTF_32);
+        CompilationBuffer buffer = new CompilationBuffer(Encoding.UTF_32);
 
         CodePointSet blank = UNICODE.getProperty("General_Category=Space_Separator").union(CodePointSet.create('\t', '\t'));
         CodePointSet cntrl = UNICODE.getProperty("General_Category=Control");
         CodePointSet graph = space.union(UNICODE.getProperty("General_Category=Control")).union(UNICODE.getProperty("General_Category=Surrogate")).union(
-                        UNICODE.getProperty("General_Category=Unassigned")).createInverse(Encodings.UTF_32);
+                        UNICODE.getProperty("General_Category=Unassigned")).createInverse(Encoding.UTF_32);
         UNICODE_POSIX_CHAR_CLASSES.put("alpha", alpha);
         UNICODE_POSIX_CHAR_CLASSES.put("alnum", alpha.union(digit));
         UNICODE_POSIX_CHAR_CLASSES.put("blank", blank);
@@ -290,6 +292,8 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      * backreferences are not allowed.
      */
     private int lookbehindDepth;
+    private int parseDepth;
+    private int charClassNesting;
     /**
      * For syntax checking purposes, we need to maintain some metadata about the current enclosing
      * capture groups.
@@ -379,6 +383,8 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         this.globalFlags = new RubyFlags(inFlags);
         this.flagsStack = new LinkedList<>();
         this.lookbehindDepth = 0;
+        this.parseDepth = 0;
+        this.charClassNesting = 0;
         this.groupStack = new ArrayDeque<>();
         this.namedCaptureGroups = null;
         this.groupIndex = 0;
@@ -730,6 +736,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     // The parser
 
     private void run() {
+        RegexRootNode.checkThreadInterrupted();
         scanForCaptureGroups();
 
         flagsStack.push(globalFlags);
@@ -747,29 +754,38 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      * vertical bars.
      */
     private void disjunction(boolean toplevel) {
-        boolean beginningAnchor = beginningAnchor();
-        if (beginningAnchor && !toplevel) {
-            bailOut("\\G anchor is only supported in top-level alternatives");
-        }
-
-        while (true) {
-            alternative();
-
-            if (match("|")) {
-                nextSequence();
-                canHaveQuantifier = false;
-
-                if (beginningAnchor() != beginningAnchor) {
-                    bailOut("\\G anchor is only supported when used at the start of all top-level alternatives");
-                }
-            } else {
-                break;
+        parseDepth++;
+        try {
+            if (parseDepth > TRegexOptions.TRegexParserTreeMaxNestingLevel) {
+                bailOut("pattern maximum nesting level exceeded");
             }
-        }
+            boolean beginningAnchor = beginningAnchor();
+            if (beginningAnchor && !toplevel) {
+                bailOut("\\G anchor is only supported in top-level alternatives");
+            }
 
-        if (beginningAnchor) {
-            assert toplevel;
-            startsWithBeginningAnchor = true;
+            while (true) {
+                RegexRootNode.checkThreadInterrupted();
+                alternative();
+
+                if (match("|")) {
+                    nextSequence();
+                    canHaveQuantifier = false;
+
+                    if (beginningAnchor() != beginningAnchor) {
+                        bailOut("\\G anchor is only supported when used at the start of all top-level alternatives");
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            if (beginningAnchor) {
+                assert toplevel;
+                startsWithBeginningAnchor = true;
+            }
+        } finally {
+            parseDepth--;
         }
     }
 
@@ -806,6 +822,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         // vertical bar (|) or right parenthesis.
         flagsStack.push(getLocalFlags());
         while (!atEnd() && curChar() != '|' && curChar() != ')') {
+            RegexRootNode.checkThreadInterrupted();
             term();
         }
         flagsStack.pop();
@@ -1109,7 +1126,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     }
 
     private CodePointSet getUnicodeCharClass(char className) {
-        if (inSource.getEncoding() == Encodings.ASCII) {
+        if (inSource.getEncoding() == Encoding.ASCII) {
             return ASCII_CHAR_CLASSES.get(className);
         }
 
@@ -1117,7 +1134,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     }
 
     private CodePointSet getUnicodePosixCharClass(String className) {
-        if (inSource.getEncoding() == Encodings.ASCII) {
+        if (inSource.getEncoding() == Encoding.ASCII) {
             return ASCII_POSIX_CHAR_CLASSES.get(className);
         }
 
@@ -1282,7 +1299,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                         property = CodePointSet.getEmpty();
                     }
                     if (negative) {
-                        property = property.createInverse(Encodings.UTF_32);
+                        property = property.createInverse(Encoding.UTF_32);
                     }
                     if (inCharClass) {
                         curCharClass.addSet(property);
@@ -1765,6 +1782,18 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     }
 
     private void collectCharClass() {
+        charClassNesting++;
+        try {
+            if (charClassNesting > TRegexOptions.TRegexParserTreeMaxNestingLevel) {
+                bailOut("pattern maximum nesting level exceeded");
+            }
+            collectCharClassBody();
+        } finally {
+            charClassNesting--;
+        }
+    }
+
+    private void collectCharClassBody() {
         boolean negated = false;
         int beginPos = position - 1;
         if (match("^")) {
@@ -1772,6 +1801,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
         int firstPosInside = position;
         classBody: while (true) {
+            RegexRootNode.checkThreadInterrupted();
             if (atEnd()) {
                 throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_CHARACTER_SET, beginPos, ErrorCode.InvalidCharacterClass);
             }

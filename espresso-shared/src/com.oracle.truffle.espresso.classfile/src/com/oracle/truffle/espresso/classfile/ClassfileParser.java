@@ -44,6 +44,7 @@ import static com.oracle.truffle.espresso.classfile.Constants.ACC_PRIVATE;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_PROTECTED;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_PUBLIC;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_SCOPED;
+import static com.oracle.truffle.espresso.classfile.Constants.ACC_SIGNATURE_POLYMORPHIC;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_STABLE;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_STATIC;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_STRICT;
@@ -167,6 +168,7 @@ public final class ClassfileParser {
     public static final char JAVA_MAX_SUPPORTED_MINOR_VERSION = 0;
     public static final char JAVA_PREVIEW_MINOR_VERSION = 65535;
 
+    /// Used to verify the `this_class` constant pool entry and for error messages.
     private final Symbol<Type> requestedClassType;
 
     private final ParsingContext parsingContext;
@@ -321,6 +323,10 @@ public final class ClassfileParser {
         throw unsupportedClassVersionError("Unsupported major.minor version " + major + "." + minor);
     }
 
+    private String classNameForError() {
+        return requestedClassType == null ? "<Unknown>" : requestedClassType.toString();
+    }
+
     /**
      * Hotspot comment (17): A legal major_version.minor_version must be one of the following:
      *
@@ -330,17 +336,30 @@ public final class ClassfileParser {
      * <li>Major_version = JVM_CLASSFILE_MAJOR_VERSION and minor_version = 65535 and
      * --enable-preview is present.
      */
-    private static void versionCheck12OrLater(int maxMajor, int major, int minor, boolean previewEnabled) {
-        if (major >= JAVA_12_VERSION && major <= maxMajor && minor == 0) {
+    private void versionCheck12OrLater(int maxMajor, int major, int minor, boolean previewEnabled) {
+        if (major < JAVA_MIN_SUPPORTED_VERSION) {
+            throw unsupportedClassVersionError(classNameForError() + " (class file version " + major + "." + minor + ") was compiled with an invalid major version");
+        }
+        if (major > maxMajor) {
+            throw unsupportedClassVersionError(classNameForError() + " has been compiled by a more recent version of the Java Runtime " +
+                            "(class file version " + major + "." + minor + "), " +
+                            "this version of the Java Runtime only recognizes class file versions up to " + maxMajor + ".0");
+        }
+        if (major < JAVA_12_VERSION || minor == 0) {
             return;
         }
-        if (major >= JAVA_MIN_SUPPORTED_VERSION && major < JAVA_12_VERSION) {
+        if (minor == JAVA_PREVIEW_MINOR_VERSION) {
+            if (major != maxMajor) {
+                throw unsupportedClassVersionError(classNameForError() + " (class file version " + major + "." + minor + ") was compiled with preview features that are unsupported. " +
+                                "This version of the Java Runtime only recognizes preview features for class file version " + maxMajor + "." + JAVA_PREVIEW_MINOR_VERSION);
+            }
+            if (!previewEnabled) {
+                throw unsupportedClassVersionError(
+                                "Preview features are not enabled for " + classNameForError() + " (class file version " + major + "." + minor + "). Try running with '--enable-preview'");
+            }
             return;
         }
-        if (major == maxMajor && minor == JAVA_PREVIEW_MINOR_VERSION && previewEnabled) {
-            return;
-        }
-        throw unsupportedClassVersionError("Unsupported major.minor version " + major + "." + minor);
+        throw unsupportedClassVersionError(classNameForError() + " (class file version " + major + "." + minor + ") was compiled with an invalid non-zero minor version");
     }
 
     private static ParserException unsupportedClassVersionError(String message) {
@@ -1050,7 +1069,7 @@ public final class ClassfileParser {
                 }
             }
             attributeCount = stream.readU2();
-            methodAttributes = spawnAttributesArray(attributeCount);
+            methodAttributes = makeAttributesArray(attributeCount);
         }
 
         CodeAttribute codeAttribute = null;
@@ -1118,11 +1137,17 @@ public final class ClassfileParser {
         if (isHidden) {
             methodFlags |= ACC_HIDDEN;
         }
+        if (ParserMethod.isDeclaredSignaturePolymorphic(classType, signature, methodFlags, parsingContext.getJavaVersion())) {
+            methodFlags |= ACC_SIGNATURE_POLYMORPHIC;
+        }
 
         return ParserMethod.create(methodFlags, name, signature, methodAttributes);
     }
 
-    private static Attribute[] spawnAttributesArray(int attributeCount) {
+    /**
+     * @return a new array if {@code attributeCount != 0} else {@link Attribute#EMPTY_ARRAY}
+     */
+    private static Attribute[] makeAttributesArray(int attributeCount) {
         return attributeCount == 0 ? Attribute.EMPTY_ARRAY : new Attribute[attributeCount];
     }
 
@@ -1202,7 +1227,7 @@ public final class ClassfileParser {
 
         CommonAttributeParser commonAttributeParser = new CommonAttributeParser(InfoType.Class);
 
-        final Attribute[] classAttributes = spawnAttributesArray(attributeCount);
+        final Attribute[] classAttributes = makeAttributesArray(attributeCount);
         for (int i = 0; i < attributeCount; i++) {
             final int attributeNameIndex = stream.readU2();
             final Symbol<Name> attributeName = (Symbol<Name>) pool.utf8At(attributeNameIndex, "attribute name");
@@ -1393,17 +1418,13 @@ public final class ClassfileParser {
     }
 
     private MethodParametersAttribute parseMethodParameters(Symbol<Name> name) {
+        int startPosition = stream.getPosition();
         int entryCount = stream.readU1();
         if (entryCount == 0) {
             return MethodParametersAttribute.EMPTY;
         }
-        MethodParametersAttribute.Entry[] entries = new MethodParametersAttribute.Entry[entryCount];
-        for (int i = 0; i < entryCount; i++) {
-            int nameIndex = stream.readU2();
-            int accessFlags = stream.readU2();
-            entries[i] = new MethodParametersAttribute.Entry(nameIndex, accessFlags);
-        }
-        return new MethodParametersAttribute(name, entries);
+        stream.skip(entryCount * 4);
+        return new MethodParametersAttribute(name, stream.getByteRange(startPosition, stream.getPosition() - startPosition));
     }
 
     private ExceptionsAttribute parseExceptions(Symbol<Name> name) {
@@ -1489,6 +1510,12 @@ public final class ClassfileParser {
             Symbol<Name> innerClassName = null;
             if (innerClassIndex != 0) {
                 innerClassName = pool.className(innerClassIndex);
+            }
+            if (outerClassIndex != 0) {
+                Symbol<Name> outerClassName = pool.className(outerClassIndex);
+                if (outerClassName.length() > 0 && outerClassName.byteAt(0) == '[') {
+                    throw classFormatError("Outer class is an array class");
+                }
             }
 
             for (int j = 0; j < i; ++j) {
@@ -1704,7 +1731,7 @@ public final class ClassfileParser {
         }
 
         int attributeCount = stream.readU2();
-        final Attribute[] codeAttributes = spawnAttributesArray(attributeCount);
+        final Attribute[] codeAttributes = makeAttributesArray(attributeCount);
         int totalLocalTableCount = 0;
 
         CommonAttributeParser commonAttributeParser = new CommonAttributeParser(InfoType.Code);
@@ -1846,7 +1873,7 @@ public final class ClassfileParser {
         final Symbol<Type> descriptor = validateType(pool.utf8At(typeIndex, "field descriptor"), false);
 
         final int attributeCount = stream.readU2();
-        final Attribute[] fieldAttributes = spawnAttributesArray(attributeCount);
+        final Attribute[] fieldAttributes = makeAttributesArray(attributeCount);
 
         ConstantValueAttribute constantValue = null;
         CommonAttributeParser commonAttributeParser = new CommonAttributeParser(InfoType.Field);

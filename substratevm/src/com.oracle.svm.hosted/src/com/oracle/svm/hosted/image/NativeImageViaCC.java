@@ -46,7 +46,7 @@ import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.LinkerInvocation;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.core.util.InterruptImageBuilding;
 import com.oracle.svm.hosted.DeadlockWatchdog;
 import com.oracle.svm.hosted.FeatureImpl.BeforeImageWriteAccessImpl;
@@ -56,15 +56,16 @@ import com.oracle.svm.hosted.c.util.FileUtils;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.Indent;
 
 public abstract class NativeImageViaCC extends NativeImage {
 
-    public NativeImageViaCC(NativeImageKind k, HostedUniverse universe, HostedMetaAccess metaAccess, NativeLibraries nativeLibs, NativeImageHeap heap, NativeImageCodeCache codeCache,
-                    List<HostedMethod> entryPoints, ClassLoader imageClassLoader) {
-        super(k, universe, metaAccess, nativeLibs, heap, codeCache, entryPoints, imageClassLoader);
+    public NativeImageViaCC(NativeImageKind k, HostedUniverse universe, HostedMetaAccess metaAccess, NativeLibraries nativeLibs, NativeImageHeap heap, ImageHeapLayoutInfo heapLayout,
+                    NativeImageCodeCache codeCache, List<HostedMethod> entryPoints, ClassLoader imageClassLoader) {
+        super(k, universe, metaAccess, nativeLibs, heap, heapLayout, codeCache, entryPoints, imageClassLoader);
     }
 
     private static List<String> diagnoseLinkerFailure(String linkerOutput) {
@@ -152,6 +153,9 @@ public abstract class NativeImageViaCC extends NativeImage {
             if (status != 0) {
                 String output = String.join(System.lineSeparator(), lines);
                 throw handleLinkerFailure("Linker command exited with " + status, commandLine, output);
+            }
+            if (pecoffForwardRefs != null) {
+                inv.verifyLinkerOutput(lines, pecoffForwardRefs.getRecordedForwardReferenceSymbols());
             }
 
             Path imagePath = inv.getOutputFile();

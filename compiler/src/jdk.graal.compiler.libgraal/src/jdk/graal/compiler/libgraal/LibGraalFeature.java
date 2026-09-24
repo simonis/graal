@@ -44,7 +44,6 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import jdk.graal.compiler.serviceprovider.GraalServices;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.jniutils.NativeBridgeSupport;
 import org.graalvm.nativeimage.ImageInfo;
@@ -58,7 +57,6 @@ import org.graalvm.nativeimage.hosted.RuntimeReflection;
 import org.graalvm.nativeimage.libgraal.hosted.LibGraalLoader;
 
 import jdk.graal.compiler.core.common.Fields;
-import jdk.graal.compiler.core.common.LibGraalSupport.HostedOnly;
 import jdk.graal.compiler.core.common.NativeImageSupport;
 import jdk.graal.compiler.core.common.spi.ForeignCallSignature;
 import jdk.graal.compiler.debug.GraalError;
@@ -69,9 +67,11 @@ import jdk.graal.compiler.hotspot.EncodedSnippets;
 import jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage;
 import jdk.graal.compiler.hotspot.HotSpotReplacementsImpl;
 import jdk.graal.compiler.libgraal.truffle.LibGraalTruffleHostEnvironmentLookup;
+import jdk.graal.compiler.options.LibGraalSupport.HostedOnly;
 import jdk.graal.compiler.options.OptionDescriptor;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionsParser;
+import jdk.graal.compiler.serviceprovider.GraalServices;
 import jdk.graal.compiler.truffle.host.TruffleHostEnvironment;
 import jdk.graal.compiler.util.CollectionsUtil;
 import jdk.graal.compiler.util.EconomicHashMap;
@@ -142,6 +142,11 @@ public final class LibGraalFeature implements Feature {
     private BeforeAnalysisAccess beforeAnalysisAccess;
     private BeforeCompilationAccess beforeCompilationAccess;
     private OptionCollector optionCollector;
+
+    @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(LibGraalFeature.class, this);
+    }
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {

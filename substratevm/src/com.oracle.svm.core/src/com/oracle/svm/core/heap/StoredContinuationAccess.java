@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.heap;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.StackValue;
@@ -34,22 +34,21 @@ import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
+import com.oracle.svm.core.SubstrateTarget;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoTable;
 import com.oracle.svm.core.code.FrameInfoQueryResult;
 import com.oracle.svm.core.code.UntetheredCodeInfo;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
 import com.oracle.svm.core.deopt.Deoptimizer;
 import com.oracle.svm.core.graal.nodes.NewStoredContinuationNode;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
 import com.oracle.svm.core.stack.JavaFrame;
 import com.oracle.svm.core.stack.JavaFrames;
 import com.oracle.svm.core.stack.JavaStackWalk;
@@ -59,14 +58,15 @@ import com.oracle.svm.core.thread.ContinuationInternals;
 import com.oracle.svm.core.thread.ContinuationSupport;
 import com.oracle.svm.core.thread.Safepoint;
 import com.oracle.svm.core.thread.Target_jdk_internal_vm_Continuation;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.graph.Node.NodeIntrinsic;
 import jdk.graal.compiler.nodes.extended.MembarNode;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.Word;
 
 /** Helper for allocating and accessing {@link StoredContinuation} instances. */
 public final class StoredContinuationAccess {
@@ -75,8 +75,9 @@ public final class StoredContinuationAccess {
 
     private static StoredContinuation allocate(int framesSize) {
         // Using Word[] to ensure that words are properly aligned.
-        int nwords = Integer.divideUnsigned(framesSize, ConfigurationValues.getTarget().wordSize);
-        assert nwords * ConfigurationValues.getTarget().wordSize == framesSize;
+        int wordSize = SubstrateTarget.getWordSize();
+        int nwords = Integer.divideUnsigned(framesSize, wordSize);
+        assert nwords * wordSize == framesSize;
         /*
          * There is no need to zero the array part (i.e., the stack data) of the StoredContinuation,
          * because the GC won't visit it if StoredContinuation.ip is null.
@@ -91,7 +92,7 @@ public final class StoredContinuationAccess {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static int getSizeInBytes(StoredContinuation s) {
-        return arrayLength(s) * ConfigurationValues.getTarget().wordSize;
+        return arrayLength(s) * SubstrateTarget.getWordSize();
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -101,7 +102,7 @@ public final class StoredContinuationAccess {
 
     @Uninterruptible(reason = "Prevent GC during accesses via object address.", callerMustBe = true)
     public static Pointer getFramesStart(StoredContinuation s) {
-        int layout = KnownIntrinsics.readHub(s).getLayoutEncoding();
+        int layout = DynamicHubIntrinsics.readHub(s).getLayoutEncoding();
         UnsignedWord baseOffset = LayoutEncoding.getArrayBaseOffset(layout);
         return Word.objectToUntrackedPointer(s).add(baseOffset);
     }
@@ -114,6 +115,17 @@ public final class StoredContinuationAccess {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static CodePointer getIP(StoredContinuation s) {
         return s.ip;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static Pointer getOriginalCarrierSP(StoredContinuation s) {
+        return s.originalCarrierSP;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static void setOriginalCarrierSP(StoredContinuation s, Pointer sp) {
+        assert sp.isNonNull();
+        s.originalCarrierSP = sp;
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
@@ -135,6 +147,7 @@ public final class StoredContinuationAccess {
     private static void fillUninterruptibly(StoredContinuation stored, CodePointer ip, Pointer sp, int size) {
         UnmanagedMemoryUtil.copyWordsForward(sp, getFramesStart(stored), Word.unsigned(size));
         setIP(stored, ip);
+        setOriginalCarrierSP(stored, sp);
         afterFill(stored);
     }
 
@@ -160,6 +173,7 @@ public final class StoredContinuationAccess {
     private static StoredContinuation fillCloneUninterruptibly(StoredContinuation cont, StoredContinuation clone, Object preparedData) {
         CodePointer ip = ImageSingletons.lookup(ContinuationSupport.class).copyFrames(cont, clone, preparedData);
         setIP(clone, ip);
+        setOriginalCarrierSP(clone, StoredContinuationAccess.getOriginalCarrierSP(cont));
         afterFill(clone);
         return clone;
     }

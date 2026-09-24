@@ -35,10 +35,10 @@ import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 
@@ -52,6 +52,7 @@ import com.oracle.svm.core.MissingRegistrationSupport;
 import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.config.ObjectLayout.IdentityHashMode;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
+import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.hosted.FeatureHandler;
 import com.oracle.svm.hosted.HeapBreakdownProvider;
 import com.oracle.svm.hosted.HostedConfiguration;
@@ -59,7 +60,6 @@ import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.SVMHost;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.code.CompileQueue;
-import com.oracle.svm.hosted.config.HybridLayoutSupport;
 import com.oracle.svm.hosted.image.NativeImageCodeCache;
 import com.oracle.svm.hosted.image.NativeImageCodeCacheFactory;
 import com.oracle.svm.hosted.image.NativeImageHeap;
@@ -89,17 +89,23 @@ import com.oracle.svm.hosted.webimage.wasmgc.WebImageWasmGCCodeCache;
 import com.oracle.svm.hosted.webimage.wasmgc.WebImageWasmGCCompileQueue;
 import com.oracle.svm.hosted.webimage.wasmgc.codegen.WebImageWasmGCCodeGen;
 import com.oracle.svm.hosted.webimage.wasmgc.codegen.WebImageWasmGCProviders;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.webimage.object.ConstantIdentityMapping;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.options.OptionValues;
+import jdk.vm.ci.meta.JavaKind;
 
 /**
  * Default configuration for Web Image.
  *
  * It serves as an abstraction of important policies for Web Image.
  */
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class WebImageHostedConfiguration extends HostedConfiguration {
 
     public static void setDefaultIfEmpty() {
@@ -107,9 +113,8 @@ public class WebImageHostedConfiguration extends HostedConfiguration {
             ImageSingletons.add(HostedConfiguration.class, new WebImageHostedConfiguration());
             CompressEncoding compressEncoding = new CompressEncoding(0, 0);
             ImageSingletons.add(CompressEncoding.class, compressEncoding);
-            ObjectLayout objectLayout = createObjectLayout(IdentityHashMode.OBJECT_HEADER);
+            ObjectLayout objectLayout = createObjectLayout(JavaKind.Object, IdentityHashMode.OBJECT_HEADER);
             ImageSingletons.add(ObjectLayout.class, objectLayout);
-            ImageSingletons.add(HybridLayoutSupport.class, new HybridLayoutSupport());
         }
     }
 
@@ -131,12 +136,12 @@ public class WebImageHostedConfiguration extends HostedConfiguration {
         return new JSBootImageHeapLowerer(providers, jsLTools, identityMapping);
     }
 
-    public WebImageCodeGen createCodeGen(WebImageCodeCache codeCache, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
+    public WebImageCodeGen createCodeGen(WebImageCodeCache codeCache, ImageHeapLayoutInfo heapLayout, List<HostedMethod> hostedEntryPoints, HostedMethod mainEntryPoint,
                     WebImageProviders providers, DebugContext debug, ImageClassLoader imageClassLoader) {
         return switch (getBackend()) {
             case JS -> new WebImageJSCodeGen(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, this, imageClassLoader);
-            case WASM -> new WebImageWasmLMCodeGen(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, this);
-            case WASMGC -> new WebImageWasmGCCodeGen(codeCache, hostedEntryPoints, mainEntryPoint, providers, debug, this);
+            case WASM -> new WebImageWasmLMCodeGen(codeCache, heapLayout, hostedEntryPoints, mainEntryPoint, providers, debug, this);
+            case WASMGC -> new WebImageWasmGCCodeGen(codeCache, heapLayout, hostedEntryPoints, mainEntryPoint, providers, debug, this);
         };
     }
 
@@ -186,22 +191,13 @@ public class WebImageHostedConfiguration extends HostedConfiguration {
     }
 
     @Override
-    public void collectMonitorFieldInfo(BigBang bb, HostedUniverse hUniverse, Set<AnalysisType> immutableTypes) {
+    public void collectMonitorFieldInfo(BigBang bb, HostedUniverse hUniverse, EconomicSet<AnalysisType> immutableTypes) {
         // Do nothing. We do not have/need monitor fields in Web Image
     }
 
     @Override
     public NativeImageCodeCacheFactory newCodeCacheFactory() {
-        return new NativeImageCodeCacheFactory() {
-            @Override
-            public NativeImageCodeCache newCodeCache(CompileQueue compileQueue, NativeImageHeap heap, Platform targetPlatform, Path tempDir) {
-                return switch (getBackend()) {
-                    case JS -> new WebImageCodeCache(compileQueue.getCompilationResults(), heap);
-                    case WASM -> new WebImageWasmCodeCache(compileQueue.getCompilationResults(), heap);
-                    case WASMGC -> new WebImageWasmGCCodeCache(compileQueue.getCompilationResults(), heap);
-                };
-            }
-        };
+        return new WebImageCodeCacheFactory();
 
     }
 
@@ -229,5 +225,17 @@ public class WebImageHostedConfiguration extends HostedConfiguration {
             case WASM -> new WebImageWasmLMCompileQueue(featureHandler, hostedUniverse, runtimeConfiguration, debug);
             case WASMGC -> new WebImageWasmGCCompileQueue(featureHandler, hostedUniverse, runtimeConfiguration, debug);
         };
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
+    private static final class WebImageCodeCacheFactory extends NativeImageCodeCacheFactory {
+        @Override
+        public NativeImageCodeCache newCodeCache(CompileQueue compileQueue, NativeImageHeap heap, Platform targetPlatform, Path tempDir) {
+            return switch (getBackend()) {
+                case JS -> new WebImageCodeCache(compileQueue.getCompilationResults(), heap);
+                case WASM -> new WebImageWasmCodeCache(compileQueue.getCompilationResults(), heap);
+                case WASMGC -> new WebImageWasmGCCodeCache(compileQueue.getCompilationResults(), heap);
+            };
+        }
     }
 }

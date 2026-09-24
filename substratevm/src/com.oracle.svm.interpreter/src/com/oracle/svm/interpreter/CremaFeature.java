@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,10 +26,8 @@ package com.oracle.svm.interpreter;
 
 import static com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import static com.oracle.graal.pointsto.ObjectScanner.ScanReason;
+import static com.oracle.svm.interpreter.InterpreterFeature.assertionsEnabled;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.List;
 
 import org.graalvm.nativeimage.ImageSingletons;
@@ -38,15 +36,24 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.Pointer;
 
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.hub.ClassForNameSupport;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
+import com.oracle.svm.core.graal.code.SubstrateBackendWithAssembler;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
+import com.oracle.svm.core.hub.crema.CremaJNIFieldIds;
+import com.oracle.svm.core.hub.crema.CremaJNIMethodIds;
 import com.oracle.svm.core.hub.crema.CremaSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.hub.registry.ClassRegistries;
+import com.oracle.svm.core.interpreter.InterpreterForeignFunctionsSupport;
+import com.oracle.svm.core.jni.CallVariant;
+import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.hosted.FeatureImpl;
+import com.oracle.svm.hosted.classloading.RuntimeClassLoadingFeature;
+import com.oracle.svm.hosted.code.CEntryPointData;
+import com.oracle.svm.hosted.jni.JNIJavaCallInterpreterWrapperMethod;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedInstanceClass;
 import com.oracle.svm.hosted.meta.HostedMethod;
@@ -56,7 +63,12 @@ import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaField;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedObjectType;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
+
+import jdk.vm.ci.meta.ResolvedJavaField;
 
 /**
  * In this mode the interpreter is used to execute previously (= image build-time) unknown methods,
@@ -66,7 +78,16 @@ import com.oracle.svm.util.ReflectionUtil;
 @Platforms(Platform.HOSTED_ONLY.class)
 @AutomaticallyRegisteredFeature
 public class CremaFeature implements InternalFeature {
-    private Method enterVTableInterpreterStub;
+    private static final String VTABLE_HOLDER_FIELD = "vtableHolder";
+
+    private AnalysisMethod enterVTableInterpreterStub;
+    private AnalysisMethod enterDirectInterpreterStub;
+    private AnalysisMethod enterCremaJNIMethodVarargsVirtualWrapper;
+    private AnalysisMethod enterCremaJNIMethodArrayVirtualWrapper;
+    private AnalysisMethod enterCremaJNIMethodVaListVirtualWrapper;
+    private AnalysisMethod enterCremaJNIMethodVarargsNonVirtualWrapper;
+    private AnalysisMethod enterCremaJNIMethodArrayNonVirtualWrapper;
+    private AnalysisMethod enterCremaJNIMethodVaListNonVirtualWrapper;
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -75,30 +96,53 @@ public class CremaFeature implements InternalFeature {
 
     @Override
     public List<Class<? extends Feature>> getRequiredFeatures() {
-        return Arrays.asList(InterpreterFeature.class);
+        return List.of(InterpreterFeature.class, RuntimeClassLoadingFeature.class);
     }
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
         ImageSingletons.add(CremaSupport.class, new CremaSupportImpl());
-        VMError.guarantee(!RuntimeClassLoading.isSupported() || ClassForNameSupport.respectClassLoader());
-    }
-
-    private static boolean assertionsEnabled() {
-        boolean enabled = false;
-        assert (enabled = true) == true : "Enabling assertions";
-        return enabled;
+        VMError.guarantee(!RuntimeClassLoading.isSupported() || ClassRegistries.respectClassLoader());
+        ImageSingletons.add(InterpreterForeignFunctionsSupport.class, new InterpreterForeignFunctionsSupportImpl());
     }
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         FeatureImpl.BeforeAnalysisAccessImpl accessImpl = (FeatureImpl.BeforeAnalysisAccessImpl) access;
         try {
-            enterVTableInterpreterStub = InterpreterStubSection.class.getMethod("enterVTableInterpreterStub", int.class, Pointer.class);
+            var metaAccess = accessImpl.getMetaAccess();
+            AnalysisType declaringClass = metaAccess.lookupJavaType(InterpreterStubSection.class);
+
+            enterVTableInterpreterStub = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, declaringClass,
+                            "enterVTableInterpreterStub", int.class, Pointer.class);
             accessImpl.registerAsRoot(enterVTableInterpreterStub, true, "stub for interpreter");
-        } catch (NoSuchMethodException e) {
+
+            enterDirectInterpreterStub = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, declaringClass,
+                            "enterDirectInterpreterStub", InterpreterResolvedJavaMethod.class, Pointer.class);
+            accessImpl.registerAsRoot(enterDirectInterpreterStub, true, "stub for interpreter");
+
+            access.registerAsInHeap(CremaJNIFieldIds.CremaJNIStaticFieldId.class);
+            access.registerAsInHeap(CremaJNIMethodIds.CremaJNIMethodId.class);
+
+            CEntryPointData unpublished = CEntryPointData.createCustomUnpublished();
+            enterCremaJNIMethodVarargsVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.VARARGS, false, unpublished);
+            enterCremaJNIMethodArrayVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.ARRAY, false, unpublished);
+            enterCremaJNIMethodVaListVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.VA_LIST, false, unpublished);
+            enterCremaJNIMethodVarargsNonVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.VARARGS, true, unpublished);
+            enterCremaJNIMethodArrayNonVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.ARRAY, true, unpublished);
+            enterCremaJNIMethodVaListNonVirtualWrapper = registerCremaJNIMethodWrapper(accessImpl, CallVariant.VA_LIST, true, unpublished);
+        } catch (NoSuchMethodError e) {
             throw VMError.shouldNotReachHere(e);
         }
+    }
+
+    private static AnalysisMethod registerCremaJNIMethodWrapper(FeatureImpl.BeforeAnalysisAccessImpl access, CallVariant callVariant, boolean nonVirtual, CEntryPointData entryPointData) {
+        JNIJavaCallInterpreterWrapperMethod wrapper = new JNIJavaCallInterpreterWrapperMethod(callVariant, nonVirtual, access.getUniverse().getOriginalMetaAccess(), access.getBigBang()
+                        .getWordTypes());
+        AnalysisMethod analysisWrapper = access.getUniverse().lookup(wrapper);
+        access.getBigBang().addRootMethod(analysisWrapper, true, "Registered in " + CremaFeature.class);
+        analysisWrapper.registerAsNativeEntryPoint(entryPointData);
+        return analysisWrapper;
     }
 
     @Override
@@ -121,7 +165,7 @@ public class CremaFeature implements InternalFeature {
         FeatureImpl.BeforeCompilationAccessImpl accessImpl = (FeatureImpl.BeforeCompilationAccessImpl) access;
         HostedUniverse hUniverse = accessImpl.getUniverse();
         BuildTimeInterpreterUniverse iUniverse = BuildTimeInterpreterUniverse.singleton();
-        Field vtableHolderField = ReflectionUtil.lookupField(InterpreterResolvedObjectType.class, "vtableHolder");
+        ResolvedJavaField vtableHolderField = JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(InterpreterResolvedObjectType.class), VTABLE_HOLDER_FIELD);
 
         for (HostedMethod method : hUniverse.getMethods()) {
             if (method.hasVTableIndex()) {
@@ -136,6 +180,17 @@ public class CremaFeature implements InternalFeature {
         for (HostedType hType : hUniverse.getTypes()) {
             iUniverse.mirrorSVMVTable(hType, objectType -> accessImpl.getHeapScanner().rescanField(objectType, vtableHolderField, reason));
         }
+
+        InterpreterFeature.prepareSignatures();
+
+        accessImpl.registerAsImmutable(CremaSupport.singleton());
+        CremaSupport.singleton().setEnterDirectInterpreterStubEntryPoint(new MethodPointer(hUniverse.lookup(enterDirectInterpreterStub)));
+        CremaSupport.singleton().setCremaJNIMethodCallWrapperEntryPoints(new MethodPointer(hUniverse.lookup(enterCremaJNIMethodVarargsVirtualWrapper)),
+                        new MethodPointer(hUniverse.lookup(enterCremaJNIMethodArrayVirtualWrapper)),
+                        new MethodPointer(hUniverse.lookup(enterCremaJNIMethodVaListVirtualWrapper)),
+                        new MethodPointer(hUniverse.lookup(enterCremaJNIMethodVarargsNonVirtualWrapper)),
+                        new MethodPointer(hUniverse.lookup(enterCremaJNIMethodArrayNonVirtualWrapper)),
+                        new MethodPointer(hUniverse.lookup(enterCremaJNIMethodVaListNonVirtualWrapper)));
     }
 
     @Override
@@ -143,7 +198,7 @@ public class CremaFeature implements InternalFeature {
         FeatureImpl.AfterCompilationAccessImpl accessImpl = (FeatureImpl.AfterCompilationAccessImpl) access;
         BuildTimeInterpreterUniverse iUniverse = BuildTimeInterpreterUniverse.singleton();
         for (HostedType type : accessImpl.getUniverse().getTypes()) {
-            if (type.isPrimitive() || type.isArray() || type.isInterface()) {
+            if (type.isPrimitive() || type.isArray()) {
                 continue;
             }
             InterpreterResolvedJavaType iType = iUniverse.getType(type.getWrapped());
@@ -154,11 +209,13 @@ public class CremaFeature implements InternalFeature {
 
             // Setup fields info
             InterpreterResolvedObjectType objectType = (InterpreterResolvedObjectType) iType;
+            initializeInterpreterFields(iUniverse, (HostedField[]) type.getStaticFields());
+            if (type.isInterface()) {
+                continue;
+            }
             HostedInstanceClass instanceClass = (HostedInstanceClass) type;
             objectType.setAfterFieldsOffset(instanceClass.getAfterFieldsOffset());
-
             initializeInterpreterFields(iUniverse, instanceClass.getInstanceFields(false));
-            initializeInterpreterFields(iUniverse, (HostedField[]) instanceClass.getStaticFields());
         }
     }
 
@@ -176,15 +233,20 @@ public class CremaFeature implements InternalFeature {
     @Override
     public void afterAbstractImageCreation(AfterAbstractImageCreationAccess access) {
         FeatureImpl.AfterAbstractImageCreationAccessImpl accessImpl = ((FeatureImpl.AfterAbstractImageCreationAccessImpl) access);
-
         InterpreterStubSection stubSection = ImageSingletons.lookup(InterpreterStubSection.class);
-        stubSection.createInterpreterVTableEnterStubSection(accessImpl.getImage());
+
+        SubstrateBackend b = accessImpl.getRuntimeConfiguration().getBackendForNormalMethod();
+        if (b instanceof SubstrateBackendWithAssembler<?> bAsm) {
+            stubSection.createInterpreterVTableEnterStubSection(accessImpl.getImage(), bAsm);
+        } else {
+            throw VMError.shouldNotReachHere("Needs a backend with an assembler, it is not available with backend %s", b.getClass());
+        }
     }
 
     @Override
     public void beforeImageWrite(BeforeImageWriteAccess access) {
         FeatureImpl.BeforeImageWriteAccessImpl accessImpl = (FeatureImpl.BeforeImageWriteAccessImpl) access;
         InterpreterStubSection stubSection = ImageSingletons.lookup(InterpreterStubSection.class);
-        stubSection.markEnterStubPatch(accessImpl.getHostedMetaAccess().lookupJavaMethod(enterVTableInterpreterStub));
+        stubSection.markEnterStubPatch(accessImpl.getHostedUniverse().lookup(enterVTableInterpreterStub));
     }
 }

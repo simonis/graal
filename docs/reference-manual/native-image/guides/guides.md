@@ -1,5 +1,5 @@
 ---
-layout: docs
+layout: ni-docs-landing
 toc_group: how-to-guides
 link_title: Guides
 permalink: /guides/
@@ -10,7 +10,7 @@ redirect_from:
 
 # Guides
 
-These guides help developers get started with GraalVM Native Image, acquaint them with available features, and describe potential usage scenarios. 
+These guides help developers get started with GraalVM Native Image, acquaint them with available features, and describe potential usage scenarios.
 Here you will learn how to:
 
 - [Access Environment Variables](access-environment-variables.md)
@@ -26,6 +26,7 @@ Here you will learn how to:
 - [Containerize a Native Executable and Run in a Docker Container](containerise-native-executable-with-docker.md)
 - [Create a Heap Dump from a Native Executable](create-heap-dump-from-native-executable.md)
 - [Debug Native Executables with GDB](debug-native-executables-with-gdb.md)
+- [Debug Native Tests in Maven and Gradle Projects](debug-native-tests-with-maven-and-gradle.md)
 - [Debug Native Executables with a Python Helper Script](debug-native-executables-with-python-helper.md)
 - [Embed an SBOM in a Native Executable to Identify Its Dependencies](use-sbom-support.md)
 - [Include Reachability Metadata Using the Native Image Gradle Plugin](include-reachability-metadata-gradle.md)

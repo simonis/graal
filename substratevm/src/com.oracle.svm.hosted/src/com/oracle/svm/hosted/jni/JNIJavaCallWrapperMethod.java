@@ -38,7 +38,7 @@ import com.oracle.svm.core.jni.access.JNIAccessibleMethod;
 import com.oracle.svm.core.nodes.SubstrateIndirectCallTargetNode;
 import com.oracle.svm.hosted.code.FactoryMethodSupport;
 import com.oracle.svm.hosted.code.NonBytecodeMethod;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.core.common.type.StampFactory;
@@ -82,17 +82,6 @@ import jdk.vm.ci.meta.Signature;
  */
 public class JNIJavaCallWrapperMethod extends NonBytecodeMethod {
     private static final Constructor<InstantiationException> INSTANTIATION_EXCEPTION_CONSTRUCTOR = ReflectionUtil.lookupConstructor(InstantiationException.class);
-
-    public static class Factory {
-        public JNIJavaCallWrapperMethod create(ResolvedSignature<ResolvedJavaType> targetSignature, MetaAccessProvider originalMetaAccess, WordTypes wordTypes) {
-            return new JNIJavaCallWrapperMethod(targetSignature, originalMetaAccess, wordTypes);
-        }
-
-        @SuppressWarnings("unused")
-        public boolean canInvokeConstructorOnObject(ResolvedJavaMethod constructor, MetaAccessProvider originalMetaAccess) {
-            return true;
-        }
-    }
 
     public static ResolvedSignature<ResolvedJavaType> getGeneralizedSignatureForTarget(ResolvedJavaMethod targetMethod, MetaAccessProvider originalMetaAccess) {
         /* Note: does not include the receiver. */

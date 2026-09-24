@@ -23,13 +23,13 @@
 # questions.
 #
 
-from __future__ import print_function
 
 
 import mx
 import mx_gate
 import mx_pomdistribution
-import mx_sdk_vm, mx_sdk_vm_impl
+import mx_sdk_vm
+import mx_sdk_vm_impl
 import mx_vm_benchmark
 import mx_vm_gate
 
@@ -83,33 +83,34 @@ if mx.suite('tools', fatalIfMissing=False) is not None and mx.suite('graal-js', 
 llvm_components = ['bgraalvm-native-binutil', 'bgraalvm-native-clang', 'bgraalvm-native-clang-cl', 'bgraalvm-native-clang++', 'bgraalvm-native-flang', 'bgraalvm-native-ld']
 
 # pylint: disable=line-too-long
-ce_unchained_components = ['bnative-image-configure', 'cmp', 'gvm', 'lg', 'ni', 'nic', 'nil', 'nr_lib_jvmcicompiler', 'sdkc', 'sdkni', 'ssvmjdwp', 'svm', 'svmjdwp', 'svmsl', 'svmt', 'tflc', 'tflsm']
-ce_components_minimal = ['cmp', 'cov', 'dap', 'gvm', 'ins', 'insight', 'insightheap', 'lg', 'lsp', 'nfi-libffi', 'nfi', 'pro', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm', 'truffle-json']
-ce_components = ce_components_minimal + ['nr_lib_jvmcicompiler', 'bnative-image-configure', 'ni', 'nic', 'nil', 'svm', 'svmt', 'svmnfi', 'svmsl']
+ce_unchained_components = ['bnative-image-utils', 'cmp', 'gvm', 'lg', 'ni', 'nic', 'nil', 'nr_lib_jvmcicompiler', 'sdkc', 'sdkni', 'ssvmjdwp', 'svm', 'svmjdwp', 'svmsl', 'svmt', 'tflc', 'tflsm']
+ce_unchained_components_next = ce_unchained_components + ['svmjava', 'svmjavad']
+ce_components_minimal = ['cmp', 'cov', 'dap', 'gvm', 'ins', 'insight', 'insightheap', 'lg', 'lsp', 'nfi-libffi', 'nfi', 'pro', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm', 'tflllm', 'truffle-json']
+ce_components = ce_components_minimal + ['nr_lib_jvmcicompiler', 'bnative-image-utils', 'ni', 'nic', 'nil', 'svm', 'svmt', 'svmnfi', 'svmsl']
 ce_python_components = ['antlr4', 'sllvmvm', 'cmp', 'cov', 'dap', 'dis', 'gvm', 'icu4j', 'xz', 'ins', 'insight', 'insightheap', 'lg', 'llp', 'llrc', 'llrl', 'llrlf', 'llrn', 'lsp', 'nfi-libffi', 'nfi', 'pro', 'pyn', 'pynl', 'rgx', 'sdk',
                         'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm', 'truffle-json']
-ce_fastr_components = ce_components + llvm_components + ['antlr4', 'xz', 'sllvmvm', 'llp', 'bnative-image', 'snative-image-agent', 'R', 'sRvm', 'bnative-image-configure', 'llrc', 'snative-image-diagnostics-agent', 'llrn', 'llrl', 'llrlf']
-ce_no_native_components = ['cmp', 'cov', 'dap', 'gvm', 'ins', 'insight', 'insightheap', 'lsp', 'nfi-libffi', 'nfi', 'pro', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm', 'truffle-json']
+ce_no_native_components = ['cmp', 'cov', 'dap', 'gvm', 'ins', 'insight', 'insightheap', 'lsp', 'nfi-libffi', 'nfi', 'pro', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm', 'tflllm', 'truffle-json']
 
 # Main GraalVMs
 mx_sdk_vm.register_vm_config('community', ce_unchained_components, _suite, env_file='ce-win')
 mx_sdk_vm.register_vm_config('community', ce_unchained_components, _suite, env_file='ce-aarch64')
-mx_sdk_vm.register_vm_config('community', ce_unchained_components, _suite, env_file='ce-darwin')
 mx_sdk_vm.register_vm_config('community', ce_unchained_components, _suite, env_file='ce-darwin-aarch64')
 mx_sdk_vm.register_vm_config('community', ce_unchained_components, _suite, env_file='ce')
 # Other GraalVMs
 mx_sdk_vm.register_vm_config('ce', ce_components + ['icu4j', 'xz', 'js', 'jsl', 'jss', 'rgx', 'bnative-image', 'snative-image-agent', 'snative-image-diagnostics-agent', 'tflsm'], _suite, dist_name='ce-js', env_file='ce-js')
 mx_sdk_vm.register_vm_config('ce', ce_components + ['gwal', 'gwa', 'icu4j', 'xz', 'js', 'jsl', 'jss', 'njs', 'njsl', 'rgx', 'sjsvm', 'swasmvm', 'tflsm'], _suite, dist_name='ce', env_file='ce-nodejs')
 mx_sdk_vm.register_vm_config('ce', ce_components_minimal + ['antlr4', 'llrn', 'llp', 'llrc', 'llrl', 'llrlf'], _suite, env_file='ce-llvm')
-mx_sdk_vm.register_vm_config('ce-fastr', ce_fastr_components, _suite)
 mx_sdk_vm.register_vm_config('ce-no_native', ce_no_native_components, _suite)
 mx_sdk_vm.register_vm_config('libgraal', ['cmp', 'lg', 'sdkc', 'tflc'], _suite)
 mx_sdk_vm.register_vm_config('libgraal-bash', llvm_components + ['cmp', 'gvm', 'lg', 'nfi-libffi', 'nfi', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'tfl', 'tfla', 'tflc', 'tflm'], _suite, env_file=False)
 
+# GraalVM variant with NI-based libjvm as default
+mx_sdk_vm.register_vm_config('community-next', ce_unchained_components_next, _suite, env_file='ce-next')
+
 if mx.get_os() == 'windows':
-    mx_sdk_vm.register_vm_config('svm', ['bnative-image', 'bnative-image-configure', 'cmp', 'gvm', 'nfi-libffi', 'nfi', 'ni', 'nil', 'nju', 'nic', 'rgx', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'snative-image-agent', 'snative-image-diagnostics-agent', 'svm', 'svmt', 'svmnfi', 'svmsl', 'tfl', 'tfla', 'tflc', 'tflm'], _suite, env_file=False)
+    mx_sdk_vm.register_vm_config('svm', ['bnative-image', 'bnative-image-utils', 'cmp', 'gvm', 'nfi-libffi', 'nfi', 'ni', 'nil', 'nju', 'nic', 'rgx', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'snative-image-agent', 'snative-image-diagnostics-agent', 'svm', 'svmt', 'svmnfi', 'svmsl', 'tfl', 'tfla', 'tflc', 'tflm'], _suite, env_file=False)
 else:
-    mx_sdk_vm.register_vm_config('svm', ['bnative-image', 'bnative-image-configure', 'cmp', 'gvm', 'nfi-libffi', 'nfi', 'ni', 'nil', 'nju', 'nic', 'rgx', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'snative-image-agent', 'snative-image-diagnostics-agent', 'svm', 'svmt', 'svmnfi', 'svmsl', 'svml', 'tfl', 'tfla', 'tflc', 'tflm'], _suite, env_file=False)
+    mx_sdk_vm.register_vm_config('svm', ['bnative-image', 'bnative-image-utils', 'cmp', 'gvm', 'nfi-libffi', 'nfi', 'ni', 'nil', 'nju', 'nic', 'rgx', 'sdk', 'sdkni', 'sdkc', 'sdkl', 'snative-image-agent', 'snative-image-diagnostics-agent', 'svm', 'svmt', 'svmnfi', 'svmsl', 'svml', 'tfl', 'tfla', 'tflc', 'tflm'], _suite, env_file=False)
 # pylint: enable=line-too-long
 
 
@@ -140,7 +141,6 @@ _languages_meta_distributions = [
     'graal-js:JS_POM',
     'graalpython:PYTHON_POM',
     'sulong:LLVM_NATIVE_POM',
-    'truffleruby:RUBY_POM',
     'wasm:WASM_POM',
 ]
 
@@ -360,14 +360,6 @@ def mx_register_dynamic_suite_constituents(register_project, register_distributi
     :type register_project: (mx.Project) -> None
     :type register_distribution: (mx.Distribution) -> None
     """
-    if mx_sdk_vm_impl.has_component('FastR'):
-        fastr_release_env = mx.get_env('FASTR_RELEASE', None)
-        if fastr_release_env != 'true':
-            mx.abort(('When including FastR, please set FASTR_RELEASE to \'true\' (env FASTR_RELEASE=true mx ...). Got FASTR_RELEASE={}. '
-                      'For local development, you may also want to disable recommended packages build (FASTR_NO_RECOMMENDED=true) and '
-                      'capturing of system libraries (export FASTR_CAPTURE_DEPENDENCIES set to an empty value). '
-                      'See building.md in FastR documentation for more details.').format(fastr_release_env))
-
     if register_distribution and _suite.primary:
         # Only primary suite can register languages and tools distributions.
         # If the suite is not a primary suite, languages and tools distributions might not have been loaded yet.
@@ -394,14 +386,14 @@ def mx_register_dynamic_suite_constituents(register_project, register_distributi
 
 class GraalVmSymlinks(mx.Project):
     def __init__(self, **kw_args):
-        super(GraalVmSymlinks, self).__init__(_suite, 'vm-symlinks', subDir=None, srcDirs=[], deps=['sdk:' + mx_sdk_vm_impl.graalvm_dist_name()], workingSets=None, d=_suite.dir, theLicense=None, testProject=False, **kw_args)
+        super().__init__(_suite, 'vm-symlinks', subDir=None, srcDirs=[], deps=['sdk:' + mx_sdk_vm_impl.graalvm_dist_name()], workingSets=None, d=_suite.dir, theLicense=None, testProject=False, **kw_args)
         self.links = []
         sdk_suite = mx.suite('sdk')
         for link_name in 'latest_graalvm', 'latest_graalvm_home':
             self.links += [(relpath(join(sdk_suite.dir, link_name), _suite.dir), join(_suite.dir, link_name))]
 
     def getArchivableResults(self, use_relpath=True, single=False):
-        raise mx.abort(f"Project '{self.name}' cannot be archived")
+        mx.abort(f"Project '{self.name}' cannot be archived")
 
     def getBuildTask(self, args):
         return GraalVmSymLinksBuildTask(args, 1, self)
@@ -412,7 +404,7 @@ class GraalVmSymLinksBuildTask(mx.ProjectBuildTask):
     For backward compatibility, maintain `latest_graalvm` and `latest_graalvm_home` symlinks in the `vm` suite
     """
     def needsBuild(self, newestInput):
-        sup = super(GraalVmSymLinksBuildTask, self).needsBuild(newestInput)
+        sup = super().needsBuild(newestInput)
         if sup[0]:
             return sup
         if mx.get_os() != 'windows':

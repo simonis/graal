@@ -32,6 +32,8 @@ import static com.oracle.svm.agent.NativeImageAgent.ExitCodes.USAGE_ERROR;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -47,9 +49,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -57,6 +57,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.ProcessProperties;
 import org.graalvm.nativeimage.hosted.Feature;
@@ -84,6 +85,7 @@ import com.oracle.svm.configure.filters.FilterConfigurationParser;
 import com.oracle.svm.configure.filters.HierarchyFilterNode;
 import com.oracle.svm.configure.trace.AccessAdvisor;
 import com.oracle.svm.configure.trace.TraceProcessor;
+import com.oracle.svm.core.JavaVersionUtil;
 import com.oracle.svm.core.jni.headers.JNIEnvironment;
 import com.oracle.svm.core.jni.headers.JNIJavaVM;
 import com.oracle.svm.core.jni.headers.JNIObjectHandle;
@@ -109,7 +111,7 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
     private Path configOutputDirPath;
     private Path configOutputLockFilePath;
     private FileTime expectedConfigModifiedBefore;
-    Set<String> classPathEntries;
+    EconomicSet<String> classPathEntries;
 
     private static String getTokenValue(String token) {
         return token.substring(token.indexOf('=') + 1);
@@ -287,7 +289,7 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
             return error(USAGE_ERROR, "The agent can generate conditional configuration either for the current run or in the partial mode but not both at the same time.");
         }
 
-        classPathEntries = new HashSet<>(Arrays.asList(getClasspathEntries(jvmti)));
+        classPathEntries = EconomicSet.create(Arrays.asList(getClasspathEntries(jvmti)));
 
         boolean isConditionalConfigurationRun = !conditionalConfigUserPackageFilterFiles.isEmpty() || conditionalConfigPartialRun;
         boolean shouldTraceOriginInformation = configurationWithOrigins || isConditionalConfigurationRun;
@@ -317,7 +319,7 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
                                     "Only one agent instance can safely write to a specific target directory at the same time. " +
                                     "Unless file '" + ConfigurationFile.LOCK_FILE_NAME + "' is a leftover from an earlier process that terminated abruptly, it is unsafe to delete it. " +
                                     "For running multiple processes with agents at the same time to create a single configuration, read AutomaticMetadataCollection.md " +
-                                    "or https://www.graalvm.org/dev/reference-manual/native-image/metadata/AutomaticMetadataCollection/ on how to use the native-image-configure tool.");
+                                    "or https://www.graalvm.org/dev/reference-manual/native-image/metadata/AutomaticMetadataCollection/ on how to use the native-image-utils tool.");
                 }
                 if (experimentalOmitClasspathConfig) {
                     ignoreConfigFromClasspath(jvmti, omittedConfigs);
@@ -417,7 +419,9 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
     }
 
     private static void inform(String message) {
+        // Checkstyle: allow System.err (agent class)
         System.err.println(AGENT_NAME + ": " + message);
+        // Checkstyle: disallow System.err
     }
 
     private static void warn(String message) {
@@ -440,7 +444,7 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
 
     private static boolean checkJVMVersion(JvmtiEnv jvmti) {
         String agentVersion = System.getProperty("java.vm.version");
-        int agentMajorVersion = Runtime.version().feature();
+        int agentMajorVersion = JavaVersionUtil.JAVA_SPEC;
 
         String vmVersion = Support.getSystemProperty(jvmti, "java.vm.version");
         if (vmVersion == null) {
@@ -625,14 +629,15 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
 
             compulsoryDelete(tempDirectory);
         } catch (IOException e) {
-            warnUpToLimit(currentFailuresWritingConfigs++, MAX_WARNINGS_FOR_WRITING_CONFIGS_FAILURES, "Error when writing configuration files: " + e);
+            warnUpToLimit(currentFailuresWritingConfigs++, MAX_WARNINGS_FOR_WRITING_CONFIGS_FAILURES,
+                            "Error when writing configuration files:" + System.lineSeparator() + stackTraceToString(e));
         } catch (ConcurrentModificationException e) {
             warnUpToLimit(currentFailuresModifiedTargetDirectory++, MAX_WARNINGS_FOR_WRITING_CONFIGS_FAILURES,
                             "file or directory '" + e.getMessage() + "' has been modified by another process. " +
                                             "All output files remain in the temporary directory '" + configOutputDirPath.resolve("..").relativize(tempDirectory) + "'. " +
                                             "Ensure that only one agent instance and no other processes are writing to the output directory '" + configOutputDirPath + "' at the same time. " +
                                             "For running multiple processes with agents at the same time to create a single configuration, read AutomaticMetadataCollection.md " +
-                                            "or https://www.graalvm.org/dev/reference-manual/native-image/metadata/AutomaticMetadataCollection/ on how to use the native-image-configure tool.");
+                                            "or https://www.graalvm.org/dev/reference-manual/native-image/metadata/AutomaticMetadataCollection/ on how to use the native-image-utils tool.");
         }
     }
 
@@ -683,6 +688,12 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
             warn(message);
             warn("The above warning will no longer be reported.");
         }
+    }
+
+    private static String stackTraceToString(Throwable throwable) {
+        StringWriter stringWriter = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(stringWriter));
+        return stringWriter.toString();
     }
 
     private static final int MAX_FAILURES_ATOMIC_MOVE = 20;

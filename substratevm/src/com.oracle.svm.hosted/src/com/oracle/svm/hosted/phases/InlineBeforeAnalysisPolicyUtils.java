@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,28 +25,34 @@
 package com.oracle.svm.hosted.phases;
 
 import java.lang.annotation.Annotation;
+import java.lang.invoke.MethodHandle;
 import java.lang.reflect.Executable;
+import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Set;
-
-import org.graalvm.nativeimage.AnnotationAccess;
 
 import com.oracle.graal.pointsto.api.PointstoOptions;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.phases.InlineBeforeAnalysis;
 import com.oracle.graal.pointsto.phases.InlineBeforeAnalysisPolicy;
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.UninterruptibleAnnotationUtils;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.hosted.AbstractAnalysisMetadataTrackingNode;
 import com.oracle.svm.hosted.SVMHost;
 import com.oracle.svm.hosted.SharedArenaSupport;
 import com.oracle.svm.hosted.code.FactoryMethodSupport;
 import com.oracle.svm.hosted.methodhandles.MethodHandleInvokerRenamingSubstitutionProcessor;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.OriginalMethodProvider;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.type.IntegerStamp;
@@ -88,15 +94,22 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
  * only exception are constants - an arbitrary number of constants is always allowed. Limiting to 1
  * node (which can be also 1 invoke) means that field accessors can be inlined and forwarding
  * methods can be inlined. But null checks and class initialization checks are already putting a
- * method above the limit. On the other hand, the inlining depth is generous because we do do not
+ * method above the limit. On the other hand, the inlining depth is generous because we do not
  * need to limit it. Note that more experimentation is necessary to come up with the optimal
  * configuration.
- *
+ * <p>
+ * The {@link InlineBeforeAnalysis} phase is separate from compiler inlining. In particular,
+ * {@link AlwaysInline} and
+ * {@link ForceInline} are not generally mandatory directives here. Unless a method is selected by
+ * {@link #alwaysInlineInvoke(AnalysisMetaAccess, AnalysisMethod)}, it is subject to the regular
+ * policy and can intentionally remain uninlined. Therefore, these annotations do not guarantee
+ * constant folding or reachability pruning before analysis.
+ * <p>
  * Important: the implementation details of this class are publicly observable API. Since
- * {@link java.lang.reflect.Method} constants can be produced by inlining lookup methods with
- * constant arguments, reducing inlining can break customer code. This means we can never reduce the
- * amount of inlining in a future version without breaking compatibility. This also means that we
- * must be conservative and only inline what is necessary for known use cases.
+ * {@link Method} constants can be produced by inlining lookup methods with constant arguments,
+ * reducing inlining can break customer code. This means we can never reduce the amount of inlining
+ * in a future version without breaking compatibility. This also means that we must be conservative
+ * and only inline what is necessary for known use cases.
  */
 public class InlineBeforeAnalysisPolicyUtils {
     public static class Options {
@@ -147,7 +160,7 @@ public class InlineBeforeAnalysisPolicyUtils {
     public final int optionMethodHandleAllowedDepth = Options.InlineBeforeAnalysisMethodHandleAllowedDepth.getValue();
     public final int optionMethodHandleAllowedInlinings = Options.InlineBeforeAnalysisMethodHandleAllowedInlinings.getValue();
 
-    public final boolean optionTrackNeverNullInstanceFields = PointstoOptions.TrackNeverNullInstanceFields.getValue(HostedOptionValues.singleton());
+    public final boolean optionTrackNeverNullInstanceFields = PointstoOptions.TrackNeverNullInstanceFields.getValue(HostedOptionValues.singleton().get());
     public final int optionConstructorAllowedNodes = Options.InlineBeforeAnalysisConstructorAllowedNodes.getValue();
     public final int optionConstructorAllowedInvokes = Options.InlineBeforeAnalysisConstructorAllowedInvokes.getValue();
     public final int optionScopedAllowedNodes = Options.InlineBeforeAnalysisScopedAllowedNodes.getValue();
@@ -159,8 +172,24 @@ public class InlineBeforeAnalysisPolicyUtils {
     private static final Class<? extends Annotation> COMPILED_LAMBDA_FORM_ANNOTATION = //
                     (Class<? extends Annotation>) ReflectionUtil.lookupClass("java.lang.invoke.LambdaForm$Compiled");
 
-    public static boolean isMethodHandleIntrinsificationRoot(ResolvedJavaMethod method) {
-        return AnnotationAccess.isAnnotationPresent(method, COMPILED_LAMBDA_FORM_ANNOTATION);
+    /**
+     * Contains methods that are explicitly registered as method handle intrinsification roots.
+     * Currently, this set contains methods
+     * 'AbstractMemorySegmentImpl.get/getAtIndex/set/setAtIndex(...)'. These methods are very simple
+     * and will just load a VarHandle and invoke it. Since the handle is loaded from an argument,
+     * these methods must be inlined. Otherwise, the handle is not seen to be constant. It is also
+     * necessary to declare them as intrinsification roots because although they are annotated
+     * with @ForceInline, the annotation is ignored by InlineBeforeAnalysis. If we specify those
+     * methods in {@link #alwaysInlineInvoke}, they will be inlined but MH intrinsification won't
+     * work anymore (since we don't inline MH roots if already in an inlining context; this is the
+     * mechanism to avoid partial inlining of method handles).
+     */
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+10/src/java.base/share/classes/jdk/internal/foreign/AbstractMemorySegmentImpl.java#L681-L915") //
+    private final Set<ResolvedJavaMethod> explicitMethodHandleIntrinisificationRoots = GuestAccess.elements().abstractMemorySegmentGetSetMethods;
+
+    public boolean isMethodHandleIntrinsificationRoot(ResolvedJavaMethod method) {
+        return GuestAnnotationAccess.isAnnotationPresent(method, COMPILED_LAMBDA_FORM_ANNOTATION) ||
+                        explicitMethodHandleIntrinisificationRoots.contains(OriginalMethodProvider.getOriginalMethod(method));
     }
 
     public boolean isScopedMethod(ResolvedJavaMethod method) {
@@ -194,7 +223,7 @@ public class InlineBeforeAnalysisPolicyUtils {
          * other phases.
          */
         if (isScopedMethod(b.getMethod()) &&
-                        (AnnotationAccess.isAnnotationPresent(method, AlwaysInline.class) || AnnotationAccess.isAnnotationPresent(method, ForceInline.class))) {
+                        (GuestAnnotationAccess.isAnnotationPresent(method, AlwaysInline.class) || GuestAnnotationAccess.isAnnotationPresent(method, ForceInline.class))) {
             return false;
         }
 
@@ -248,14 +277,14 @@ public class InlineBeforeAnalysisPolicyUtils {
         if (hostVM.neverInlineTrivial(caller, callee)) {
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(callee, Fold.class) || AnnotationAccess.isAnnotationPresent(callee, Node.NodeIntrinsic.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(callee, Fold.class) || GuestAnnotationAccess.isAnnotationPresent(callee, Node.NodeIntrinsic.class)) {
             /*
              * We should never see a call to such a method. But if we do, do not inline them
              * otherwise we miss the opportunity later to report it as an error.
              */
             return false;
         }
-        if (AnnotationAccess.isAnnotationPresent(callee, RestrictHeapAccess.class)) {
+        if (GuestAnnotationAccess.isAnnotationPresent(callee, RestrictHeapAccess.class)) {
             /*
              * This is conservative. We do not know the caller's heap restriction state yet because
              * that can only be computed after static analysis (it relies on the call graph produced
@@ -263,7 +292,7 @@ public class InlineBeforeAnalysisPolicyUtils {
              */
             return false;
         }
-        if (!Uninterruptible.Utils.inliningAllowed(caller, callee)) {
+        if (!UninterruptibleAnnotationUtils.inliningAllowed(caller, callee)) {
             return false;
         }
         if (callee.hasOpaqueReturn()) {
@@ -277,8 +306,21 @@ public class InlineBeforeAnalysisPolicyUtils {
         return true;
     }
 
-    public boolean alwaysInlineInvoke(@SuppressWarnings("unused") AnalysisMetaAccess metaAccess, @SuppressWarnings("unused") AnalysisMethod method) {
-        return false;
+    // GR-79411: Keep host-reflection matching until this policy uses guest-aware JVMCI metadata.
+    private static final Set<Executable> ALWAYS_INLINE_BEFORE_ANALYSIS = Set.of(
+                    ReflectionUtil.lookupMethod(Arrays.class, "copyOf", Object[].class, int.class),
+                    ReflectionUtil.lookupMethod(Arrays.class, "copyOfRange", Object[].class, int.class, int.class));
+
+    /**
+     * Returns whether the regular heuristics used by {@link InlineBeforeAnalysis} should be
+     * overridden for this method. Hard restrictions checked by
+     * {@link #inliningAllowed(SVMHost, GraphBuilderContext, AnalysisMethod)}
+     * still take precedence. This phase-specific override is independent of the compiler directive
+     * represented by {@link AlwaysInline}.
+     */
+    public boolean alwaysInlineInvoke(@SuppressWarnings("unused") AnalysisMetaAccess metaAccess, AnalysisMethod method) {
+        Executable javaMethod = OriginalMethodProvider.getJavaMethod(method);
+        return javaMethod != null && ALWAYS_INLINE_BEFORE_ANALYSIS.contains(javaMethod);
     }
 
     enum InliningScopeType {
@@ -579,17 +621,35 @@ public class InlineBeforeAnalysisPolicyUtils {
                      */
                     ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass(false, "java.lang.invoke.DirectMethodHandle"), "allocateInstance", Object.class),
                     ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass(false, "java.lang.invoke.DirectMethodHandle$Accessor"), "checkCast", Object.class),
-                    ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass(false, "java.lang.invoke.DirectMethodHandle$StaticAccessor"), "checkCast", Object.class));
+                    ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass(false, "java.lang.invoke.DirectMethodHandle$StaticAccessor"), "checkCast", Object.class),
+                    ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass("java.lang.invoke.Invokers"), "maybeCustomize", MethodHandle.class),
+                    ReflectionUtil.lookupMethod(MethodHandle.class, "type"),
+                    ReflectionUtil.lookupMethod(MethodHandle.class, "maybeCustomize"),
+                    ReflectionUtil.lookupMethod(ReflectionUtil.lookupClass("jdk.internal.foreign.AbstractMemorySegmentImpl"), "equals", Object.class));
 
-    private static boolean inlineForMethodHandleIntrinsification(AnalysisMethod method) {
-        return AnnotationAccess.isAnnotationPresent(method, ForceInline.class) ||
+    private boolean inlineForMethodHandleIntrinsification(AnalysisMethod method) {
+        return GuestAnnotationAccess.isAnnotationPresent(method, ForceInline.class) ||
                         isMethodHandleIntrinsificationRoot(method) ||
                         INLINE_METHOD_HANDLE_CLASSES.contains(method.getDeclaringClass().getJavaClass()) ||
                         isManuallyListed(method.getJavaMethod());
     }
 
+    /**
+     * Class name prefix of generated hidden classes that contain a
+     * {@code java.lang.invoke.NativeMethodHandle} object.
+     */
+    private static final String INVOKE_CLASS_NAME_DOWNCALL = "jdk.internal.foreign.abi.DowncallStub";
+    private static final String INVOKE_METHOD_NAME = "invoke";
+
+    private static boolean isDowncallStub(Executable method) {
+        if (INVOKE_METHOD_NAME.equals(method.getName()) && method.getDeclaringClass().getName().startsWith(INVOKE_CLASS_NAME_DOWNCALL)) {
+            return true;
+        }
+        return false;
+    }
+
     private static boolean isManuallyListed(Executable method) {
-        return method != null && INLINE_METHOD_HANDLE_METHODS.contains(method);
+        return method != null && (INLINE_METHOD_HANDLE_METHODS.contains(method) || isDowncallStub(method));
     }
 
     /**

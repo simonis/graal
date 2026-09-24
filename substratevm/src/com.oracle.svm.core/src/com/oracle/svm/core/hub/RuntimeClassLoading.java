@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
  */
 package com.oracle.svm.core.hub;
 
+import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.Immutable;
 import static jdk.graal.compiler.options.OptionStability.EXPERIMENTAL;
 
 import java.security.ProtectionDomain;
@@ -36,11 +37,12 @@ import org.graalvm.nativeimage.Platforms;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.ClassRegistries;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.espresso.classfile.Constants;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
@@ -48,6 +50,13 @@ import jdk.graal.compiler.options.OptionKey;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
 public class RuntimeClassLoading {
+    /**
+     * Marker for threads that must not load or define a new class. Queries that return an
+     * already-loaded class remain allowed.
+     */
+    public interface NoClassLoadingThread {
+    }
+
     public enum VerifyMode {
         /**
          * Disables bytecode verification for all class loaders.
@@ -82,7 +91,7 @@ public class RuntimeClassLoading {
                 if (newValue) {
                     /* requires open type world */
                     SubstrateOptions.ClosedTypeWorld.update(values, false);
-                    ClassForNameSupport.Options.ClassForNameRespectsClassLoader.update(values, true);
+                    ClassRegistries.Options.ClassForNameRespectsClassLoader.update(values, true);
                     PredefinedClassesSupport.Options.SupportPredefinedClasses.update(values, false);
                 }
             }
@@ -92,22 +101,14 @@ public class RuntimeClassLoading {
             if (!optionKey.getValue()) {
                 return;
             }
-            if (!SubstrateOptions.SpawnIsolates.getValue()) {
-                /*
-                 * A metaspace is only supported if there is a contiguous address space, which is
-                 * only the case with isolate support enabled.
-                 */
-                throw UserError.invalidOptionValue(RuntimeClassLoading, RuntimeClassLoading.getValue(),
-                                "Requires isolate support, please use " + SubstrateOptionsParser.commandArgument(SubstrateOptions.SpawnIsolates, "+"));
-            }
             if (SubstrateOptions.ClosedTypeWorld.getValue()) {
                 throw UserError.invalidOptionValue(RuntimeClassLoading, RuntimeClassLoading.getValue(),
                                 "Requires an open type world, please use " + SubstrateOptionsParser.commandArgument(SubstrateOptions.ClosedTypeWorld, "-"));
             }
-            if (!ClassForNameSupport.Options.ClassForNameRespectsClassLoader.getValue()) {
+            if (!ClassRegistries.Options.ClassForNameRespectsClassLoader.getValue()) {
                 throw UserError.invalidOptionValue(RuntimeClassLoading, RuntimeClassLoading.getValue(),
                                 "Requires Class.forName to respect the classloader argument, please use " +
-                                                SubstrateOptionsParser.commandArgument(ClassForNameSupport.Options.ClassForNameRespectsClassLoader, "+"));
+                                                SubstrateOptionsParser.commandArgument(ClassRegistries.Options.ClassForNameRespectsClassLoader, "+"));
             }
             if (PredefinedClassesSupport.Options.SupportPredefinedClasses.getValue()) {
                 throw UserError.invalidOptionValue(RuntimeClassLoading, RuntimeClassLoading.getValue(),
@@ -117,12 +118,41 @@ public class RuntimeClassLoading {
         }
 
         @Option(help = "Verification mode for runtime class loading.") //
-        public static final HostedOptionKey<VerifyMode> ClassVerification = new HostedOptionKey<>(VerifyMode.REMOTE);
+        public static final RuntimeOptionKey<VerifyMode> ClassVerification = new RuntimeOptionKey<>(VerifyMode.REMOTE, Immutable);
+
+        @Option(help = "Trace runtime class loading events.") //
+        public static final RuntimeOptionKey<Boolean> TraceClassLoading = new RuntimeOptionKey<>(false, Options::validateTraceRuntimeClassLoading);
+
+        @Option(help = "Logs a stack trace when a class is defined. " +
+                        "The logging is applied to all classes whose fully qualified name contains this string. " +
+                        "(\"*\" matches any class.)") //
+        public static final RuntimeOptionKey<String> LogClassLoadingCauseFor = new RuntimeOptionKey<>(null, Options::validateLogClassLoadingCauseFor);
+
+        private static void validateTraceRuntimeClassLoading(RuntimeOptionKey<Boolean> optionKey) {
+            if (optionKey.getValue() && !RuntimeClassLoading.getValue()) {
+                throw UserError.abort("Option '%s' requires runtime class-loading support to be enabled via '%s'.",
+                                optionKey.getName(),
+                                SubstrateOptionsParser.commandArgument(RuntimeClassLoading, "+"));
+            }
+        }
+
+        private static void validateLogClassLoadingCauseFor(RuntimeOptionKey<String> optionKey) {
+            if (optionKey.getValue() != null && !RuntimeClassLoading.getValue()) {
+                throw UserError.abort("Option '%s' requires runtime class-loading support to be enabled via '%s'.",
+                                optionKey.getName(),
+                                SubstrateOptionsParser.commandArgument(RuntimeClassLoading, "+"));
+            }
+        }
     }
 
     @Fold
     public static boolean isSupported() {
         return Options.RuntimeClassLoading.getValue();
+    }
+
+    /** Fails if the current thread must not load or define a new class. */
+    public static void guaranteeClassLoadingAllowed() {
+        VMError.guarantee(!(Thread.currentThread() instanceof NoClassLoadingThread), "Class loading is prohibited in the current thread");
     }
 
     public static Class<?> defineClass(ClassLoader loader, String expectedName, byte[] b, int off, int len, ClassDefinitionInfo info) {
@@ -165,34 +195,31 @@ public class RuntimeClassLoading {
     public static RuntimeException throwNoBytecodeClasses(String className) {
         assert !PredefinedClassesSupport.hasBytecodeClasses() && !RuntimeClassLoading.isSupported();
         throw VMError.unsupportedFeature(
-                        "Classes cannot be defined at runtime by default when using ahead-of-time Native Image compilation. Tried to define class '" + className + "'" + System.lineSeparator() +
+                        "Classes cannot be defined at runtime by default when using ahead-of-time Native Image compilation. Tried to define class:" + System.lineSeparator() + System.lineSeparator() +
+                                        "    " + className + System.lineSeparator() + System.lineSeparator() +
                                         DEFINITION_NOT_SUPPORTED_MESSAGE);
     }
 
-    public static DynamicHub getOrCreateArrayHub(DynamicHub hub) {
-        if (hub.getArrayHub() == null) {
-            VMError.guarantee(RuntimeClassLoading.isSupported());
-            // GR-63452
-            throw VMError.unimplemented("array hub creation");
-        }
-        return hub.getArrayHub();
-    }
-
     public static final class ClassDefinitionInfo {
-        public static final ClassDefinitionInfo EMPTY = new ClassDefinitionInfo(null, null, null, false, false, false);
+        public static final ClassDefinitionInfo EMPTY = new ClassDefinitionInfo(null, null, null, null, false, false, false);
 
         // Constructor for regular definition, but with a specified protection domain
         public ClassDefinitionInfo(ProtectionDomain protectionDomain) {
-            this(protectionDomain, null, null, false, false, false);
+            this(protectionDomain, null);
+        }
+
+        // Constructor for regular definition, but with a specified source
+        public ClassDefinitionInfo(ProtectionDomain protectionDomain, String source) {
+            this(protectionDomain, source, null, null, false, false, false);
         }
 
         // Constructor for Hidden class definition.
         public ClassDefinitionInfo(ProtectionDomain protectionDomain, Class<?> dynamicNest, Object classData, boolean isStrongHidden, boolean forceAllowVMAnnotations) {
-            this(protectionDomain, dynamicNest, classData, true, isStrongHidden, forceAllowVMAnnotations);
+            this(protectionDomain, null, dynamicNest, classData, true, isStrongHidden, forceAllowVMAnnotations);
         }
 
         private ClassDefinitionInfo(ProtectionDomain protectionDomain,
-                        Class<?> dynamicNest,
+                        String source, Class<?> dynamicNest,
                         Object classData,
                         boolean isHidden,
                         boolean isStrongHidden,
@@ -202,6 +229,7 @@ public class RuntimeClassLoading {
             assert classData == null || isHidden;
             assert !forceAllowVMAnnotations || isHidden;
             this.protectionDomain = protectionDomain;
+            this.source = source;
             this.dynamicNest = dynamicNest;
             this.classData = classData;
             this.isHidden = isHidden;
@@ -210,6 +238,7 @@ public class RuntimeClassLoading {
         }
 
         public final ProtectionDomain protectionDomain;
+        public final String source;
 
         // Hidden class
         public final Class<?> dynamicNest;
@@ -248,10 +277,11 @@ public class RuntimeClassLoading {
                 return "EMPTY";
             }
             if (!isHidden) {
-                return "ClassDefinitionInfo{protectionDomain=" + protectionDomain + "}";
+                return "ClassDefinitionInfo{protectionDomain=" + protectionDomain + ", source=" + source + "}";
             }
             return "ClassDefinitionInfo{" +
                             "protectionDomain=" + protectionDomain +
+                            ", source=" + source +
                             ", dynamicNest=" + dynamicNest +
                             ", classData=" + classData +
                             ", isHidden=" + isHidden +
@@ -266,10 +296,7 @@ public class RuntimeClassLoading {
     }
 
     public static void ensureLinked(DynamicHub dynamicHub) {
-        if (dynamicHub.isLinked()) {
-            return;
-        }
-        // GR-59739 runtime linking
+        dynamicHub.getClassInitializationInfo().ensureLinked(dynamicHub);
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)

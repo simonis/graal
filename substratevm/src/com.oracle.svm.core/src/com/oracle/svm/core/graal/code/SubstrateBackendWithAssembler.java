@@ -24,22 +24,17 @@
  */
 package com.oracle.svm.core.graal.code;
 
-import org.graalvm.collections.EconomicMap;
-
 import jdk.graal.compiler.asm.Assembler;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.util.Providers;
 
 public abstract class SubstrateBackendWithAssembler<A extends Assembler<?>> extends SubstrateBackend {
+    protected final SubstrateFrameContextSupport frameContextSupport;
 
-    protected SubstrateBackendWithAssembler(Providers providers) {
+    protected SubstrateBackendWithAssembler(Providers providers, boolean scratchRegisterAvailable) {
         super(providers);
+        frameContextSupport = new SubstrateFrameContextSupport(scratchRegisterAvailable);
     }
 
-    protected abstract A createAssembler(OptionValues options);
-
-    public final A createAssemblerNoOptions() {
-        OptionValues o = new OptionValues(EconomicMap.create());
-        return createAssembler(o);
-    }
+    public abstract A createAssembler(OptionValues options);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,7 +32,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
@@ -43,24 +42,41 @@ import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.WordBase;
 
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
-import com.oracle.svm.core.InvalidMethodPointerHandler;
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.UninterruptibleAnnotationUtils;
+import com.oracle.svm.core.UninterruptibleGuestValue;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.aarch64.AArch64InterpreterStubs;
 import com.oracle.svm.core.graal.amd64.AMD64InterpreterStubs;
 import com.oracle.svm.core.graal.code.InterpreterAccessStubData;
+import com.oracle.svm.core.graal.code.StubCallingConvention;
 import com.oracle.svm.core.interpreter.InterpreterSupport;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.stack.ThreadStackPrinter;
+import com.oracle.svm.core.thread.ThreadListenerSupport;
+import com.oracle.svm.espresso.shared.meta.SignaturePolymorphicIntrinsic;
+import com.oracle.svm.hosted.BytecodeHandlerFeature;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
+import com.oracle.svm.hosted.image.NativeImageCodeCache;
+import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.interpreter.debug.DebuggerEventsFeature;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 
 import jdk.graal.compiler.api.replacements.Fold;
+import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.common.type.StampFactory;
 import jdk.graal.compiler.graph.NodeClass;
 import jdk.graal.compiler.nodeinfo.NodeInfo;
@@ -73,6 +89,10 @@ import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins.Registration;
 import jdk.graal.compiler.nodes.spi.Lowerable;
 import jdk.graal.compiler.nodes.spi.LoweringTool;
 import jdk.graal.compiler.phases.util.Providers;
+import jdk.vm.ci.code.BytecodeFrame;
+import jdk.vm.ci.code.DebugInfo;
+import jdk.vm.ci.code.site.Call;
+import jdk.vm.ci.code.site.Infopoint;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.Local;
 import jdk.vm.ci.meta.LocalVariableTable;
@@ -82,17 +102,25 @@ import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 
 @Platforms(Platform.HOSTED_ONLY.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class InterpreterFeature implements InternalFeature {
     private AnalysisMethod leaveStub;
+    private AnalysisMethod nativeDowncallStub;
+
+    static boolean assertionsEnabled() {
+        boolean enabled = false;
+        assert (enabled = true) == true : "Enabling assertions";
+        return enabled;
+    }
 
     static boolean executableByInterpreter(AnalysisMethod m) {
-        if (AnnotationAccess.getAnnotation(m, CFunction.class) != null) {
+        if (GuestAnnotationAccess.isAnnotationPresent(m, CFunction.class)) {
             return false;
         }
-        if (AnnotationAccess.getAnnotation(m, CEntryPoint.class) != null) {
+        if (GuestAnnotationAccess.isAnnotationPresent(m, CEntryPoint.class)) {
             return false;
         }
-        Uninterruptible uninterruptible = AnnotationAccess.getAnnotation(m, Uninterruptible.class);
+        UninterruptibleGuestValue uninterruptible = UninterruptibleAnnotationUtils.getAnnotation(m);
         if (uninterruptible != null) {
             if (uninterruptible.mayBeInlined() && !uninterruptible.callerMustBe()) {
                 /*
@@ -103,12 +131,19 @@ public class InterpreterFeature implements InternalFeature {
                 return false;
             }
         }
+        if (StubCallingConvention.Utils.hasStubCallingConvention(m)) {
+            /*
+             * enterstub can only deal with the internal Java calling convention of SVM. If ever
+             * needed, the enterstub can be adapted.
+             */
+            return false;
+        }
 
         return true;
     }
 
     public static boolean callableByInterpreter(ResolvedJavaMethod m, MetaAccessProvider metaAccess) {
-        if (AnnotationAccess.getAnnotation(m, Fold.class) != null) {
+        if (GuestAnnotationAccess.isAnnotationPresent(m, Fold.class)) {
             /*
              * GR-55052: For now @Fold methods are considered not callable. The problem is that such
              * methods are reachability cut-offs, so we would need to roll our own reachability
@@ -140,7 +175,7 @@ public class InterpreterFeature implements InternalFeature {
 
     @Override
     public List<Class<? extends Feature>> getRequiredFeatures() {
-        return Arrays.asList(DebuggerEventsFeature.class);
+        return Arrays.asList(DebuggerEventsFeature.class, BytecodeHandlerFeature.class);
     }
 
     @Override
@@ -172,6 +207,11 @@ public class InterpreterFeature implements InternalFeature {
     }
 
     @Override
+    public void afterRegistration(AfterRegistrationAccess access) {
+        ThreadListenerSupport.get().register(new ThreadListenerThreadLocalHandlesAllocator());
+    }
+
+    @Override
     public void duringSetup(DuringSetupAccess access) {
         if (Platform.includedIn(Platform.AARCH64.class)) {
             ImageSingletons.add(InterpreterStubSection.class, new AArch64InterpreterStubSection());
@@ -198,47 +238,163 @@ public class InterpreterFeature implements InternalFeature {
         FeatureImpl.BeforeAnalysisAccessImpl accessImpl = (FeatureImpl.BeforeAnalysisAccessImpl) access;
 
         BuildTimeInterpreterUniverse.freshSingletonInstance();
-        AnalysisMethod interpreterRoot = accessImpl.getMetaAccess().lookupJavaType(Interpreter.Root.class).getDeclaredMethods(false)[0];
+        AnalysisMetaAccess metaAccess = accessImpl.getMetaAccess();
 
-        accessImpl.registerAsRoot(interpreterRoot, true, "interpreter main loop");
+        AnalysisMethod interpreterRoot = (AnalysisMethod) getExecuteBodyFromBCIMethod(metaAccess);
+        assert interpreterRoot.hasNeverInlineDirective();
+
         LocalVariableTable interpreterVariableTable = interpreterRoot.getLocalVariableTable();
-        int interpretedMethodSlot = findLocalSlotByName("method", interpreterVariableTable.getLocalsAt(0)); // parameter
+        int interpreterMethodSlot = findLocalSlotByName("method", interpreterVariableTable.getLocalsAt(0)); // parameter
         int interpreterFrameSlot = findLocalSlotByName("frame", interpreterVariableTable.getLocalsAt(0)); // parameter
+        /*
+         * Stack walking can observe executeBodyFromBCI after the root frame exists but before
+         * curBCI has been written into it, e.g. on a stack-overflow edge through the interpreter
+         * prologue. Preserve startBCI as well so reporting can still recover the bytecode entry
+         * point for that root frame.
+         */
+        int interpreterStartBCISlot = findLocalSlotByName("startBCI", interpreterVariableTable.getLocalsAt(0)); // parameter
         // Local variable, search all locals.
         int bciSlot = findLocalSlotByName("curBCI", interpreterVariableTable.getLocals());
 
-        ImageSingletons.add(InterpreterSupport.class, new InterpreterSupportImpl(bciSlot, interpretedMethodSlot, interpreterFrameSlot));
+        AnalysisMethod intrinsicRoot = (AnalysisMethod) getExecuteIntrinsicMethod(metaAccess);
+        assert intrinsicRoot.hasNeverInlineDirective();
+
+        LocalVariableTable intrinsicVariableTable = intrinsicRoot.getLocalVariableTable();
+        int intrinsicMethodSlot = findLocalSlotByName("method", intrinsicVariableTable.getLocalsAt(0)); // parameter
+        int intrinsicFrameSlot = findLocalSlotByName("frame", intrinsicVariableTable.getLocalsAt(0)); // parameter
+
+        AnalysisMethod interpreterJNIDowncallRoot = (AnalysisMethod) getJNIDowncallMethod(metaAccess);
+        assert interpreterJNIDowncallRoot.hasNeverInlineDirective();
+        LocalVariableTable interpreterJNIDowncallVariableTable = interpreterJNIDowncallRoot.getLocalVariableTable();
+        int interpreterJNIDowncallMethodSlot = findLocalSlotByName("seedMethod", interpreterJNIDowncallVariableTable.getLocalsAt(0)); // parameter
+
+        ImageSingletons.add(InterpreterSupport.class, new InterpreterSupportImpl(bciSlot, interpreterStartBCISlot, interpreterMethodSlot, interpreterFrameSlot, intrinsicMethodSlot, intrinsicFrameSlot,
+                        interpreterJNIDowncallMethodSlot));
         ImageSingletons.add(InterpreterDirectivesSupport.class, new InterpreterDirectivesSupportImpl());
-        ImageSingletons.add(InterpreterMethodPointerHolder.class, new InterpreterMethodPointerHolder());
+        ImageSingletons.add(InterpreterKnownCompiledEntryPoints.class, new InterpreterKnownCompiledEntryPoints(accessImpl, accessImpl.getMetaAccess()));
 
         // Locals must be available at runtime to retrieve BCI, interpreted method and interpreter
         // frame.
         SubstrateCompilationDirectives.singleton().registerFrameInformationRequired(interpreterRoot);
+        SubstrateCompilationDirectives.singleton().registerFrameInformationRequired(intrinsicRoot);
+        SubstrateCompilationDirectives.singleton().registerFrameInformationRequired(interpreterJNIDowncallRoot);
 
-        Method leaveMethod = ReflectionUtil.lookupMethod(InterpreterStubSection.class, "leaveInterpreterStub", CFunctionPointer.class, Pointer.class, long.class, long.class);
-        leaveStub = accessImpl.getMetaAccess().lookupJavaMethod(leaveMethod);
+        Method leaveMethod = ReflectionUtil.lookupMethod(InterpreterStubSection.class, "leaveInterpreterStub", CFunctionPointer.class, Pointer.class, long.class, boolean.class);
+        leaveStub = metaAccess.lookupJavaMethod(leaveMethod);
         accessImpl.registerAsRoot(leaveStub, true, "low level entry point");
+
+        Method nativeDowncallMethod = ReflectionUtil.lookupMethod(InterpreterStubSection.class, "leaveInterpreterForNativeDowncallStub", CFunctionPointer.class, Pointer.class, long.class, byte.class);
+        nativeDowncallStub = metaAccess.lookupJavaMethod(nativeDowncallMethod);
+        accessImpl.registerAsRoot(nativeDowncallStub, true, "low level native downcall entry point");
+
+        InterpreterOptions.registerInterpreterTraceOptionValidation();
     }
 
     @Override
     public void beforeCompilation(BeforeCompilationAccess access) {
         FeatureImpl.BeforeCompilationAccessImpl accessImpl = (FeatureImpl.BeforeCompilationAccessImpl) access;
-
-        /* required so that it can hold a relocatable pointer */
-        accessImpl.registerAsImmutable(InterpreterMethodPointerHolder.singleton());
         accessImpl.registerAsImmutable(InterpreterSupport.singleton());
+    }
 
-        HostedMethod methodNotCompiledHandler = accessImpl.getMetaAccess().lookupJavaMethod(InvalidMethodPointerHandler.METHOD_POINTER_NOT_COMPILED_HANDLER_METHOD);
-        InterpreterMethodPointerHolder.setMethodNotCompiledHandler(new MethodPointer(methodNotCompiledHandler));
+    /**
+     * Must be called by all features that depend on InterpreterFeature in
+     * {@link #beforeCompilation(BeforeCompilationAccess)}.
+     */
+    public static void prepareSignatures() {
+        InterpreterSupport interpreterSingleton = InterpreterSupport.singleton();
+        for (InterpreterResolvedJavaMethod interpreterMethod : BuildTimeInterpreterUniverse.singleton().getMethods()) {
+            interpreterMethod.setPreparedSignature(interpreterSingleton.prepareSignature(interpreterMethod));
+        }
+    }
+
+    private static boolean verifyPreparedSignatures() {
+        for (InterpreterResolvedJavaMethod interpreterMethod : BuildTimeInterpreterUniverse.singleton().getMethods()) {
+            assert interpreterMethod.getPreparedSignature() != null;
+        }
+        return true;
     }
 
     @Override
     public void afterCompilation(AfterCompilationAccess access) {
+        assert verifyPreparedSignatures();
+
         FeatureImpl.AfterCompilationAccessImpl accessImpl = (FeatureImpl.AfterCompilationAccessImpl) access;
 
         HostedMethod hLeaveStub = accessImpl.getUniverse().lookup(leaveStub);
         int leaveStubLength = accessImpl.getCompilations().get(hLeaveStub).result.getTargetCodeSize();
 
         InterpreterSupport.setLeaveStubPointer(new MethodPointer(hLeaveStub), leaveStubLength);
+
+        HostedMethod hNativeDowncallStub = accessImpl.getUniverse().lookup(nativeDowncallStub);
+        int nativeDowncallStubLength = accessImpl.getCompilations().get(hNativeDowncallStub).result.getTargetCodeSize();
+
+        InterpreterSupport.setNativeDowncallStubPointer(new MethodPointer(hNativeDowncallStub), nativeDowncallStubLength);
+    }
+
+    private static ResolvedJavaMethod getExecuteBodyFromBCIMethod(MetaAccessProvider metaAccess) {
+        ResolvedJavaType interpreterRootType = metaAccess.lookupJavaType(Interpreter.Root.class);
+        return JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, interpreterRootType, "executeBodyFromBCI",
+                        InterpreterFrame.class, InterpreterResolvedJavaMethod.class, int.class, int.class, boolean.class);
+    }
+
+    private static ResolvedJavaMethod getExecuteIntrinsicMethod(MetaAccessProvider metaAccess) {
+        ResolvedJavaType intrinsicRootType = metaAccess.lookupJavaType(Interpreter.IntrinsicRoot.class);
+        return JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, intrinsicRootType, "execute",
+                        InterpreterFrame.class, InterpreterResolvedJavaMethod.class, SignaturePolymorphicIntrinsic.class, boolean.class);
+    }
+
+    private static ResolvedJavaMethod getJNIDowncallMethod(MetaAccessProvider metaAccess) {
+        ResolvedJavaType jniDowncallRootType = metaAccess.lookupJavaType(Interpreter.JNIDowncallRoot.class);
+        return JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, jniDowncallRootType, "execute", InterpreterResolvedJavaMethod.class, Object[].class);
+    }
+
+    @Override
+    public void beforeImageWrite(BeforeImageWriteAccess access) {
+        FeatureImpl.BeforeImageWriteAccessImpl accessImpl = (FeatureImpl.BeforeImageWriteAccessImpl) access;
+        HostedMetaAccess metaAccess = accessImpl.getMetaAccess();
+        NativeImageCodeCache codeCache = accessImpl.getImage().getCodeCache();
+        checkPreAllocatedValueInfos(metaAccess, codeCache);
+    }
+
+    private static void checkPreAllocatedValueInfos(HostedMetaAccess metaAccess, NativeImageCodeCache codeCache) {
+        HostedMethod interpreterRoot = (HostedMethod) getExecuteBodyFromBCIMethod(metaAccess);
+        assert interpreterRoot.hasNeverInlineDirective();
+        checkPreAllocatedValueInfos(codeCache, interpreterRoot);
+        HostedMethod intrinsicRoot = (HostedMethod) getExecuteIntrinsicMethod(metaAccess);
+        assert intrinsicRoot.hasNeverInlineDirective();
+        // This method might not be compiled (e.g., with the debugger enabled but crema disabled)
+        if (intrinsicRoot.isCompiled()) {
+            checkPreAllocatedValueInfos(codeCache, intrinsicRoot);
+        }
+    }
+
+    private static void checkPreAllocatedValueInfos(NativeImageCodeCache codeCache, HostedMethod root) {
+        CompilationResult interpreterRootCompilation = codeCache.compilationResultFor(root);
+        int maxValues = 0;
+        Infopoint maxValuesInfopoint = null;
+        for (Infopoint infopoint : interpreterRootCompilation.getInfopoints()) {
+            DebugInfo debugInfo = infopoint.debugInfo;
+            if (debugInfo == null || !(infopoint instanceof Call)) {
+                continue;
+            }
+            BytecodeFrame frame = debugInfo.frame();
+            while (frame.caller() != null) {
+                // we need values for the root method
+                frame = frame.caller();
+            }
+            if (maxValues < frame.values.length) {
+                maxValues = frame.values.length;
+                maxValuesInfopoint = infopoint;
+            }
+        }
+        if (maxValues > ThreadStackPrinter.NUM_INTERPRETER_PREALLOCATED_VALUE_INFO) {
+            String message = "NUM_PREALLOCATED_VALUE_INFO is too small (" + ThreadStackPrinter.NUM_INTERPRETER_PREALLOCATED_VALUE_INFO + "): " +
+                            interpreterRootCompilation + " contains a Call site with " + maxValues + " values (" + maxValuesInfopoint + ")";
+            if (assertionsEnabled()) {
+                throw VMError.shouldNotReachHere(message);
+            } else {
+                LogUtils.warning(message);
+            }
+        }
     }
 }

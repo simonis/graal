@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.deopt;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
@@ -32,12 +32,19 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.hosted.Feature;
 
-import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.shared.BuildPhaseProvider.ReadyForCompilation;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public class DeoptimizationSupport {
 
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) private CFunctionPointer eagerDeoptStubPointer;
@@ -58,6 +65,7 @@ public class DeoptimizationSupport {
      */
     @Fold
     public static boolean enabled() {
+        VMError.guarantee(BuildPhaseProvider.isFeatureRegistrationFinished(), "DeoptimizationSupport.enabled() must not be called before the feature registration is finished.");
         return ImageSingletons.contains(DeoptimizationCanaryFeature.class);
     }
 

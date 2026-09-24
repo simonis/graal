@@ -30,9 +30,9 @@ import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.c.function.CEntryPointActions;
-import com.oracle.svm.core.c.function.CEntryPointCreateIsolateParameters;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.guest.staging.c.function.CEntryPointActions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointCreateIsolateParameters;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.nodes.CEntryPointEnterNode;
 import com.oracle.svm.core.graal.nodes.CEntryPointLeaveNode;
@@ -79,17 +79,14 @@ public class CEntryPointSupport implements InternalFeature {
                 if (!ensureJavaThreadNode.isConstant()) {
                     throw b.bailout("Parameter ensureJavaThread of enterAttachThread must be a compile time constant");
                 }
-                b.addPush(JavaKind.Int, CEntryPointEnterNode.attachThread(isolate, false, ensureJavaThreadNode.asJavaConstant().asInt() != 0));
+                b.addPush(JavaKind.Int, CEntryPointEnterNode.attachThread(isolate, ensureJavaThreadNode.asJavaConstant().asInt() != 0));
                 return true;
             }
         });
-        r.register(new RequiredInvocationPlugin("enterAttachThread", Isolate.class, boolean.class, boolean.class) {
+        r.register(new RequiredInvocationPlugin("enterAttachNewlyStartedThread", IsolateThread.class) {
             @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode isolate, ValueNode startedByIsolate, ValueNode ensureJavaThread) {
-                if (!startedByIsolate.isConstant() || !ensureJavaThread.isConstant()) {
-                    throw b.bailout("Parameters ensureJavaThread and startedByIsolate of enterAttachThread must be a compile time constant");
-                }
-                b.addPush(JavaKind.Int, CEntryPointEnterNode.attachThread(isolate, startedByIsolate.asJavaConstant().asInt() != 0, ensureJavaThread.asJavaConstant().asInt() != 0));
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode thread) {
+                b.addPush(JavaKind.Int, CEntryPointEnterNode.attachNewlyStartedThread(thread));
                 return true;
             }
         });

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,34 +40,28 @@
  */
 package org.graalvm.nativeimage.impl;
 
+import java.util.Arrays;
+
 import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
 
 public interface RuntimeReflectionSupport extends ReflectionRegistry {
     // needed as reflection-specific ImageSingletons key
-    void registerAllMethodsQuery(AccessCondition condition, boolean queriedOnly, Class<?> clazz);
+    default void registerAllFields(AccessCondition condition, boolean preserved, Class<?> clazz) {
+        register(condition, false, preserved, clazz.getFields());
+    }
 
-    void registerAllDeclaredMethodsQuery(AccessCondition condition, boolean queriedOnly, Class<?> clazz);
-
-    void registerAllFields(AccessCondition condition, Class<?> clazz);
-
-    void registerAllDeclaredFields(AccessCondition condition, Class<?> clazz);
-
-    void registerAllConstructorsQuery(AccessCondition condition, boolean queriedOnly, Class<?> clazz);
-
-    void registerAllDeclaredConstructorsQuery(AccessCondition condition, boolean queriedOnly, Class<?> clazz);
-
-    void registerAllClassesQuery(AccessCondition condition, Class<?> clazz);
-
-    void registerAllDeclaredClassesQuery(AccessCondition condition, Class<?> clazz);
-
-    void registerAllRecordComponentsQuery(AccessCondition condition, Class<?> clazz);
-
-    void registerAllPermittedSubclassesQuery(AccessCondition condition, Class<?> clazz);
-
-    void registerAllNestMembersQuery(AccessCondition condition, Class<?> clazz);
-
-    void registerAllSignersQuery(AccessCondition condition, Class<?> clazz);
+    default void registerAllDeclaredFields(AccessCondition condition, boolean preserved, Class<?> clazz) {
+        register(condition, false, preserved, clazz.getDeclaredFields());
+    }
 
     void registerClassLookupException(AccessCondition condition, String typeName, Throwable t);
 
+    default void registerUnsafeAllocation(AccessCondition condition, boolean preserved, Class<?>... classes) {
+        Arrays.stream(classes).forEach(clazz -> {
+            register(condition, preserved, clazz);
+            registerUnsafeAllocation(condition, preserved, clazz);
+        });
+    }
+
+    void registerUnsafeAllocation(AccessCondition condition, boolean preserved, Class<?> clazz);
 }

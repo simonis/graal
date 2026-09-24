@@ -40,7 +40,7 @@ import com.oracle.svm.core.thread.PlatformThreads;
 import com.oracle.svm.core.thread.ThreadSuspendSupport;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.interpreter.DebuggerSupport;
 import com.oracle.svm.interpreter.debug.DebuggerEvents;
 import com.oracle.svm.interpreter.debug.EventKind;
@@ -183,7 +183,7 @@ public final class JDWPBridgeImpl implements JDWPBridge {
             int i = 0;
             threadsLoop: for (IsolateThread thread = VMThreads.firstThreadUnsafe(); thread.isNonNull(); thread = VMThreads.nextThread(thread)) {
                 Thread t = ThreadStartDeathSupport.get().filterAppThread(thread);
-                if (t == null || PlatformThreads.getThreadStatus(t) == com.oracle.svm.core.thread.ThreadStatus.TERMINATED) {
+                if (t == null || PlatformThreads.getThreadStatus(t) == com.oracle.svm.guest.staging.core.thread.ThreadStatus.TERMINATED) {
                     continue;
                 }
                 for (Thread ignoredThread : ignoredThreads) {

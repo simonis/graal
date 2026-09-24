@@ -29,7 +29,7 @@ import java.util.List;
 import org.graalvm.word.WordBase;
 
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.vm.ci.meta.Assumptions.AssumptionResult;
 import jdk.vm.ci.meta.JavaKind;
@@ -54,6 +54,9 @@ public interface SharedType extends ResolvedJavaType {
     /**
      * Unique ID given to interfaces, which can be orthogonal to the typeID.
      * {@link DynamicHub#NO_INTERFACE_ID} for non-interface types. Must not be 0.
+     * <p>
+     * Note that array of interfaces are considered "interface-like" for the purposes of type checks
+     * and thus have an interface ID.
      */
     int getInterfaceID();
 
@@ -116,4 +119,6 @@ public interface SharedType extends ResolvedJavaType {
          */
         throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
+
+    boolean isInternalVMMethods();
 }

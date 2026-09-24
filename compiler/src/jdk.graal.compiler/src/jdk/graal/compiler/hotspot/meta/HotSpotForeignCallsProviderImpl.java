@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,7 @@ import static jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage.RegisterEffec
 import static jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage.RegisterEffect.KILLS_NO_REGISTERS;
 import static jdk.graal.compiler.hotspot.meta.HotSpotForeignCallDescriptor.Transition.LEAF_NO_VZERO;
 import static jdk.graal.compiler.hotspot.meta.HotSpotForeignCallDescriptor.Transition.SAFEPOINT;
-import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.MARK_WORD_LOCATION;
+import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.HotSpotFieldLocationIdentity.MARK_WORD_LOCATION;
 import static jdk.vm.ci.hotspot.HotSpotCallingConventionType.JavaCall;
 import static jdk.vm.ci.hotspot.HotSpotCallingConventionType.JavaCallee;
 import static jdk.vm.ci.hotspot.HotSpotCallingConventionType.NativeCall;
@@ -41,6 +41,7 @@ import java.util.function.BiConsumer;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.MapCursor;
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
@@ -58,7 +59,6 @@ import jdk.graal.compiler.hotspot.stubs.ForeignCallStub;
 import jdk.graal.compiler.hotspot.stubs.InvokeJavaMethodStub;
 import jdk.graal.compiler.hotspot.stubs.Stub;
 import jdk.graal.compiler.options.OptionValues;
-import jdk.graal.compiler.word.Word;
 import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.CodeCacheProvider;
@@ -90,6 +90,12 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
 
     protected final EconomicMap<ForeignCallSignature, HotSpotForeignCallLinkage> foreignCalls = EconomicMap.create();
     protected final EconomicMap<ForeignCallSignature, HotSpotForeignCallDescriptor> signatureMap = EconomicMap.create();
+    /**
+     * Mapping from names to linkages for foreign calls which cannot be registered during
+     * provider initialization. This map may be updated during compilation, so every access must be
+     * protected by its monitor.
+     */
+    private final EconomicMap<String, HotSpotForeignCallLinkage> lazyForeignCalls = EconomicMap.create();
     protected final MetaAccessProvider metaAccess;
     protected final CodeCacheProvider codeCache;
     protected final WordTypes wordTypes;
@@ -119,9 +125,16 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
      * know the signature of such calls during image building.
      */
     public void register(ForeignCallSignature sig) {
-        if (!foreignCalls.containsKey(sig)) {
+        if (!isRegistered(sig)) {
             foreignCalls.put(sig, null);
         }
+    }
+
+    /**
+     * Checks if a foreign call signature is registered.
+     */
+    public boolean isRegistered(ForeignCallSignature sig) {
+        return foreignCalls.containsKey(sig);
     }
 
     /**
@@ -193,6 +206,44 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
                         outgoingCcType,
                         null // incomingCcType
         ));
+    }
+
+    @Override
+    public ForeignCallDescriptor lookupVectorAPILibraryCall(String name, long address, int vectorLength, JavaKind elementKind, int argumentCount) {
+        GraalError.guarantee(name != null, "foreign call name must be non-null");
+        GraalError.guarantee(address != 0L, "foreign call target address must be non-zero");
+        synchronized (lazyForeignCalls) {
+            HotSpotForeignCallLinkage existing = lazyForeignCalls.get(name);
+            if (existing != null) {
+                GraalError.guarantee(existing.getAddress() == address, "lazy foreign call name collision for %s: 0x%x != 0x%x", name, existing.getAddress(), address);
+                GraalError.guarantee(existing.getDescriptor().getArgumentTypes().length == argumentCount, "lazy foreign call name collision for %s: %d arguments != %d arguments",
+                                name, existing.getDescriptor().getArgumentTypes().length, argumentCount);
+                return existing.getDescriptor();
+            }
+            CallingConvention outgoingCc = getVectorMathLibraryCallingConvention(vectorLength, elementKind, argumentCount);
+            if (outgoingCc == null) {
+                return null;
+            }
+            HotSpotForeignCallDescriptor descriptor = new HotSpotForeignCallDescriptor(LEAF_NO_VZERO, NO_SIDE_EFFECT, NO_LOCATIONS,
+                            name, Object.class, true,
+                            switch (argumentCount) {
+                                case 1 -> new Class<?>[]{Object.class};
+                                case 2 -> new Class<?>[]{Object.class, Object.class};
+                                default -> throw GraalError.shouldNotReachHereUnexpectedValue(argumentCount);
+                            });
+            HotSpotForeignCallLinkage linkage = new HotSpotForeignCallLinkageImpl(descriptor, address, DESTROYS_ALL_CALLER_SAVE_REGISTERS, outgoingCc, null);
+            lazyForeignCalls.put(name, linkage);
+            return descriptor;
+        }
+    }
+
+    /**
+     * Returns the target calling convention for a native Vector API math library call. Returning
+     * {@code null} means that the current target cannot use the supplied vector type.
+     */
+    @SuppressWarnings("unused")
+    protected CallingConvention getVectorMathLibraryCallingConvention(int vectorLength, JavaKind elementKind, int argumentCount) {
+        return null;
     }
 
     /**
@@ -290,6 +341,15 @@ public abstract class HotSpotForeignCallsProviderImpl implements HotSpotForeignC
 
     @Override
     public HotSpotForeignCallLinkage lookupForeignCall(ForeignCallDescriptor descriptor) {
+        if (descriptor.isLazilyResolved()) {
+            synchronized (lazyForeignCalls) {
+                HotSpotForeignCallLinkage callTarget = lazyForeignCalls.get(descriptor.getName());
+                if (callTarget == null) {
+                    throw GraalError.shouldNotReachHere("Missing implementation for runtime call: " + descriptor.getSignature()); // ExcludeFromJacocoGeneratedReport
+                }
+                return callTarget;
+            }
+        }
         return lookupForeignCall(descriptor.getSignature());
     }
 

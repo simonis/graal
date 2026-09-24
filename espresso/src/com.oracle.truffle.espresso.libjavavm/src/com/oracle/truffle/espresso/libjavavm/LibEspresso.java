@@ -66,12 +66,15 @@ public final class LibEspresso {
         }
         Context.Builder builder = Context.newBuilder().allowAllAccess(true);
 
-        // These option need to be set before calling `Arguments.setupContext()` so that cmd line
+        // These options need to be set before calling `Arguments.setupContext()` so that cmd line
         // args can override the default behavior.
 
         // Since Espresso has a verifier, the Static Object Model does not need to perform shape
         // checks and can use unsafe casts.
         builder.option("engine.RelaxStaticObjectSafetyChecks", "true");
+
+        // Disable implicit interop by default to improve performance.
+        builder.option("java.EnableImplicitInterop", "false");
 
         int result = Arguments.setupContext(builder, args, asBitSet(ignoredIndices, nIgnoredIndices));
         if (result != JNIErrors.JNI_OK()) {
@@ -83,7 +86,6 @@ public final class LibEspresso {
         builder.option("java.ExitHost", "true");
         builder.option("java.EnableSignals", "true");
         builder.option("java.ExposeNativeJavaVM", "true");
-        builder.option("java.GuestFieldOffsetStrategy", "graal"); // most "hotspot-like"
         Context context = null;
         boolean entered = false;
         Value bindings;
@@ -122,6 +124,12 @@ public final class LibEspresso {
             STDERR.println("<JavaVM> is not available in the java bindings");
             return JNIErrors.JNI_ERR();
         }
+        /*
+         * Here we assume the value of asNativePointer actually refers to host memory which
+         * generally does not hold anymore since the introduction of NativeMemory (GR-70643).
+         * However, this could only pose problems in the unlikely case of explicitly choosing a
+         * "virtualized" NativeMemory while starting espresso from native.
+         */
         JNIJavaVM espressoJavaVM = WordFactory.pointer(java.asNativePointer());
         bindings.removeMember("<JavaVM>");
         ObjectHandle contextHandle = ObjectHandles.getGlobal().create(context);

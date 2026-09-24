@@ -24,6 +24,11 @@
  */
 package com.oracle.svm.core.hub.crema;
 
+import com.oracle.svm.core.graal.code.PreparedSignature;
+import com.oracle.svm.core.jni.access.JNINativeLinkage;
+import com.oracle.svm.core.jni.headers.JNIMethodId;
+import com.oracle.svm.espresso.classfile.attributes.MethodParametersAttribute;
+
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
@@ -37,35 +42,36 @@ public interface CremaResolvedJavaMethod extends ResolvedJavaMethod {
     JavaType[] getDeclaredExceptions();
 
     /**
-     * Retrieves the raw annotation bytes for this field.
+     * Retrieves the raw annotation bytes for this method.
      *
      * @return the raw annotations as a byte array
      */
     byte[] getRawAnnotations();
 
     /**
-     * Retrieves the raw parameter annotation bytes for this field.
+     * Retrieves the raw parameter annotation bytes for this method.
      *
-     * @return the raw paramater annotations as a byte array
+     * @return the raw parameter annotations as a byte array
      */
     byte[] getRawParameterAnnotations();
 
     /**
-     * Retrieves the raw annotation default bytes for this field.
+     * Retrieves the raw annotation default bytes for this method.
      *
-     * @return the raw annotations default as a byte array
+     * @return the raw annotation default as a byte array
      */
     byte[] getRawAnnotationDefault();
 
     /**
-     * Retrieves the raw parameter bytes for this field.
+     * Retrieves the {@code MethodParameters} attribute for this method.
      *
-     * @return the raw parameters as a byte array
+     * @return the {@code MethodParameters} attribute, or {@code null} if the attribute is not
+     *         present
      */
-    byte[] getRawParameters();
+    MethodParametersAttribute getParametersAttribute();
 
     /**
-     * Retrieves the raw type annotation bytes for this field.
+     * Retrieves the raw type annotation bytes for this method.
      *
      * @return the raw type annotations as a byte array
      */
@@ -81,9 +87,25 @@ public interface CremaResolvedJavaMethod extends ResolvedJavaMethod {
     Object getAccessor(Class<?> receiverType, Class<?>[] parameterTypes);
 
     /**
+     * Gets or creates the runtime {@code jmethodID} for this method.
+     */
+    JNIMethodId getOrCreateJNIMethodId();
+
+    /**
      * Returns the generic signature of this method.
      *
      * @return the generic signature
      */
     String getGenericSignature();
+
+    /**
+     * Returns the precomputed JNI signature consumed by interpreter stubs.
+     */
+    PreparedSignature getJNIDowncallPreparedSignature();
+
+    /**
+     * Returns the JNI linkage used when a native method of a runtime-loaded Crema class is linked
+     * lazily, e.g. via RegisterNatives.
+     */
+    JNINativeLinkage getJNINativeLinkage();
 }

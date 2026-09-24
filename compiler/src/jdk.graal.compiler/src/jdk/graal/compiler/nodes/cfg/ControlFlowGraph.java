@@ -24,6 +24,7 @@
  */
 package jdk.graal.compiler.nodes.cfg;
 
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -61,11 +62,13 @@ import jdk.graal.compiler.nodes.GraphState;
 import jdk.graal.compiler.nodes.LoopBeginNode;
 import jdk.graal.compiler.nodes.LoopEndNode;
 import jdk.graal.compiler.nodes.LoopExitNode;
+import jdk.graal.compiler.nodes.MultiReturnNode;
 import jdk.graal.compiler.nodes.ProfileData.LoopFrequencyData;
 import jdk.graal.compiler.nodes.ProfileData.ProfileSource;
 import jdk.graal.compiler.nodes.ReturnNode;
 import jdk.graal.compiler.nodes.StartNode;
 import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.extended.IntegerSwitchNode;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
@@ -446,38 +449,41 @@ public final class ControlFlowGraph implements AbstractControlFlowGraph<HIRBlock
 
     /**
      * Debug only decorator for {@link RecursiveVisitor} to log all basic blocks how they are
-     * visited one by one.
+     * visited one by one. LoggingCFGDecoratorTest illustrates the usage of the decorator to debug
+     * iteration dependent dominator tree algorithms.
      */
-    public static class LoggingCFGDecorator implements ControlFlowGraph.RecursiveVisitor<HIRBlock> {
-        private final ControlFlowGraph.RecursiveVisitor<HIRBlock> visitor;
+    public static class LoggingCFGDecorator<L> implements ControlFlowGraph.RecursiveVisitor<L> {
+        private final ControlFlowGraph.RecursiveVisitor<L> visitor;
         private String indent = "";
+        private final PrintStream out;
 
-        public LoggingCFGDecorator(ControlFlowGraph.RecursiveVisitor<HIRBlock> visitor, ControlFlowGraph cfg) {
+        public LoggingCFGDecorator(PrintStream out, ControlFlowGraph.RecursiveVisitor<L> visitor, ControlFlowGraph cfg) {
             this.visitor = visitor;
-            TTY.printf("DomTree for %s%n", cfg.graph);
-            printDomTree(cfg.getStartBlock(), "");
+            this.out = out;
+            out.printf("DomTree for %s%n", cfg.graph);
+            printDomTree(out, cfg.getStartBlock(), "");
         }
 
-        private static void printDomTree(HIRBlock cur, String indent) {
-            TTY.printf("%s%s [dom %s, post dom %s]%n", indent, cur, cur.getDominator(), cur.getPostdominator());
+        private static void printDomTree(PrintStream out, HIRBlock cur, String indent) {
+            out.printf("%s%s [dom %s, post dom %s]%n", indent, cur, cur.getDominator(), cur.getPostdominator());
             HIRBlock dominated = cur.getFirstDominated();
             while (dominated != null) {
-                printDomTree(dominated, indent + "\t");
+                printDomTree(out, dominated, indent + "\t");
                 dominated = dominated.getDominatedSibling();
             }
         }
 
         @Override
-        public HIRBlock enter(HIRBlock b) {
-            TTY.printf("%sEnter block %s for %s%n", indent, b, visitor);
+        public L enter(HIRBlock b) {
+            out.printf("%sEnter block %s for %s%n", indent, b, visitor);
             indent += "\t";
             return visitor.enter(b);
         }
 
         @Override
-        public void exit(HIRBlock b, HIRBlock value) {
+        public void exit(HIRBlock b, L value) {
             indent = indent.substring(0, indent.length() - 1);
-            TTY.printf("%sExit block %s with value %s for %s%n", indent, b, value, visitor);
+            out.printf("%sExit block %s with value %s for %s%n", indent, b, value, visitor);
             visitor.exit(b, value);
         }
     }
@@ -928,6 +934,53 @@ public final class ControlFlowGraph implements AbstractControlFlowGraph<HIRBlock
         }
         this.maxDominatorDepth = curMaxDominatorDepth;
         calcDominatorRanges(getStartBlock(), reversePostOrder.length);
+    }
+
+    /**
+     * Marks blocks considered part of a fast path. LSRA uses this hint to avoid propagating spills
+     * required by other blocks into these blocks when profitable; spills required by the marked
+     * blocks themselves remain permitted.
+     */
+    public void markFastPathBlocks() {
+        BasicBlockSet visited = createBasicBlockSet();
+        for (HIRBlock block : reversePostOrder) {
+            if (isThreadedSwitchBlock(block)) {
+                block.markFastPathBlock();
+            }
+            if (isStubFastPathBlock(block)) {
+                markPredecessorPaths(block, visited);
+            }
+        }
+    }
+
+    private static void markPredecessorPaths(HIRBlock exitBlock, BasicBlockSet visited) {
+        ArrayList<HIRBlock> worklist = new ArrayList<>();
+        worklist.add(exitBlock);
+        while (!worklist.isEmpty()) {
+            HIRBlock block = worklist.removeLast();
+            if (visited.get(block)) {
+                continue;
+            }
+            visited.set(block);
+            block.markFastPathBlock();
+            for (int predecessorIndex = 0; predecessorIndex < block.getPredecessorCount(); predecessorIndex++) {
+                worklist.add(block.getPredecessorAt(predecessorIndex));
+            }
+        }
+    }
+
+    private static boolean isThreadedSwitchBlock(HIRBlock block) {
+        return (block.getBeginNode() instanceof LoopBeginNode loopBeginNode && loopBeginNode.mayEmitThreadedCode()) ||
+                        (block.getEndNode() instanceof IntegerSwitchNode integerSwitchNode && integerSwitchNode.mayEmitThreadedCode());
+    }
+
+    /**
+     * Determines whether {@code block} is the exit of a bytecode-handler stub fast path. Such a
+     * block returns the results of a {@link MultiReturnNode}; every predecessor-reachable block,
+     * including loop backedges, is part of a normal stub path and receives the fast-path hint.
+     */
+    private static boolean isStubFastPathBlock(HIRBlock block) {
+        return block.getEndNode() instanceof ReturnNode returnNode && returnNode.result() instanceof MultiReturnNode;
     }
 
     private static void calcDominatorRanges(HIRBlock block, int size) {

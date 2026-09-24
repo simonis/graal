@@ -28,12 +28,12 @@ package com.oracle.svm.core.heap;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.graal.meta.SubstrateBasicLoweringProvider;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.CompressEncoding;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Means for accessing object references, explicitly distinguishing between compressed and
@@ -42,8 +42,8 @@ import jdk.graal.compiler.word.Word;
  * Accessing hub references involves the reserved GC bits, compression shift and object alignment
  * and is defined by {@link SubstrateBasicLoweringProvider#createReadHub}.
  * <p>
- * Regular references just require the heapbase register (for -H:+SpawnIsolates) and compression
- * shift (for -H:+UseCompressedReferences)
+ * Regular references just require the heap-base register and, when compressed references are used,
+ * a compression shift.
  * </p>
  */
 public interface ReferenceAccess {
@@ -83,11 +83,6 @@ public interface ReferenceAccess {
      * Get an object reference from its compressed representation.
      */
     Object uncompressReference(UnsignedWord ref);
-
-    /**
-     * Returns true iff compressed references are available.
-     */
-    boolean haveCompressedReferences();
 
     /**
      * Returns the default compression encoding.

@@ -70,6 +70,7 @@ import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIExpansionPhase;
 import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIOperations;
 import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIType;
 import jdk.graal.compiler.vector.replacements.vectorapi.VectorAPIUtils;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 
 /**
@@ -105,6 +106,19 @@ import jdk.vm.ci.meta.JavaKind;
 public abstract class VectorAPIMacroNode extends MacroWithExceptionNode implements IterableNodeType, Simplifiable {
 
     public static final NodeClass<VectorAPIMacroNode> TYPE = NodeClass.create(VectorAPIMacroNode.class);
+
+    /**
+     * Rotate direction used by Vector API macro nodes.
+     * <p>
+     * The JDK routes rotate operations through two intrinsic entry points: vector-count rotates use
+     * {@code VectorSupport.binaryOp(...)} while scalar-count rotates use
+     * {@code VectorSupport.broadcastInt(...)}. Both {@link VectorAPIBinaryOpNode} and
+     * {@link VectorAPIBroadcastIntNode} therefore share this rotate metadata and opcode decoding.
+     */
+    protected enum RotateDirection {
+        LEFT,
+        RIGHT
+    }
 
     /**
      * A constant representing the vector produced by this macro node, if it can be constant folded.
@@ -320,6 +334,25 @@ public abstract class VectorAPIMacroNode extends MacroWithExceptionNode implemen
         return oprId.asJavaConstant().asInt();
     }
 
+    protected static int vectorOpcode(String opName) {
+        Integer opcode = VectorAPIOperations.Constants.CONSTANT_MAP.get(opName);
+        GraalError.guarantee(opcode != null, "did not find constant %s in VectorSupport map", opName);
+        return opcode;
+    }
+
+    private static final int VECTOR_OP_LROTATE = vectorOpcode("VECTOR_OP_LROTATE");
+    private static final int VECTOR_OP_RROTATE = vectorOpcode("VECTOR_OP_RROTATE");
+
+    protected static RotateDirection computeRotateDirection(ValueNode[] arguments, int oprIdArgIndex, SimdStamp vectorStamp) {
+        int opcode = oprIdAsConstantInt(arguments, oprIdArgIndex, vectorStamp);
+        if (opcode == VECTOR_OP_LROTATE) {
+            return RotateDirection.LEFT;
+        } else if (opcode == VECTOR_OP_RROTATE) {
+            return RotateDirection.RIGHT;
+        }
+        return null;
+    }
+
     /**
      * If the {@code node}'s stamp according to the {@code tool}'s view is a non-null, exact-type
      * object stamp, return that stamp. Return {@code null} otherwise.
@@ -330,6 +363,20 @@ public abstract class VectorAPIMacroNode extends MacroWithExceptionNode implemen
         } else {
             return null;
         }
+    }
+
+    /**
+     * If {@code constantValue} is not {@code null} and contains {@link JavaConstant}s, returns a
+     * stamp derived from it; returns {@code vectorStamp} otherwise.
+     */
+    protected static SimdStamp maybeConstantVectorStamp(SimdStamp vectorStamp, SimdConstant constantValue) {
+        if (constantValue != null) {
+            JavaConstant[] constantEntries = constantValue.asJavaConstants();
+            if (constantEntries != null) {
+                return SimdStamp.forConstants(constantEntries);
+            }
+        }
+        return vectorStamp;
     }
 
     @Override

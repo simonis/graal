@@ -27,7 +27,6 @@ package com.oracle.svm.webimage.thirdparty;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
@@ -37,8 +36,8 @@ import com.oracle.svm.hosted.annotation.CustomSubstitutionMethod;
 import com.oracle.svm.hosted.webimage.codegen.LowerableResource;
 import com.oracle.svm.hosted.webimage.codegen.LowerableResources;
 import com.oracle.svm.hosted.webimage.codegen.oop.ClassLowerer;
-import com.oracle.svm.hosted.webimage.util.AnnotationUtil;
-import com.oracle.svm.util.ModuleSupport;
+import com.oracle.svm.shared.util.ModuleSupport;
+import com.oracle.svm.util.GuestAnnotationAccess;
 
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -51,9 +50,10 @@ import net.java.html.js.JavaScriptResource;
 public class JavaScriptBodyFeature implements Feature {
 
     private static String[] getJSResources(ResolvedJavaType type) {
-        var requiredJavaScriptResources = AnnotationUtil.getDeclaredAnnotationsByType(type, JavaScriptResource.class, JavaScriptResource.Group.class, JavaScriptResource.Group::value);
-        assert requiredJavaScriptResources.size() != 0 || !type.isAnnotationPresent(JavaScriptResource.Group.class) : "Repeated annotation not detected by getDeclaredAnnotationsByType";
-        return requiredJavaScriptResources.stream().map(JavaScriptResource::value).toArray(String[]::new);
+        var requiredJavaScriptResources = GuestAnnotationAccess.getAnnotationValuesByType(type, JavaScriptResource.class, JavaScriptResource.Group.class);
+        assert !requiredJavaScriptResources.isEmpty() ||
+                        !GuestAnnotationAccess.isAnnotationPresent(type, JavaScriptResource.Group.class) : "Repeated annotation not detected by metadata lookup";
+        return requiredJavaScriptResources.stream().map(JavaScriptResourceGuestValue::from).map(JavaScriptResourceGuestValue::value).toArray(String[]::new);
     }
 
     @Override
@@ -73,14 +73,14 @@ public class JavaScriptBodyFeature implements Feature {
     public void duringSetup(DuringSetupAccess a) {
         FeatureImpl.DuringSetupAccessImpl access = (FeatureImpl.DuringSetupAccessImpl) a;
         access.getHostVM().registerNeverInlineTrivialHandler(this::neverInlineTrivial);
-        access.registerSubstitutionProcessor(new JavaScriptBodySubstitutitionProcessor());
+        access.registerSubstitutionProcessor(new JavaScriptBodySubstitutionProcessor());
     }
 
     private boolean neverInlineTrivial(@SuppressWarnings("unused") AnalysisMethod caller, AnalysisMethod callee) {
         /*
          * Methods annotated with @JavaScriptBody are never trivial
          */
-        return AnnotationAccess.isAnnotationPresent(callee, JavaScriptBody.class);
+        return GuestAnnotationAccess.isAnnotationPresent(callee, JavaScriptBody.class);
     }
 
     @Override
@@ -89,7 +89,7 @@ public class JavaScriptBodyFeature implements Feature {
         JavaScriptBodyIntrinsification.findJSMethods(accessImpl);
     }
 
-    static class JavaScriptBodySubstitutitionProcessor extends SubstitutionProcessor {
+    static class JavaScriptBodySubstitutionProcessor extends SubstitutionProcessor {
 
         private final Map<ResolvedJavaMethod, CustomSubstitutionMethod> callWrappers = new ConcurrentHashMap<>();
 
@@ -103,10 +103,7 @@ public class JavaScriptBodyFeature implements Feature {
         }
 
         private static boolean isJavaScriptBodyStubMethod(ResolvedJavaMethod method) {
-            if (AnnotationAccess.isAnnotationPresent(method, JavaScriptBody.class)) {
-                return true;
-            }
-            return false;
+            return GuestAnnotationAccess.isAnnotationPresent(method, JavaScriptBody.class);
         }
     }
 }

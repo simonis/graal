@@ -24,23 +24,27 @@
  */
 package com.oracle.svm.core.heap;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.CompressEncoding;
-import jdk.graal.compiler.word.BarrieredAccess;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class)
 public class ReferenceAccessImpl implements ReferenceAccess {
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -52,7 +56,7 @@ public class ReferenceAccessImpl implements ReferenceAccess {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public Word readObjectAsUntrackedPointer(Pointer p, boolean compressed) {
         Object obj = readObjectAt(p, compressed);
-        return Word.objectToUntrackedPointer(obj);
+        return Word.objectToUntrackedWord(obj);
     }
 
     @Override
@@ -95,12 +99,6 @@ public class ReferenceAccessImpl implements ReferenceAccess {
     public native Object uncompressReference(UnsignedWord ref);
 
     @Override
-    @Fold
-    public boolean haveCompressedReferences() {
-        return SubstrateOptions.SpawnIsolates.getValue();
-    }
-
-    @Override
     @AlwaysInline("Performance")
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public CompressEncoding getCompressEncoding() {
@@ -110,11 +108,12 @@ public class ReferenceAccessImpl implements ReferenceAccess {
     @Fold
     @Override
     public UnsignedWord getMaxAddressSpaceSize() {
-        int compressionShift = ReferenceAccess.singleton().getCompressEncoding().getShift();
-        if (compressionShift > 0) {
-            int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
+        if (referenceSize == Integer.BYTES) {
+            int compressionShift = ReferenceAccess.singleton().getCompressEncoding().getShift();
             return Word.unsigned(1L << (referenceSize * Byte.SIZE)).shiftLeft(compressionShift);
         }
+        assert referenceSize == Long.BYTES;
         // Assume that 48 bit is the maximum address space that can be used.
         return Word.unsigned((1L << 48) - 1);
     }

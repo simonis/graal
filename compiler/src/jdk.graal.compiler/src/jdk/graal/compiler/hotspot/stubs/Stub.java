@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@ package jdk.graal.compiler.hotspot.stubs;
 import static jdk.graal.compiler.core.GraalCompiler.emitFrontEnd;
 import static jdk.graal.compiler.core.common.GraalOptions.RegisterPressure;
 import static jdk.graal.compiler.debug.DebugOptions.DebugStubsAndSnippets;
+import static jdk.graal.compiler.debug.DebugOptions.OptimizationLog;
 import static jdk.graal.compiler.util.CollectionsUtil.allMatch;
 
 import java.util.List;
@@ -40,14 +41,12 @@ import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.CompilationPrinter;
 import jdk.graal.compiler.core.common.CompilationIdentifier;
 import jdk.graal.compiler.core.common.GraalOptions;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.phases.EconomyHighTier;
 import jdk.graal.compiler.core.phases.EconomyMarkFixReadsPhase;
 import jdk.graal.compiler.core.target.Backend;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.DebugContext.Builder;
 import jdk.graal.compiler.debug.DebugContext.Description;
-import jdk.graal.compiler.debug.DebugOptions;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.hotspot.HotSpotCompiledCodeBuilder;
 import jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage;
@@ -62,6 +61,7 @@ import jdk.graal.compiler.lir.profiling.MoveProfilingPhase;
 import jdk.graal.compiler.nodes.GraphState;
 import jdk.graal.compiler.nodes.GraphState.StageFlag;
 import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.BasePhase;
 import jdk.graal.compiler.phases.OptimisticOptimizations;
@@ -71,6 +71,7 @@ import jdk.graal.compiler.phases.common.DisableOverflownCountedLoopsPhase;
 import jdk.graal.compiler.phases.tiers.HighTierContext;
 import jdk.graal.compiler.phases.tiers.Suites;
 import jdk.graal.compiler.printer.GraalDebugHandlersFactory;
+import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.InstalledCode;
 import jdk.vm.ci.code.Register;
@@ -81,6 +82,7 @@ import jdk.vm.ci.code.site.DataPatch;
 import jdk.vm.ci.code.site.ExceptionHandler;
 import jdk.vm.ci.code.site.Infopoint;
 import jdk.vm.ci.hotspot.HotSpotCompiledCode;
+import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.DefaultProfilingInfo;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.TriState;
@@ -134,6 +136,14 @@ public abstract class Stub {
         return destroyedCallerRegisters;
     }
 
+    /**
+     * Gets additional values returned by this stub. The default implementation returns an empty
+     * array, indicating that there are no additional return values.
+     */
+    public AllocatableValue[] getAdditionalReturns(@SuppressWarnings("unused") CallingConvention callingConvention) {
+        return AllocatableValue.NONE;
+    }
+
     protected final OptionValues options;
     protected final HotSpotProviders providers;
 
@@ -144,10 +154,11 @@ public abstract class Stub {
      */
     public Stub(OptionValues options, HotSpotProviders providers, HotSpotForeignCallLinkage linkage) {
         this.linkage = linkage;
+
         // The RegisterPressure flag can be ignored by a compilation that runs out of registers, so
         // the stub compilation must ignore the flag so that all allocatable registers are saved.
-        this.options = new OptionValues(options, GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options), RegisterPressure, null,
-                        DebugOptions.OptimizationLog, null);
+        // Also, disable the optimization log for stubs.
+        this.options = options.derive(GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options)).derive(RegisterPressure, null).derive(OptimizationLog, null);
         this.providers = providers;
     }
 

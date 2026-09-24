@@ -114,6 +114,16 @@ Isolated versions of the languages can be downloaded from Maven using the follow
 </dependency>
 ```
 
+For GraalVM Community Edition 25.1 or later, use the corresponding `-isolate-community` artifact:
+```xml
+<dependency>
+    <groupId>org.graalvm.polyglot</groupId>
+    <artifactId>js-isolate-community</artifactId>
+    <version>${graalvm.polyglot.version}</version>
+    <type>pom</type>
+</dependency>
+```
+
 The [Embedding Languages guide](../reference-manual/embedding/embed-languages.md#polyglot-isolates) contains more details on using polyglot isolate dependencies.
 
 ### Untrusted Policy
@@ -141,7 +151,6 @@ try (Context context = Context.newBuilder("js")
                               .option("sandbox.MaxHeapMemory", "128MB")
                               .option("sandbox.MaxCPUTime","2s")
                               .option("sandbox.MaxStatements","50000")
-                              .option("sandbox.MaxStackFrames","2")
                               .option("sandbox.MaxThreads","1")
                               .option("sandbox.MaxASTDepth","10")
                               .option("sandbox.MaxOutputStreamSize","32B")
@@ -180,7 +189,7 @@ As an example, an antipattern would be to implement a third party interface and 
 
 ## Resource Limits
 
-The ISOLATED and UNTRUSTED sandbox policies require setting resource limits for a context.
+The ISOLATED and UNTRUSTED sandbox policies require setting certain resource limits for a context.
 Different configurations can be provided for each context.
 If a limit is exceeded, evaluation of the code fails and the context is cancelled with a [`PolyglotException`](https://www.graalvm.org/sdk/javadoc/org/graalvm/polyglot/PolyglotException.html) which returns `true` for `isResourceExhausted()`.
 At this point, no more guest code can be executed in the context
@@ -508,7 +517,7 @@ Under the hood, host and guest processes communicate via Unix Domain sockets, tr
 ## Sharing Execution Engines
 
 Guest code of different trust domains has to be separated at the Polyglot engine level, that is, only guest code of the same trust domain should share an engine.
-When multiple context share an engine, all of them must have the same sandbox policy (the engine's sandbox policy).
+When multiple contexts share an engine, all of them must have the same sandbox policy (the engine's sandbox policy).
 Application developers may choose to share execution engines among execution contexts for performance reasons.
 While the context holds the state of the executed code, the engine holds the code itself.
 Sharing of an execution engine among multiple contexts needs to be set up explicitly and can increase performance in scenarios where a number of contexts execute the same code. In scenarios where contexts that share an execution engine for common code also execute sensitive (private) code, the corresponding source objects can opt out from code sharing with:
@@ -518,7 +527,7 @@ Source.newBuilder(…).cached(false).build()
 
 ## Compatibility and Limitations
 
-Sandboxing is not available in GraalVM Community Edition.
+Sandboxing is available on Oracle GraalVM and, starting with GraalVM 25.1, on GraalVM Community Edition when using the corresponding isolate artifacts (for example, `js-isolate-community`).
 
 Depending on the sandboxing policy, only a subset of Truffle languages, instruments, and options are available.
 In particular, sandboxing is currently only supported for the runtime's [default version](https://github.com/oracle/graaljs/blob/master/docs/user/JavaScriptCompatibility.md) of ECMAScript (ECMAScript 2022).

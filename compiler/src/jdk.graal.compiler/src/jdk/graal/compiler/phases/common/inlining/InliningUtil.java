@@ -42,6 +42,7 @@ import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.collections.UnmodifiableMapCursor;
 
 import jdk.graal.compiler.core.common.calc.CanonicalCondition;
+import jdk.graal.compiler.core.common.type.IntegerStamp;
 import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.core.common.type.StampFactory;
 import jdk.graal.compiler.core.common.type.TypeReference;
@@ -656,7 +657,7 @@ public class InliningUtil extends ValueMergeUtil {
                      * canonicalization or dead code elimination. Until the usages are removed, they
                      * need some placeholder value as an input to keep the graph valid.
                      */
-                    invokeNode.replaceAtUsages(ConstantNode.defaultForKind(returnKind, graph));
+                    invokeNode.replaceAtUsages(defaultPlaceholderForInvoke(invokeNode, returnKind, graph));
                 }
             }
             GraphUtil.killCFG(invoke.next());
@@ -668,6 +669,18 @@ public class InliningUtil extends ValueMergeUtil {
         graph.maybeMarkUnsafeAccess(inlineGraph);
         assert inlineGraph.getSpeculationLog() == null ||
                         inlineGraph.getSpeculationLog() == graph.getSpeculationLog() : "Only the root graph should have a speculation log";
+    }
+
+    private static ConstantNode defaultPlaceholderForInvoke(ValueNode invokeNode, JavaKind returnKind, StructuredGraph graph) {
+        Stamp invokeStamp = invokeNode.stamp(NodeView.DEFAULT);
+        if (invokeStamp instanceof IntegerStamp) {
+            /*
+             * Methods returning word types have an Object return kind but an integer invoke stamp.
+             * Use the invoke stamp so the placeholder is compatible with surviving value usages.
+             */
+            return ConstantNode.forIntegerStamp(invokeStamp, 0, graph);
+        }
+        return ConstantNode.defaultForKind(returnKind, graph);
     }
 
     /**
@@ -1083,10 +1096,10 @@ public class InliningUtil extends ValueMergeUtil {
                     if (okBci == BytecodeFrame.INVALID_FRAMESTATE_BCI) {
                         okBci = frameState.bci;
                     } else {
-                        assert okBci == frameState.bci : node.toString(Verbosity.Debugger);
+                        assert okBci == frameState.bci : node.toString(Verbosity.All);
                     }
                 } else {
-                    assert false : node.toString(Verbosity.Debugger);
+                    assert false : node.toString(Verbosity.All);
                 }
             }
         }
@@ -1162,7 +1175,7 @@ public class InliningUtil extends ValueMergeUtil {
         assert typeProfile.getNotRecordedProbability() == 0.0D : typeProfile;
         FrameState frameState = invoke.stateAfter();
         assert frameState != null;
-        ProfilingInfo profilingInfo = invoke.asNode().graph().getProfilingInfo(frameState.getCode().getMethod());
+        ProfilingInfo profilingInfo = invoke.asNode().graph().getProfilingInfo(invoke.asNode().graph().getCallerContext(), frameState.getCode().getMethod());
         return FALLBACK_DEOPT_SPECULATION.createSpeculationReason(frameState.getMethod(), invoke.bci(),
                         profilingInfo == null ? TriState.UNKNOWN : profilingInfo.getExceptionSeen(invoke.bci()),
                         new ReceiverTypeSpeculationContext(typeProfile));

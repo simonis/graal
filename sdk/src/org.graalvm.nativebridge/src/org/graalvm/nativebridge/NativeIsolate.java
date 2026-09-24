@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -161,6 +161,9 @@ public final class NativeIsolate extends AbstractIsolate<NativeIsolateThread> {
     @Override
     NativeIsolateThread attachCurrentThread() {
         long isolateThreadAddress = attachThread.applyAsLong(isolateId);
+        if (isolateThreadAddress == 0L) {
+            throw new IsolateDeathException();
+        }
         return new NativeIsolateThread(Thread.currentThread(), this, false, isolateThreadAddress);
     }
 
@@ -171,14 +174,13 @@ public final class NativeIsolate extends AbstractIsolate<NativeIsolateThread> {
 
     @Override
     void callTearDownHook() {
-
+        if (onIsolateTearDown != null) {
+            onIsolateTearDown.accept(this);
+        }
     }
 
     @Override
     boolean doIsolateShutdown(NativeIsolateThread shutdownThread) {
-        if (onIsolateTearDown != null) {
-            onIsolateTearDown.accept(this);
-        }
         boolean success = tearDown.applyAsLong(isolateId, shutdownThread.isolateThread) == 0;
         if (success) {
             isolates.computeIfPresent(isolateId, (id, nativeIsolate) -> (nativeIsolate == NativeIsolate.this ? null : nativeIsolate));

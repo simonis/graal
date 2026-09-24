@@ -31,9 +31,9 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.jdk.RuntimeSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
 import com.oracle.svm.interpreter.InterpreterFeature;
 import com.oracle.svm.interpreter.debug.DebuggerEventsFeature;
 import com.oracle.svm.jdwp.bridge.JDWPNativeBridgeSupport;
@@ -50,6 +50,16 @@ final class ResidentJDWPFeature implements InternalFeature {
     }
 
     @Override
+    public boolean isInConfiguration(IsInConfigurationAccess access) {
+        return JDWPOptions.JDWP.getValue();
+    }
+
+    @Override
+    public List<Class<? extends Feature>> getRequiredFeatures() {
+        return List.of(InterpreterFeature.class, DebuggerEventsFeature.class);
+    }
+
+    @Override
     public void afterRegistration(AfterRegistrationAccess access) {
         ImageSingletons.add(NativeBridgeSupport.class, new JDWPNativeBridgeSupport());
         ImageSingletons.add(ResidentJDWPFeatureEnabled.class, new ResidentJDWPFeatureEnabled());
@@ -59,15 +69,5 @@ final class ResidentJDWPFeature implements InternalFeature {
     public void duringSetup(DuringSetupAccess access) {
         RuntimeSupport.getRuntimeSupport().addStartupHook(new DebuggingOnDemandHook());
         ImageSingletons.add(ThreadStartDeathSupport.class, new ThreadStartDeathSupport());
-    }
-
-    @Override
-    public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return JDWPOptions.JDWP.getValue();
-    }
-
-    @Override
-    public List<Class<? extends Feature>> getRequiredFeatures() {
-        return List.of(InterpreterFeature.class, DebuggerEventsFeature.class);
     }
 }

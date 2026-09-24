@@ -26,6 +26,7 @@ package com.oracle.svm.core.jvmstat;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import org.graalvm.nativeimage.ImageSingletons;
@@ -33,14 +34,15 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.Isolates;
-import com.oracle.svm.core.JavaMainWrapper;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.attach.AttachApiSupport;
 import com.oracle.svm.core.heap.Heap;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jdk.SystemPropertiesSupport;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMOperationListener;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.guest.staging.JavaMainSupport;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 import com.sun.management.OperatingSystemMXBean;
 
 /**
@@ -85,7 +87,10 @@ class SystemCounters implements PerfDataHolder, VMOperationListener {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     SystemCounters(PerfManager perfManager) {
-        boolean hasJavaMainSupport = ImageSingletons.contains(JavaMainWrapper.JavaMainSupport.class);
+        /*
+         * In layered images we currently assume there will always be java main support.
+         */
+        boolean hasJavaMainSupport = ImageLayerBuildingSupport.buildingImageLayer() || ImageSingletons.contains(JavaMainSupport.class);
         initDoneTime = perfManager.createLongConstant("sun.rt.vmInitDoneTime", PerfUnit.TICKS);
         javaCommand = hasJavaMainSupport ? perfManager.createStringConstant("sun.rt.javaCommand") : null;
         vmArgs = hasJavaMainSupport ? perfManager.createStringConstant("java.rt.vmArgs") : null;
@@ -120,7 +125,7 @@ class SystemCounters implements PerfDataHolder, VMOperationListener {
         osMXBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
         threadMXBean = ManagementFactory.getThreadMXBean();
 
-        if (ImageSingletons.contains(JavaMainWrapper.JavaMainSupport.class)) {
+        if (ImageSingletons.contains(JavaMainSupport.class)) {
             javaCommand.allocate(getJavaCommand());
             vmArgs.allocate(getVmArgs());
         }
@@ -153,7 +158,7 @@ class SystemCounters implements PerfDataHolder, VMOperationListener {
         initDoneTime.allocate(Isolates.getInitDoneTimeMillis());
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+18/src/hotspot/share/services/runtimeService.cpp#L68-L77") //
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+18/src/hotspot/share/services/runtimeService.cpp#L68-L77") //
     private static String getJvmCapabilities() {
         /*
          * The capabilities are encoded as a string with 64 characters, where each character
@@ -198,15 +203,14 @@ class SystemCounters implements PerfDataHolder, VMOperationListener {
     }
 
     private static String getJavaCommand() {
-        JavaMainWrapper.JavaMainSupport support = ImageSingletons.lookup(JavaMainWrapper.JavaMainSupport.class);
-        return support.getJavaCommand();
+        JavaMainSupport support = ImageSingletons.lookup(JavaMainSupport.class);
+        return Objects.requireNonNullElse(support.getJavaCommand(), "");
     }
 
     private static String getVmArgs() {
-        JavaMainWrapper.JavaMainSupport support = ImageSingletons.lookup(JavaMainWrapper.JavaMainSupport.class);
         StringBuilder vmArgs = new StringBuilder();
 
-        for (String arg : support.getInputArguments()) {
+        for (String arg : ImageSingletons.lookup(JavaMainSupport.class).getInputArguments()) {
             vmArgs.append(arg).append(' ');
         }
         return vmArgs.toString().trim();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,14 +26,20 @@ package com.oracle.svm.core;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.invoke.MethodType;
 
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.nativeimage.c.type.CIntPointer;
 
 import com.oracle.svm.core.image.DisallowedImageHeapObjects.DisallowedObjectReporter;
+import com.oracle.svm.shared.Uninterruptible;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
 public interface ForeignSupport {
+
+    String CAPTURE_CALL_STATE_REASON = "Interruptions might change call state.";
+
     @Fold
     static boolean isAvailable() {
         return ImageSingletons.contains(ForeignSupport.class);
@@ -46,9 +52,15 @@ public interface ForeignSupport {
 
     Object linkToNative(Object... args) throws Throwable;
 
+    @Uninterruptible(reason = CAPTURE_CALL_STATE_REASON)
+    void captureCallStateFromInterpreter(int statesToCapture, CIntPointer captureBuffer);
+
     void onMemorySegmentReachable(Object obj, DisallowedObjectReporter reporter);
 
     void onScopeReachable(Object obj, DisallowedObjectReporter reporter);
+
+    /** A helper that calls {@code jdk.internal.foreign.abi.NativeEntryPoint#type()}. */
+    MethodType getMethodTypeFromNativeEntryPoint(Object nativeEntryPoint);
 
     /**
      * This annotation is used to mark substitution methods that substitute an

@@ -34,8 +34,7 @@ import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 import org.graalvm.word.LocationIdentity;
 
-import com.oracle.svm.core.FrameAccess;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.nodes.VerificationMarkerNode;
@@ -49,11 +48,8 @@ import com.oracle.svm.core.stack.JavaFrameAnchor;
 import com.oracle.svm.core.stack.JavaFrameAnchors;
 import com.oracle.svm.core.thread.ThreadStatusTransition;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.api.replacements.Snippet.ConstantParameter;
@@ -116,7 +112,7 @@ public final class CFunctionSnippets extends SubstrateTemplates implements Snipp
     @Snippet
     private static CPrologueData prologueSnippet(@ConstantParameter int newThreadStatus) {
         /* Push a JavaFrameAnchor to the thread-local linked list. */
-        JavaFrameAnchor anchor = (JavaFrameAnchor) LoweredStackValueNode.loweredStackValue(SizeOf.get(JavaFrameAnchor.class), FrameAccess.wordSize(), frameAnchorIdentity);
+        JavaFrameAnchor anchor = (JavaFrameAnchor) LoweredStackValueNode.loweredStackValue(SizeOf.get(JavaFrameAnchor.class), SubstrateTarget.getWordSize(), frameAnchorIdentity);
         JavaFrameAnchors.pushFrameAnchor(anchor);
 
         /*
@@ -175,7 +171,7 @@ public final class CFunctionSnippets extends SubstrateTemplates implements Snipp
             node.graph().addBeforeFixed(node, node.graph().add(new VerificationMarkerNode(node.getMarker())));
 
             ResolvedJavaMethod target = prologue.getMethod();
-            Stamp returnStamp = StampFactory.forKind(target.getSignature().getReturnKind());
+            Stamp returnStamp = SubstrateTarget.getWordStamp();
             StructuredGraph graph = node.graph();
             final Supplier<SnippetTemplate> templateSupplier = new Supplier<>() {
                 @Override
@@ -205,7 +201,7 @@ public final class CFunctionSnippets extends SubstrateTemplates implements Snipp
                 return;
             }
             node.graph().addAfterFixed(node, node.graph().add(new VerificationMarkerNode(node.getMarker())));
-            ResolvedJavaMethod target = prologue.getMethod();
+            ResolvedJavaMethod target = epilogue.getMethod();
             Stamp returnStamp = StampFactory.forKind(target.getSignature().getReturnKind());
             StructuredGraph graph = node.graph();
             Supplier<SnippetTemplate> templateSupplier = new Supplier<>() {
@@ -285,7 +281,6 @@ public final class CFunctionSnippets extends SubstrateTemplates implements Snipp
  * deoptimization could destroy stack allocated {@link JavaFrameAnchor} structs when rewriting the
  * stack.
  */
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
 @AutomaticallyRegisteredFeature
 @Platforms(InternalPlatform.NATIVE_ONLY.class)
 class CFunctionSnippetsFeature implements InternalFeature {

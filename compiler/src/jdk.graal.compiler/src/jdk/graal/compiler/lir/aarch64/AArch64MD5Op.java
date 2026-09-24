@@ -24,6 +24,8 @@
  */
 package jdk.graal.compiler.lir.aarch64;
 
+import static jdk.vm.ci.aarch64.AArch64.r0;
+import static jdk.vm.ci.aarch64.AArch64.r1;
 import static jdk.vm.ci.aarch64.AArch64.r11;
 import static jdk.vm.ci.aarch64.AArch64.r12;
 import static jdk.vm.ci.aarch64.AArch64.r13;
@@ -31,11 +33,13 @@ import static jdk.vm.ci.aarch64.AArch64.r14;
 import static jdk.vm.ci.aarch64.AArch64.r15;
 import static jdk.vm.ci.aarch64.AArch64.r16;
 import static jdk.vm.ci.aarch64.AArch64.r17;
+import static jdk.vm.ci.aarch64.AArch64.r2;
 import static jdk.vm.ci.aarch64.AArch64.r19;
 import static jdk.vm.ci.aarch64.AArch64.r20;
 import static jdk.vm.ci.aarch64.AArch64.r21;
 import static jdk.vm.ci.aarch64.AArch64.r22;
 import static jdk.vm.ci.aarch64.AArch64.r23;
+import static jdk.vm.ci.aarch64.AArch64.r3;
 import static jdk.vm.ci.aarch64.AArch64.r4;
 import static jdk.vm.ci.aarch64.AArch64.r5;
 import static jdk.vm.ci.aarch64.AArch64.r6;
@@ -55,7 +59,6 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.lir.LIRInstructionClass;
 import jdk.graal.compiler.lir.SyncPort;
-import jdk.graal.compiler.lir.gen.LIRGeneratorTool;
 
 import jdk.vm.ci.aarch64.AArch64Kind;
 import jdk.vm.ci.code.Register;
@@ -63,17 +66,17 @@ import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.Value;
 
 // @formatter:off
-@SyncPort(from = "https://github.com/openjdk/jdk/blob/0ad919c1e54895b000b58f6a1b54d79f76970845/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp#L3520-L3766",
-          sha1 = "1a840118aca65c256bea1bfae208c7dbf21fa516")
+@SyncPort(from = "https://github.com/openjdk/jdk25u/blob/c59e44a7aa2aeff0823830b698d524523b996650/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp#L3517-L3763",
+          sha1 = "08de0e96fbfd4f905afa2e749e50e0c5b0b62722")
 // @formatter:on
 public final class AArch64MD5Op extends AArch64LIRInstruction {
 
     public static final LIRInstructionClass<AArch64MD5Op> TYPE = LIRInstructionClass.create(AArch64MD5Op.class);
 
-    @Alive({REG}) private Value bufValue;
-    @Alive({REG}) private Value stateValue;
-    @Alive({REG, ILLEGAL}) private Value ofsValue;
-    @Alive({REG, ILLEGAL}) private Value limitValue;
+    @Use({REG}) private Value bufValue;
+    @Use({REG}) private Value stateValue;
+    @Use({REG, ILLEGAL}) private Value ofsValue;
+    @Use({REG, ILLEGAL}) private Value limitValue;
 
     @Def({REG, ILLEGAL}) private Value resultValue;
 
@@ -84,13 +87,19 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
 
     private final boolean multiBlock;
 
-    public AArch64MD5Op(LIRGeneratorTool tool, AllocatableValue bufValue, AllocatableValue stateValue) {
-        this(tool, bufValue, stateValue, Value.ILLEGAL, Value.ILLEGAL, Value.ILLEGAL, false);
+    public AArch64MD5Op(AllocatableValue bufValue, AllocatableValue stateValue) {
+        this(bufValue, stateValue, Value.ILLEGAL, Value.ILLEGAL, Value.ILLEGAL, false);
     }
 
-    public AArch64MD5Op(LIRGeneratorTool tool, AllocatableValue bufValue, AllocatableValue stateValue, AllocatableValue ofsValue,
+    public AArch64MD5Op(AllocatableValue bufValue, AllocatableValue stateValue, AllocatableValue ofsValue,
                     AllocatableValue limitValue, AllocatableValue resultValue, boolean multiBlock) {
         super(TYPE);
+
+        GraalError.guarantee(asRegister(bufValue).equals(r0), "expect bufValue at r0, but was %s", bufValue);
+        GraalError.guarantee(asRegister(stateValue).equals(r1), "expect stateValue at r1, but was %s", stateValue);
+        GraalError.guarantee(!multiBlock || asRegister(ofsValue).equals(r2), "expect ofsValue at r2, but was %s", ofsValue);
+        GraalError.guarantee(!multiBlock || asRegister(limitValue).equals(r3), "expect limitValue at r3, but was %s", limitValue);
+        GraalError.guarantee(!multiBlock || asRegister(resultValue).equals(r0), "expect resultValue at r0, but was %s", resultValue);
 
         this.bufValue = bufValue;
         this.stateValue = stateValue;
@@ -101,8 +110,8 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
         this.multiBlock = multiBlock;
 
         if (multiBlock) {
-            this.bufTempValue = tool.newVariable(bufValue.getValueKind());
-            this.ofsTempValue = tool.newVariable(ofsValue.getValueKind());
+            this.bufTempValue = bufValue;
+            this.ofsTempValue = ofsValue;
         } else {
             this.bufTempValue = Value.ILLEGAL;
             this.ofsTempValue = Value.ILLEGAL;
@@ -130,10 +139,6 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
         };
     }
 
-    private static void regCacheExtractU32(AArch64MacroAssembler masm, Register[] regCache, Register dest, int i) {
-        masm.ubfx(64, dest, regCache[i / 2], 32 * (i % 2), 32);
-    }
-
     // Utility routines for md5.
     // Clobbers r23 and r11.
     private static void md5FF(AArch64MacroAssembler masm, Register[] regCache, Register reg1, Register reg2, Register reg3, Register reg4,
@@ -142,7 +147,6 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
         masm.mov(rscratch2, t);
         masm.and(32, rscratch3, rscratch3, reg2);
         masm.add(32, rscratch4, reg1, rscratch2);
-        regCacheExtractU32(masm, regCache, rscratch1, k);
         masm.ubfx(64, rscratch1, regCache[k / 2], 32 * (k % 2), 32);
         masm.eor(32, rscratch3, rscratch3, reg4);
         masm.add(32, rscratch4, rscratch4, rscratch1);
@@ -153,7 +157,7 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
 
     private static void md5GG(AArch64MacroAssembler masm, Register[] regCache, Register reg1, Register reg2, Register reg3, Register reg4,
                     int k, int s, int t, Register rscratch1, Register rscratch2, Register rscratch3, Register rscratch4) {
-        regCacheExtractU32(masm, regCache, rscratch1, k);
+        masm.ubfx(64, rscratch1, regCache[k / 2], 32 * (k % 2), 32);
         masm.mov(rscratch2, t);
         masm.add(32, rscratch4, reg1, rscratch2);
         masm.add(32, rscratch4, rscratch4, rscratch1);
@@ -170,7 +174,7 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
         masm.eor(32, rscratch3, reg3, reg4);
         masm.mov(rscratch2, t);
         masm.add(32, rscratch4, reg1, rscratch2);
-        regCacheExtractU32(masm, regCache, rscratch1, k);
+        masm.ubfx(64, rscratch1, regCache[k / 2], 32 * (k % 2), 32);
         masm.eor(32, rscratch3, rscratch3, reg2);
         masm.add(32, rscratch4, rscratch4, rscratch1);
         masm.add(32, rscratch3, rscratch3, rscratch4);
@@ -183,7 +187,7 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
         masm.mov(rscratch3, t);
         masm.orn(32, rscratch2, reg2, reg4);
         masm.add(32, rscratch4, reg1, rscratch3);
-        regCacheExtractU32(masm, regCache, rscratch1, k);
+        masm.ubfx(64, rscratch1, regCache[k / 2], 32 * (k % 2), 32);
         masm.eor(32, rscratch3, rscratch2, reg3);
         masm.add(32, rscratch4, rscratch4, rscratch1);
         masm.add(32, rscratch3, rscratch3, rscratch4);
@@ -209,8 +213,6 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
             ofs = asRegister(ofsTempValue);
             limit = asRegister(limitValue);
 
-            masm.mov(64, buf, asRegister(bufValue));
-            masm.mov(32, ofs, asRegister(ofsValue));
         } else {
             buf = asRegister(bufValue);
             ofs = Register.None;
@@ -329,10 +331,10 @@ public final class AArch64MD5Op extends AArch64LIRInstruction {
 
             if (multiBlock) {
                 masm.add(64, buf, buf, 64);
-                masm.add(32, ofs, ofs, 64);
-                masm.cmp(32, ofs, limit);
+                masm.add(64, ofs, ofs, 64);
+                masm.cmp(64, ofs, limit);
                 masm.branchConditionally(ConditionFlag.LE, labelMD5Loop);
-                masm.mov(32, asRegister(resultValue), ofs); // return ofs
+                masm.mov(64, asRegister(resultValue), ofs); // return ofs
             }
 
             // write hash values back in the correct order

@@ -33,18 +33,19 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
 
 import com.oracle.svm.core.FutureDefaultsOptions;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jdk.FileSystemProvidersInitializedAtRunTime;
 import com.oracle.svm.core.jdk.buildtimeinit.FileSystemProviderBuildTimeInitSupport;
 import com.oracle.svm.core.jdk.resources.NativeImageResourceFileSystemProvider;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 /**
  * This file contains substitutions that are required for initializing {@link FileSystemProvider} at
@@ -59,7 +60,7 @@ final class FileSystemProviderRunTimeInitFeature implements InternalFeature {
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return FutureDefaultsOptions.fileSystemProvidersInitializedAtRunTime();
+        return FutureDefaultsOptions.fileSystemProvidersInitializedAtRunTime() && ImageLayerBuildingSupport.firstImageBuild();
     }
 
     @Override
@@ -103,8 +104,8 @@ final class Target_java_io_DefaultFileSystem_RunTime {
  * {@link Target_java_io_DefaultFileSystem_RunTime#getFileSystem()} creates a new instance for every
  * time. In the JDK, this method is called only once.
  */
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+25/src/java.base/unix/classes/java/io/DefaultFileSystem.java#L39-L41")
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+25/src/java.base/windows/classes/java/io/DefaultFileSystem.java#L39-L41")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+25/src/java.base/unix/classes/java/io/DefaultFileSystem.java#L39-L41")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+25/src/java.base/windows/classes/java/io/DefaultFileSystem.java#L39-L41")
 class DefaultFileSystemHolder {
     static final Object FS;
     static {

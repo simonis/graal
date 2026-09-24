@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 package com.oracle.svm.core.hub;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -32,13 +33,15 @@ import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.oracle.svm.core.configure.RuntimeConditionSet;
+import com.oracle.svm.core.configure.RuntimeDynamicAccessMetadata;
 import com.oracle.svm.core.hub.crema.CremaResolvedJavaField;
 import com.oracle.svm.core.hub.crema.CremaResolvedJavaMethod;
 import com.oracle.svm.core.hub.crema.CremaResolvedJavaRecordComponent;
 import com.oracle.svm.core.hub.crema.CremaResolvedJavaType;
 import com.oracle.svm.core.hub.crema.CremaSupport;
+import com.oracle.svm.core.interpreter.InterpreterSupport;
 import com.oracle.svm.core.reflect.target.ReflectionObjectFactory;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -59,6 +62,14 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
         this.type = type;
     }
 
+    /** Creates a reflection executable for runtime-loaded {@code method}. */
+    public static Executable fromResolvedMethod(CremaResolvedJavaMethod method) {
+        Class<?> declaringClass = InterpreterSupport.singleton().toClass(method.getDeclaringClass());
+        DynamicHub declaringHub = DynamicHub.fromClass(declaringClass);
+        RuntimeReflectionMetadata metadata = (RuntimeReflectionMetadata) declaringHub.getCompanion().reflectionMetadata;
+        return method.isConstructor() ? metadata.fromResolvedConstructor(declaringHub, method) : metadata.fromResolvedMethod(declaringHub, method);
+    }
+
     @Override
     public int getClassFlags() {
         return type.getModifiers();
@@ -66,6 +77,7 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
 
     @Override
     public Field[] getDeclaredFields(DynamicHub declaringClass, boolean publicOnly, @SuppressWarnings("unused") int layerNum) {
+        declaringClass.getClassInitializationInfo().ensureLinked(declaringClass);
         ArrayList<Field> result = new ArrayList<>();
         includeFields(declaringClass, publicOnly, type.getDeclaredFields(), result);
         return result.toArray(new Field[0]);
@@ -79,11 +91,11 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
         }
     }
 
-    private static Field fromResolvedField(DynamicHub declaringClass, CremaResolvedJavaField resolvedField) {
+    public static Field fromResolvedField(DynamicHub declaringClass, CremaResolvedJavaField resolvedField) {
         return ReflectionObjectFactory.newField(
-                        RuntimeConditionSet.unmodifiableEmptySet(),
+                        RuntimeDynamicAccessMetadata.unmodifiableEmptyMetadata(),
                         DynamicHub.toClass(declaringClass),
-                        resolvedField.getName(),
+                        resolvedField.getName().intern(),
                         toClassOrThrow(resolvedField.getType(), resolvedField.getDeclaringClass()),
                         resolvedField.getModifiers(),
                         resolvedField.isTrustedFinal(),
@@ -96,9 +108,14 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
 
     @Override
     public Method[] getDeclaredMethods(DynamicHub declaringClass, boolean publicOnly, @SuppressWarnings("unused") int layerNum) {
+        declaringClass.getClassInitializationInfo().ensureLinked(declaringClass);
         CremaResolvedJavaMethod[] declaredMethods = type.getDeclaredCremaMethods();
         ArrayList<Method> result = new ArrayList<>();
         for (CremaResolvedJavaMethod declaredMethod : declaredMethods) {
+            if (declaredMethod.isClassInitializer()) {
+                // <clinit> cannot be represented as a Method
+                continue;
+            }
             if (!publicOnly || Modifier.isPublic(declaredMethod.getModifiers())) {
                 result.add(fromResolvedMethod(declaringClass, declaredMethod));
             }
@@ -110,32 +127,27 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
         Class<?> receiverType = DynamicHub.toClass(declaringClass);
         Class<?>[] parameterTypes = toClassArrayOrThrow(resolvedJavaMethod.getSignature().toParameterTypes(null), type);
         return ReflectionObjectFactory.newMethod(
-                        RuntimeConditionSet.unmodifiableEmptySet(),
+                        RuntimeDynamicAccessMetadata.unmodifiableEmptyMetadata(),
                         receiverType,
-                        resolvedJavaMethod.getName(),
+                        resolvedJavaMethod.getName().intern(),
                         parameterTypes,
                         toClassOrThrow(resolvedJavaMethod.getSignature().getReturnType(type), type),
-                        /* (GR-69097) resolvedJavaMethod.getDeclaredExceptions() */
-                        toClassArrayOrThrow(new JavaType[0], type),
+                        toClassArrayOrThrow(resolvedJavaMethod.getDeclaredExceptions(), type),
                         resolvedJavaMethod.getModifiers(),
                         resolvedJavaMethod.getGenericSignature(),
-                        /* (GR-69096) resolvedJavaMethod.getRawAnnotations() */
-                        new byte[0],
-                        /* (GR-69096) resolvedJavaMethod.getRawParameterAnnotations() */
-                        new byte[0],
-                        /* (GR-69096) resolvedJavaMethod.getRawAnnotationDefault() */
-                        new byte[0],
+                        resolvedJavaMethod.getRawAnnotations(),
+                        resolvedJavaMethod.getRawParameterAnnotations(),
+                        resolvedJavaMethod.getRawAnnotationDefault(),
                         resolvedJavaMethod.getAccessor(receiverType, parameterTypes),
-                        /* (GR-69096) resolvedJavaMethod.getRawParameters() */
-                        null,
-                        /* (GR-69096) resolvedJavaMethod.getRawTypeAnnotations() */
-                        new byte[0],
+                        resolvedJavaMethod.getParametersAttribute(),
+                        resolvedJavaMethod.getRawTypeAnnotations(),
                         declaringClass.getLayerId());
     }
 
     @Override
     public Constructor<?>[] getDeclaredConstructors(DynamicHub declaringClass, boolean publicOnly, @SuppressWarnings("unused") int layerNum) {
-        CremaResolvedJavaMethod[] declaredConstructors = type.getDeclaredConstructors();
+        declaringClass.getClassInitializationInfo().ensureLinked(declaringClass);
+        CremaResolvedJavaMethod[] declaredConstructors = type.getDeclaredCremaConstructors();
         ArrayList<Constructor<?>> result = new ArrayList<>();
         for (CremaResolvedJavaMethod declaredConstructor : declaredConstructors) {
             if (!publicOnly || Modifier.isPublic(declaredConstructor.getModifiers())) {
@@ -146,29 +158,29 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
     }
 
     private Constructor<?> fromResolvedConstructor(DynamicHub declaringClass, CremaResolvedJavaMethod resolvedConstructor) {
+        Class<?> receiverType = DynamicHub.toClass(declaringClass);
         Class<?>[] parameterTypes = toClassArrayOrThrow(resolvedConstructor.toParameterTypes(), type);
         return ReflectionObjectFactory.newConstructor(
-                        RuntimeConditionSet.unmodifiableEmptySet(),
-                        DynamicHub.toClass(declaringClass),
+                        RuntimeDynamicAccessMetadata.unmodifiableEmptyMetadata(),
+                        receiverType,
                         parameterTypes,
-                        /* (GR-69097) resolvedConstructor.getDeclaredExceptions() */
-                        toClassArrayOrThrow(new JavaType[0], type),
+                        toClassArrayOrThrow(resolvedConstructor.getDeclaredExceptions(), type),
                         resolvedConstructor.getModifiers(),
                         resolvedConstructor.getGenericSignature(),
-                        /* (GR-69096) resolvedConstructor.getRawAnnotations() */
-                        new byte[0],
-                        /* (GR-69096) resolvedConstructor.getRawParameterAnnotations() */
-                        new byte[0],
-                        resolvedConstructor.getAccessor(DynamicHub.toClass(declaringClass), parameterTypes),
-                        /* (GR-69096) resolvedConstructor.getRawParameters() */
-                        new byte[0],
-                        /* (GR-69096) resolvedConstructor.getRawTypeAnnotations() */
-                        new byte[0]);
+                        resolvedConstructor.getRawAnnotations(),
+                        resolvedConstructor.getRawParameterAnnotations(),
+                        resolvedConstructor.getAccessor(receiverType, parameterTypes),
+                        resolvedConstructor.getParametersAttribute(),
+                        resolvedConstructor.getRawTypeAnnotations(),
+                        declaringClass.getLayerId());
     }
 
     @Override
     public RecordComponent[] getRecordComponents(DynamicHub declaringClass, @SuppressWarnings("unused") int layerNum) {
         List<? extends CremaResolvedJavaRecordComponent> recordComponents = type.getRecordComponents();
+        if (recordComponents == null) {
+            return null;
+        }
         RecordComponent[] result = new RecordComponent[recordComponents.size()];
         Class<?> clazz = DynamicHub.toClass(declaringClass);
 
@@ -185,11 +197,23 @@ public final class RuntimeReflectionMetadata implements ReflectionMetadata {
         return result;
     }
 
+    @Override
+    public RuntimeDynamicAccessMetadata getDynamicAccessMetadata(DynamicHub dynamicHub, int layerNum) {
+        /* Class queries are always allowed for runtime created classes */
+        throw VMError.intentionallyUnimplemented();
+    }
+
+    @Override
+    public RuntimeDynamicAccessMetadata getUnsafeAllocationMetadata(DynamicHub dynamicHub, int layerNum) {
+        /* Unsafe allocation is always allowed for runtime created classes */
+        throw VMError.intentionallyUnimplemented();
+    }
+
     private static Class<?> toClassOrThrow(JavaType javaType, ResolvedJavaType accessingType) {
         if (javaType instanceof UnresolvedJavaType unresolvedJavaType) {
             return CremaSupport.singleton().resolveOrThrow(unresolvedJavaType, accessingType);
         } else /* resolved type */ {
-            return CremaSupport.singleton().toClass((ResolvedJavaType) javaType);
+            return InterpreterSupport.singleton().toClass((ResolvedJavaType) javaType);
         }
     }
 

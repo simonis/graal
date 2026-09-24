@@ -43,7 +43,6 @@ package com.oracle.truffle.polyglot;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,7 +66,7 @@ import com.oracle.truffle.polyglot.EngineAccessor.AbstractClassLoaderSupplier;
 final class PolyglotFastThreadLocals {
 
     private static final AbstractFastThreadLocal IMPL = EngineAccessor.RUNTIME.getContextThreadLocal();
-    private static final ConcurrentHashMap<List<AbstractClassLoaderSupplier>, Map<String, LanguageCache>> CLASS_NAME_CACHE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<AbstractClassLoaderSupplier, Map<String, LanguageCache>> CLASS_NAME_CACHE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Class<?>, CachedReferences> CONTEXT_REFERENCE_CACHE = new ConcurrentHashMap<>();
     private static final Object NOT_ENTERED = new Object();
 
@@ -267,7 +266,10 @@ final class PolyglotFastThreadLocals {
         if (CompilerDirectives.inCompiledCode()) {
             PolyglotSharingLayer layer = resolveLayer(node);
             if (layer != null) {
-                return layer.getSingleConstantContext();
+                PolyglotContextImpl context = layer.getSingleConstantContext();
+                if (context != null) {
+                    return context;
+                }
             }
         }
         return IMPL.fastGet(CONTEXT_INDEX, PolyglotContextImpl.class, true, false);
@@ -299,6 +301,21 @@ final class PolyglotFastThreadLocals {
             contextClass = findContextClass(node, index);
         }
         return IMPL.fastGet(index, contextClass, true, false);
+    }
+
+    public static PolyglotEngineImpl getEngine(Node node) {
+        assert validSharing(node);
+        if (CompilerDirectives.inCompiledCode()) {
+            PolyglotEngineImpl instance = resolveEngine(node);
+            if (instance != null) {
+                return instance;
+            }
+        }
+        PolyglotContextImpl c = IMPL.fastGet(CONTEXT_INDEX, PolyglotContextImpl.class, true, false);
+        if (c == null) {
+            return null;
+        }
+        return c.engine;
     }
 
     private static boolean validSharing(Node node) {
@@ -371,20 +388,20 @@ final class PolyglotFastThreadLocals {
     }
 
     private static int computeLanguageIndex(Class<?> languageClass, int offset) {
-        List<AbstractClassLoaderSupplier> loaders = EngineAccessor.locatorOrDefaultLoaders();
+        AbstractClassLoaderSupplier classLoaderSupplier = EngineAccessor.loader();
         int staticIndex;
         if (EngineAccessor.HOST.isHostLanguage(languageClass)) {
             staticIndex = PolyglotEngineImpl.HOST_LANGUAGE_INDEX;
         } else {
-            Map<String, LanguageCache> classNames = CLASS_NAME_CACHE.get(loaders);
+            Map<String, LanguageCache> classNames = CLASS_NAME_CACHE.get(classLoaderSupplier);
             if (classNames == null) {
                 classNames = new HashMap<>();
-                Map<String, LanguageCache> idToLanguage = LanguageCache.loadLanguages(loaders);
+                Map<String, LanguageCache> idToLanguage = LanguageCache.loadLanguages(classLoaderSupplier);
                 for (LanguageCache cache : idToLanguage.values()) {
                     classNames.put(cache.getClassName(), cache);
                 }
                 Map<String, LanguageCache> finalClassNames = classNames;
-                classNames = CLASS_NAME_CACHE.computeIfAbsent(loaders, (k) -> Collections.unmodifiableMap(finalClassNames));
+                classNames = CLASS_NAME_CACHE.computeIfAbsent(classLoaderSupplier, (k) -> Collections.unmodifiableMap(finalClassNames));
             }
             LanguageCache cache = classNames.get(languageClass.getName());
             if (cache == null) {

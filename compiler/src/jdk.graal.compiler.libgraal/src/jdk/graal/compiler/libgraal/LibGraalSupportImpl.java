@@ -29,6 +29,7 @@ import java.io.PrintStream;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.graalvm.collections.EconomicMap;
@@ -47,12 +48,12 @@ import org.graalvm.nativeimage.VMRuntime;
 import org.graalvm.nativeimage.libgraal.LibGraalRuntime;
 import org.graalvm.nativeimage.libgraal.hosted.GlobalData;
 import org.graalvm.nativeimage.libgraal.hosted.LibGraalLoader;
+import org.graalvm.word.impl.Word;
 
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.libgraal.truffle.HSTruffleCompilerRuntime;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.OptionValues;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.hotspot.CompilerThreadCanCallJavaScope;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
 import jdk.vm.ci.hotspot.HotSpotVMConfigAccess;
@@ -67,11 +68,10 @@ public final class LibGraalSupportImpl implements LibGraalSupport {
 
     private final LibGraalLoader libGraalLoader = (LibGraalLoader) getClass().getClassLoader();
 
-    private static HSTruffleCompilerRuntime truffleRuntime;
+    private static final AtomicReference<HSTruffleCompilerRuntime> truffleRuntime = new AtomicReference<>();
 
     public static void registerTruffleCompilerRuntime(HSTruffleCompilerRuntime runtime) {
-        GraalError.guarantee(truffleRuntime == null, "cannot register more than one Truffle runtime");
-        truffleRuntime = runtime;
+        GraalError.guarantee(truffleRuntime.compareAndSet(null, runtime), "cannot register more than one Truffle runtime");
     }
 
     @Override
@@ -227,7 +227,7 @@ public final class LibGraalSupportImpl implements LibGraalSupport {
     @SuppressWarnings("try")
     public void shutdown(String callbackClassName, String callbackMethodName) {
         try (CompilerThreadCanCallJavaScope ignore = new CompilerThreadCanCallJavaScope(true)) {
-            if (callbackClassName != null) {
+            if (callbackClassName != null && callbackMethodName != null) {
                 JNI.JNIEnv env = Word.unsigned(getJNIEnv());
                 JNI.JClass cbClass = JNIUtil.findClass(env, JNIUtil.getSystemClassLoader(env),
                                 JNIUtil.getBinaryName(callbackClassName), true);
@@ -235,13 +235,25 @@ public final class LibGraalSupportImpl implements LibGraalSupport {
                 env.getFunctions().getCallStaticVoidMethodA().call(env, cbClass, cbMethod, StackValue.get(0));
                 JNIExceptionWrapper.wrapAndThrowPendingJNIException(env);
             }
-            if (truffleRuntime != null) {
+            /*
+             * During global JVMCI shutdown, JVMCIRuntime::shutdown() can invoke this method
+             * without destroying the libgraal JavaVM. A later attach during shutdown may then
+             * reuse the same libgraal isolate after notifyShutdown has unregistered the
+             * HotSpot side LibGraalIsolate. Clear this cached runtime so such reuse does not see a
+             * stale Truffle runtime registration.
+             */
+            HSTruffleCompilerRuntime rt = truffleRuntime.getAndSet(null);
+            if (rt != null) {
                 JNI.JNIEnv env = Word.unsigned(getJNIEnv());
-                truffleRuntime.notifyShutdown(env);
+                rt.notifyShutdown(env);
             }
         }
-        VMRuntime.shutdown();
 
+        /*
+         * Execute JDK shutdown hooks. Note that this will also be called by DestroyJavaVM, but
+         * the hooks won't run again.
+         */
+        VMRuntime.shutdown();
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -166,26 +166,6 @@ public final class HostCompilerDirectives {
     }
 
     /**
-     * Marks a method that is called from a Truffle interpreter, but is not called frequently and is
-     * not important for interpreter performance.
-     * <p>
-     * This annotation is used to annotate methods that are called from a bytecode interpreter, but
-     * should generally not be inlined into the body of the bytecode interpreter. Language
-     * implementers are advised to inspect the IR of the interpreter when using this.
-     *
-     * @see BytecodeInterpreterSwitch to annotate the root method of a bytecode interpreter
-     *
-     * @deprecated use is no longer needed. boundaries for {@link BytecodeInterpreterSwitch} are
-     *             mostly determined automatically. To migrate remove all usages.
-     * @since 21.0
-     */
-    @Retention(RetentionPolicy.RUNTIME)
-    @Target({ElementType.METHOD, ElementType.CONSTRUCTOR})
-    @Deprecated(since = "22.2")
-    public @interface BytecodeInterpreterSwitchBoundary {
-    }
-
-    /**
      * Hints to Truffle host inlining that a particular method is partial evaluatable, but it would
      * be a good place for a cutoff when performing host inlining. A host compiler may use this
      * information as a hint to take trade-offs optimizing the code. Good examples of cutoffs are:
@@ -243,4 +223,170 @@ public final class HostCompilerDirectives {
     public @interface InliningRoot {
     }
 
+    /**
+     * Annotates a method that serves as a Truffle interpreter bytecode handler, that is, a method
+     * implements the complete semantics of a single bytecode instruction.
+     * <p>
+     * For more details, see the <a href=
+     * "https://github.com/oracle/graal/blob/master/truffle/docs/OneCompilationPerBytecodeHandler.md">
+     * One Compilation per Bytecode Handler documentation</a>.
+     *
+     * @since 25.1
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.METHOD)
+    public @interface BytecodeInterpreterHandler {
+        /**
+         * The handled bytecode's opcodes.
+         */
+        int[] value();
+
+        /**
+         * Indicates whether to enable tail call threading at the end of this handler. If
+         * {@code false}, the threading will terminate, and control will return to the switch-loop
+         * after this handler is executed. Alternatively, omitting the
+         * {@link BytecodeInterpreterHandler} annotation will cause control to return to the
+         * switch-loop before this handler is executed.
+         */
+        boolean threading() default true;
+
+        /**
+         * Indicates whether host safepoint should be inserted in the stub correspond to this
+         * handler.
+         */
+        boolean safepoint() default true;
+    }
+
+    /**
+     * Configuration for all bytecode interpreter handler arguments, including the receiver. Must be
+     * used in conjunction with {@link BytecodeInterpreterSwitch}.
+     *
+     * @see BytecodeInterpreterHandler
+     * @since 25.1
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.METHOD)
+    public @interface BytecodeInterpreterHandlerConfig {
+        /**
+         * Configuration for a bytecode interpreter handler argument.
+         *
+         * @see BytecodeInterpreterHandler
+         * @since 25.1
+         */
+        @Retention(RetentionPolicy.RUNTIME)
+        @Target(ElementType.METHOD)
+        public @interface Argument {
+            enum ExpansionKind {
+                /**
+                 * No expansion.
+                 */
+                NONE,
+
+                /**
+                 * The argument is expanded into its subfields in addition to the original argument.
+                 */
+                MATERIALIZED,
+
+                /**
+                 * The argument is expanded into its subfields without the original argument.
+                 */
+                VIRTUAL,
+            }
+
+            /**
+             * Configuration for an expanded field.
+             *
+             * @since 25.1
+             */
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface Field {
+                /**
+                 * Name of the field.
+                 */
+                String name();
+
+                /**
+                 * Indicates that this field is always non-null. A null check will be placed before
+                 * the call site and before threading dispatch. This property is irrelevant for
+                 * primitive fields.
+                 */
+                boolean nonNull() default true;
+            }
+
+            /**
+             * Indicates that this argument will be updated with the return value of the handler. The
+             * interpreter must store the handler result directly back to the logical local represented
+             * by this argument. Threaded handler stubs rely on that direct store shape to keep the
+             * local consistent when an exception unwinds before the normal return-value update path
+             * runs.
+             */
+            boolean returnValue() default false;
+
+            /**
+             * Indicates that this argument will be expanded in a Truffle interpreter bytecode
+             * handler stub if its expansion kind is not {@link ExpansionKind#NONE}.
+             */
+            ExpansionKind expand() default ExpansionKind.NONE;
+
+            /**
+             * Indicates the fields to be expanded of this argument if its expansion kind is
+             * {@link ExpansionKind#MATERIALIZED}.
+             */
+            Field[] fields() default {};
+
+            /**
+             * Indicates that this argument is always non-null. A null check will be placed before
+             * the call site and before threading dispatch. This property is irrelevant for
+             * primitive arguments.
+             */
+            boolean nonNull() default true;
+        }
+
+        /**
+         * The maximum unsigned value of the opcode. This is relevant for
+         * {@link BytecodeInterpreterHandler} when tail call threading is enabled, and is used to
+         * construct a handler table.
+         */
+        int maximumOperationCode();
+
+        /**
+         * Configuration for each method argument. For non-static methods, the first element
+         * corresponds to the receiver.
+         */
+        Argument[] arguments();
+
+        /**
+         * Indicates that the annotated method implements a secondary partition of a bytecode
+         * interpreter switch.
+         * <p>
+         * A secondary switch is expected to be inlined into a primary
+         * {@link BytecodeInterpreterSwitch} method during host compilation. Its handler
+         * configuration is retained so that handler calls originating from the inlined secondary
+         * switch can be mapped to the primary switch's handler stubs.
+         * <p>
+         * When compiled as a separate method, however, handler calls in a secondary switch are not
+         * outlined. In particular, a deoptimization target may invoke the separately compiled
+         * secondary switch without first passing through host inlining. Keeping its handler calls
+         * ordinary prevents such execution from entering threaded handler stubs without the
+         * primary switch's exception and state-management paths.
+         *
+         * @return {@code true} if the annotated method is a secondary switch partition whose
+         *         handler calls must not be outlined when the method is compiled separately
+         */
+        boolean secondarySwitch() default false;
+    }
+
+    /**
+     * Annotates a method that fetches the next opcode. The annotated method must be side-effect
+     * free, must not throw for valid interpreter state, and share the same signature with
+     * {@link BytecodeInterpreterHandler}-annotated methods in the same enclosing class. It will be
+     * inlined into Truffle interpreter bytecode handler stubs to enable tail call threading.
+     *
+     * @since 25.1
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target({ElementType.METHOD})
+    public @interface BytecodeInterpreterFetchOpcode {
+    }
 }

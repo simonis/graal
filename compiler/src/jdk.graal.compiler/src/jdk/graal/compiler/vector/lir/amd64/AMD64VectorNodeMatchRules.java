@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -57,9 +57,11 @@ import jdk.graal.compiler.core.amd64.AMD64NodeMatchRules;
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.calc.FloatConvertCategory;
 import jdk.graal.compiler.core.common.type.FloatStamp;
+import jdk.graal.compiler.core.common.type.PrimitiveStamp;
 import jdk.graal.compiler.core.common.type.Stamp;
 import jdk.graal.compiler.core.match.ComplexMatchResult;
 import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.amd64.AMD64AddressValue;
 import jdk.graal.compiler.lir.amd64.vector.AMD64VectorBinary.AVXBinaryMemoryOp;
@@ -84,6 +86,7 @@ import jdk.graal.compiler.vector.nodes.simd.SimdStamp;
 import jdk.vm.ci.amd64.AMD64;
 import jdk.vm.ci.amd64.AMD64Kind;
 import jdk.vm.ci.meta.AllocatableValue;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.PlatformKind;
 import jdk.vm.ci.meta.Value;
 
@@ -220,11 +223,14 @@ public class AMD64VectorNodeMatchRules extends AMD64NodeMatchRules {
             VexRVMOp op = switch (scalarKind(simdStamp)) {
                 case WORD -> VexRVMOp.VPMULLW;
                 case DWORD -> VexRVMOp.VPMULLD;
-                case QWORD -> VexRVMOp.EVPMULLQ;
+                case QWORD -> simdEncoding == AMD64SIMDInstructionEncoding.EVEX ? VexRVMOp.EVPMULLQ : null;
                 case SINGLE -> VexRVMOp.VMULPS;
                 case DOUBLE -> VexRVMOp.VMULPD;
                 default -> throw GraalError.shouldNotReachHereUnexpectedValue(scalarKind(simdStamp));
             };
+            if (op == null) {
+                return null;
+            }
             return binaryRead(op, size, value, access);
         } else if (stamp instanceof FloatStamp) {
             VexRVMOp op = ((FloatStamp) stamp).getBits() == 32 ? VMULSS : VMULSD;
@@ -451,9 +457,27 @@ public class AMD64VectorNodeMatchRules extends AMD64NodeMatchRules {
         }
     }
 
+    private boolean supportsVectorRotate() {
+        return AMD64BaseAssembler.supportsFullAVX512(((AMD64) getLIRGeneratorTool().target().arch).getFeatures());
+    }
+
+    private static boolean isRotateElementSizeSupported(SimdStamp simdStamp) {
+        int bits = PrimitiveStamp.getBits(simdStamp.getComponent(0));
+        return bits == Integer.SIZE || bits == Long.SIZE;
+    }
+
     @Override
     public ComplexMatchResult rotateLeftConstant(LeftShiftNode lshift, UnsignedRightShiftNode rshift) {
-        if (lshift.stamp(NodeView.DEFAULT) instanceof SimdStamp) {
+        if (lshift.stamp(NodeView.DEFAULT) instanceof SimdStamp simdStamp) {
+            JavaConstant lshiftConst = lshift.getY().asJavaConstant();
+            JavaConstant rshiftConst = rshift.getY().asJavaConstant();
+            if (supportsVectorRotate() && isRotateElementSizeSupported(simdStamp) && (lshift.getShiftAmountMask() & (lshiftConst.asInt() + rshiftConst.asInt())) == 0) {
+                return builder -> {
+                    Value input = operand(lshift.getX());
+                    Value rotateCount = new ConstantValue(LIRKind.value(AMD64Kind.DWORD), lshiftConst);
+                    return getArithmeticLIRGenerator().emitRol(input, rotateCount);
+                };
+            }
             return null;
         } else {
             return super.rotateLeftConstant(lshift, rshift);
@@ -462,7 +486,11 @@ public class AMD64VectorNodeMatchRules extends AMD64NodeMatchRules {
 
     @Override
     public ComplexMatchResult rotateLeftVariable(ValueNode value, ValueNode shiftAmount, ConstantNode delta) {
-        if (value.stamp(NodeView.DEFAULT) instanceof SimdStamp) {
+        if (value.stamp(NodeView.DEFAULT) instanceof SimdStamp simdStamp) {
+            long deltaConst = delta.asJavaConstant().asLong();
+            if (supportsVectorRotate() && isRotateElementSizeSupported(simdStamp) && (deltaConst == 0 || deltaConst == 32 || deltaConst == 64)) {
+                return builder -> getArithmeticLIRGenerator().emitRol(operand(value), operand(shiftAmount));
+            }
             return null;
         } else {
             return super.rotateLeftVariable(value, shiftAmount, delta);
@@ -471,7 +499,11 @@ public class AMD64VectorNodeMatchRules extends AMD64NodeMatchRules {
 
     @Override
     public ComplexMatchResult rotateRightVariable(ValueNode value, ConstantNode delta, ValueNode shiftAmount) {
-        if (value.stamp(NodeView.DEFAULT) instanceof SimdStamp) {
+        if (value.stamp(NodeView.DEFAULT) instanceof SimdStamp simdStamp) {
+            long deltaConst = delta.asJavaConstant().asLong();
+            if (supportsVectorRotate() && isRotateElementSizeSupported(simdStamp) && (deltaConst == 0 || deltaConst == 32 || deltaConst == 64)) {
+                return builder -> getArithmeticLIRGenerator().emitRor(operand(value), operand(shiftAmount));
+            }
             return null;
         } else {
             return super.rotateRightVariable(value, delta, shiftAmount);

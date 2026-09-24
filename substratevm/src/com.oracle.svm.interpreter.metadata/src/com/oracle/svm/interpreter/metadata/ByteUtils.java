@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,15 +25,21 @@
 
 package com.oracle.svm.interpreter.metadata;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
+import jdk.internal.misc.Unsafe;
 
 /**
  * A collection of utility methods for dealing with bytes, particularly in byte arrays.
+ * <p>
+ * Unchecked accessors in this class rely on bytecode verification to establish that the requested
+ * bytes are within the bytecode array. If verification is explicitly disabled, the supplied
+ * bytecode is trusted and the user is responsible for ensuring that it is valid.
  */
 public final class ByteUtils {
+    private static final Unsafe UNSAFE = Unsafe.getUnsafe();
 
-    private static final VarHandle BYTE_ARRAY_VARHANDLE = MethodHandles.arrayElementVarHandle(byte[].class);
+    private static long offsetFor(long index) {
+        return Unsafe.ARRAY_BYTE_BASE_OFFSET + (index * Unsafe.ARRAY_BYTE_INDEX_SCALE);
+    }
 
     /**
      * Gets a signed 1-byte value.
@@ -44,6 +50,17 @@ public final class ByteUtils {
      */
     public static int beS1(byte[] data, int bci) {
         return data[bci];
+    }
+
+    /**
+     * Gets a signed 1-byte value without performing a bounds check.
+     *
+     * @param data the array containing the data
+     * @param bci the index to retrieve, which must be within the array bounds
+     * @return the signed byte at index {@code bci}
+     */
+    public static int uncheckedBeS1(byte[] data, long bci) {
+        return UNSAFE.getByte(data, offsetFor(bci));
     }
 
     /**
@@ -58,6 +75,17 @@ public final class ByteUtils {
     }
 
     /**
+     * Gets a signed 2-byte big-endian value without performing a bounds check.
+     *
+     * @param data the array containing the data
+     * @param bci the start index to retrieve, which must leave two bytes within the array bounds
+     * @return the signed 2-byte, big-endian value at index {@code bci}
+     */
+    public static int uncheckedBeS2(byte[] data, long bci) {
+        return UNSAFE.getShortUnaligned(data, offsetFor(bci), true);
+    }
+
+    /**
      * Gets an unsigned 1-byte value.
      *
      * @param data the array containing the data
@@ -69,6 +97,17 @@ public final class ByteUtils {
     }
 
     /**
+     * Gets an unsigned, 1-byte value without performing a bounds check.
+     *
+     * @param data the array containing the data
+     * @param bci the index to retrieve, which must be within the array bounds
+     * @return the unsigned byte at index {@code bci}
+     */
+    public static int uncheckedBeU1(byte[] data, long bci) {
+        return UNSAFE.getByte(data, offsetFor(bci)) & 0xff;
+    }
+
+    /**
      * Gets an unsigned 1-byte value in a volatile fashion.
      *
      * @param data the array containing the data
@@ -76,7 +115,7 @@ public final class ByteUtils {
      * @return the unsigned 1-byte value at index {@code bci} in array {@code data}
      */
     public static int volatileBeU1(byte[] data, int bci) {
-        return ((byte) BYTE_ARRAY_VARHANDLE.getVolatile(data, bci)) & 0xff;
+        return UNSAFE.getByteVolatile(data, offsetFor(bci)) & 0xff;
     }
 
     /**
@@ -86,8 +125,8 @@ public final class ByteUtils {
      * @param bci the start index of the value to retrieve
      * @return the unsigned 1-byte value at index {@code bci} in array {@code data}
      */
-    public static int opaqueBeU1(byte[] data, int bci) {
-        return ((byte) BYTE_ARRAY_VARHANDLE.getOpaque(data, bci)) & 0xff;
+    public static int opaqueBeU1(byte[] data, long bci) {
+        return UNSAFE.getByteOpaque(data, offsetFor(bci)) & 0xff;
     }
 
     /**
@@ -99,6 +138,28 @@ public final class ByteUtils {
      */
     public static int beU2(byte[] data, int bci) {
         return ((data[bci] & 0xff) << 8) | (data[bci + 1] & 0xff);
+    }
+
+    /**
+     * Gets an unsigned 2-byte big-endian value without performing a bounds check.
+     *
+     * @param data the array containing the data
+     * @param bci the start index to retrieve, which must leave two bytes within the array bounds
+     * @return the unsigned 2-byte, big-endian value at index {@code bci}
+     */
+    public static int uncheckedBeU2(byte[] data, long bci) {
+        return uncheckedBeS2(data, bci) & 0xffff;
+    }
+
+    /**
+     * Gets a signed 4-byte big-endian value without performing a bounds check.
+     *
+     * @param data the array containing the data
+     * @param bci the start index to retrieve, which must leave four bytes within the array bounds
+     * @return the signed 4-byte, big-endian value at index {@code bci}
+     */
+    public static int uncheckedBeS4(byte[] data, long bci) {
+        return UNSAFE.getIntUnaligned(data, offsetFor(bci), true);
     }
 
     /**
@@ -128,7 +189,7 @@ public final class ByteUtils {
         }
     }
 
-    public static void opaqueWrite(byte[] array, int index, byte value) {
-        BYTE_ARRAY_VARHANDLE.setOpaque(array, index, value);
+    public static void opaqueWrite(byte[] data, long bci, byte value) {
+        UNSAFE.putByteOpaque(data, offsetFor(bci), value);
     }
 }

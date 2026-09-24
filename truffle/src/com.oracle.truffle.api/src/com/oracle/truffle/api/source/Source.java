@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -79,7 +79,7 @@ import com.oracle.truffle.api.nodes.LanguageInfo;
 
 /**
  * Representation of a source code unit and its contents that can be evaluated in a language. Each
- * source is associated with the the ID of the language.
+ * source is associated with the ID of the language.
  *
  * <h3>From a file on disk</h3>
  *
@@ -730,14 +730,14 @@ public abstract class Source {
      * @since 0.17
      */
     public final SourceSection createSection(int startLine, int startColumn, int length) {
-        if (hasBytes() || !hasCharacters()) {
+        if (!hasCharacters()) {
             throw new UnsupportedOperationException("Operation is only enabled for character based sources.");
         }
         if (startLine <= 0) {
             throw new IllegalArgumentException("startLine < 1");
         } else if (startColumn <= 0) {
             throw new IllegalArgumentException("startColumn < 1");
-        } else if (hasCharacters() && length < 0) {
+        } else if (length < 0) {
             throw new IllegalArgumentException("length < 0");
         }
         final int lineStartOffset = getTextMap().lineStartOffset(startLine);
@@ -969,8 +969,8 @@ public abstract class Source {
 
     /**
      * Returns the probed MIME type for a given file, or <code>null</code> if no MIME type could be
-     * resolved. Typically the MIME type is identified using the file extension and/or using its
-     * contents. Probing the MIME type of an {@link TruffleFile} may require to opening the file.
+     * resolved. Typically, the MIME type is identified using the file extension and/or using its
+     * contents. Probing the MIME type of a {@link TruffleFile} may require to opening the file.
      *
      * @throws IOException if an error opening the file occurred.
      * @throws SecurityException if the used {@link FileSystem filesystem} denied file reading.
@@ -1574,7 +1574,7 @@ public abstract class Source {
          * {@code false}, then {@link Source#getPath()} will be the same as the passed TruffleFile
          * {@link TruffleFile#getPath()}.
          *
-         * @param canonicalize whether to canonicalize the path from the the TruffleFile
+         * @param canonicalize whether to canonicalize the path from the TruffleFile
          * @return the instance of this builder
          * @since 20.2
          */

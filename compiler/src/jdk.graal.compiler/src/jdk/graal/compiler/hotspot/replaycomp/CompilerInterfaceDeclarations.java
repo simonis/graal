@@ -25,15 +25,14 @@
 package jdk.graal.compiler.hotspot.replaycomp;
 
 import static java.util.FormattableFlags.ALTERNATE;
+import static jdk.graal.compiler.annotation.AnnotationValueSupport.ANNOTATIONS_INFO_PARSER;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKEDYNAMIC;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKEINTERFACE;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKESPECIAL;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKESTATIC;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKEVIRTUAL;
 import static jdk.graal.compiler.core.common.NativeImageSupport.inRuntimeCode;
-import static jdk.graal.compiler.hotspot.HotSpotReplacementsImpl.isGraalClass;
 import static jdk.graal.compiler.hotspot.replaycomp.proxy.CompilationProxy.wrapInvocationExceptions;
-import static jdk.graal.compiler.java.StableMethodNameFormatter.isMethodHandle;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -46,11 +45,11 @@ import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.Equivalence;
 import org.graalvm.collections.UnmodifiableEconomicMap;
 
+import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.bytecode.BytecodeStream;
 import jdk.graal.compiler.core.common.CompilerProfiler;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.GraalError;
-import jdk.graal.compiler.hotspot.meta.HotSpotGraalConstantFieldProvider;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.CompilationProxy;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.CompilationProxyBase;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.CompilerProfilerProxy;
@@ -69,8 +68,6 @@ import jdk.graal.compiler.hotspot.replaycomp.proxy.MetaAccessProviderProxy;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.ProfilingInfoProxy;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.SignatureProxy;
 import jdk.graal.compiler.hotspot.replaycomp.proxy.SpeculationLogProxy;
-import jdk.graal.compiler.java.LambdaUtils;
-import jdk.graal.compiler.options.ExcludeFromJacocoGeneratedReport;
 import jdk.vm.ci.code.CompiledCode;
 import jdk.vm.ci.code.InstalledCode;
 import jdk.vm.ci.hotspot.HotSpotCodeCacheProvider;
@@ -78,6 +75,7 @@ import jdk.vm.ci.hotspot.HotSpotConstantReflectionProvider;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
 import jdk.vm.ci.hotspot.HotSpotMemoryAccessProvider;
 import jdk.vm.ci.hotspot.HotSpotMetaspaceConstant;
+import jdk.vm.ci.hotspot.HotSpotModifiers;
 import jdk.vm.ci.hotspot.HotSpotObjectConstant;
 import jdk.vm.ci.hotspot.HotSpotProfilingInfo;
 import jdk.vm.ci.hotspot.HotSpotResolvedJavaField;
@@ -90,6 +88,7 @@ import jdk.vm.ci.hotspot.HotSpotSignature;
 import jdk.vm.ci.hotspot.HotSpotSpeculationLog;
 import jdk.vm.ci.hotspot.HotSpotVMConfigAccess;
 import jdk.vm.ci.meta.ConstantPool;
+import jdk.vm.ci.meta.DefaultProfilingInfo;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
@@ -101,6 +100,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 import jdk.vm.ci.meta.SpeculationLog;
+import jdk.vm.ci.meta.TriState;
 
 /**
  * Defines how the VM's interface to the compiler should be recorded and replayed.
@@ -313,6 +313,8 @@ public final class CompilerInterfaceDeclarations {
      * @param clazz the class
      * @param singleton {@code true} iff the class should be treated as a singleton (e.g., a
      *            provider)
+     * @param useLocalMirrorFallback {@code true} iff the methods of this class can be invoked with
+     *            local mirrors on the replaying VM as a fallback
      * @param mirrorLocator a method that can find the local mirror of a proxy during replay or
      *            {@code null}
      * @param methods the recording/replay behavior the methods - only needed for non-default
@@ -321,7 +323,7 @@ public final class CompilerInterfaceDeclarations {
      * @param methodCallsToRecordProvider provides the methods calls that should be recorded in the
      *            serialized compilation unit
      */
-    public record Registration(Class<?> clazz, boolean singleton, LocalMirrorLocator mirrorLocator,
+    public record Registration(Class<?> clazz, boolean singleton, boolean useLocalMirrorFallback, LocalMirrorLocator mirrorLocator,
                     UnmodifiableEconomicMap<CompilationProxy.SymbolicMethod, MethodRegistration> methods, Class<?>[] extraInterfaces,
                     MethodCallsToRecordProvider methodCallsToRecordProvider) {
         /**
@@ -452,6 +454,8 @@ public final class CompilerInterfaceDeclarations {
 
         private boolean singleton;
 
+        private boolean localMirrorFallback;
+
         private LocalMirrorLocator mirrorLocator;
 
         private final EconomicMap<CompilationProxy.SymbolicMethod, MethodRegistrationBuilder> methods;
@@ -462,6 +466,7 @@ public final class CompilerInterfaceDeclarations {
 
         RegistrationBuilder(Class<T> clazz, Class<?>... extraInterfaces) {
             this.clazz = clazz;
+            this.localMirrorFallback = true;
             this.methods = EconomicMap.create();
             this.extraInterfaces = extraInterfaces;
             this.methods.put(CompilationProxyBase.toStringMethod, MethodRegistrationBuilder.createDefault(CompilationProxyBase.toStringMethod));
@@ -474,6 +479,11 @@ public final class CompilerInterfaceDeclarations {
 
         public RegistrationBuilder<T> setSingleton(boolean newSingleton) {
             singleton = newSingleton;
+            return this;
+        }
+
+        public RegistrationBuilder<T> useLocalMirrorFallback(boolean enabled) {
+            localMirrorFallback = enabled;
             return this;
         }
 
@@ -533,7 +543,7 @@ public final class CompilerInterfaceDeclarations {
             while (cursor.advance()) {
                 registrations.put(cursor.getKey(), cursor.getValue().build());
             }
-            declarations.addRegistration(new Registration(clazz, singleton, mirrorLocator, registrations, extraInterfaces, methodCallsToRecordProvider));
+            declarations.addRegistration(new Registration(clazz, singleton, localMirrorFallback, mirrorLocator, registrations, extraInterfaces, methodCallsToRecordProvider));
         }
     }
 
@@ -664,6 +674,9 @@ public final class CompilerInterfaceDeclarations {
                     constantReflection.getMemoryAccessProvider())
                 .register(declarations);
         new RegistrationBuilder<>(HotSpotCodeCacheProvider.class).setSingleton(true)
+                // Avoid using the code cache of the replaying VM due to non-determinism (e.g., max call target offset).
+                .useLocalMirrorFallback(false)
+                .setDefaultValue(HotSpotCodeCacheProviderProxy.getMaxCallTargetOffsetMethod, -1L)
                 .setDefaultValueStrategy(HotSpotCodeCacheProviderProxy.installCodeMethod, null)
                 .setDefaultValueSupplier(HotSpotCodeCacheProviderProxy.installCodeMethod, CompilerInterfaceDeclarations::installCodeReplacement)
                 // Interpreter frame size is not tracked since the arguments are not serializable.
@@ -680,9 +693,6 @@ public final class CompilerInterfaceDeclarations {
                 .setLocalMirrorLocator(CompilerInterfaceDeclarations::findObjectTypeMirror)
                 // getComponentType() is used by the default implementation of isArray().
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getComponentTypeMethod, HotSpotResolvedObjectTypeProxy.getComponentTypeInvokable)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getDeclaredAnnotationsMethod, MethodStrategy.Passthrough)
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getInstanceFieldsMethod,
                         HotSpotResolvedObjectTypeProxy.getInstanceFieldsInvokable, new Object[]{true}) // For snippet decoding
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getStaticFieldsMethod, HotSpotResolvedObjectTypeProxy.getStaticFieldsInvokable) // For snippet decoding
@@ -703,7 +713,6 @@ public final class CompilerInterfaceDeclarations {
                     }
                     return List.of();
                 })
-                .setFallbackInvocationHandler(HotSpotResolvedObjectTypeProxy.isInstanceMethod, CompilerInterfaceDeclarations::objectTypeIsInstanceFallback)
                 .register(declarations);
         // Must come after HotSpotResolvedObjectType. Needed for HotSpotResolvedPrimitiveType.
         new RegistrationBuilder<>(HotSpotResolvedJavaType.class)
@@ -725,6 +734,7 @@ public final class CompilerInterfaceDeclarations {
                 .ensureRecorded(HotSpotResolvedJavaMethodProxy.isConstructorMethod, HotSpotResolvedJavaMethodProxy.isConstructorInvokable)
                 .ensureRecorded(HotSpotResolvedJavaMethodProxy.canBeStaticallyBoundMethod, HotSpotResolvedJavaMethodProxy.canBeStaticallyBoundInvokable)
                 .ensureRecorded(HotSpotResolvedJavaMethodProxy.getCodeMethod, HotSpotResolvedJavaMethodProxy.getCodeInvokable)
+                .setDefaultValue(HotSpotResolvedJavaMethodProxy.getProfilingInfoMethod, DefaultProfilingInfo.get(TriState.UNKNOWN))
                 .setDefaultValue(HotSpotResolvedJavaMethodProxy.vtableEntryOffsetMethod, 0) // For LoadMethodNode lowering after divergence
                 .setStrategy(HotSpotResolvedJavaMethodProxy.formatToMethod, MethodStrategy.DefaultValue)
                 .setDefaultValueSupplier(HotSpotResolvedJavaMethodProxy.formatToMethod, (proxy, method, args, metaAccess) -> {
@@ -775,15 +785,16 @@ public final class CompilerInterfaceDeclarations {
                     return null;
                 })
                 .setStrategy(HotSpotResolvedJavaMethodProxy.getParametersMethod, MethodStrategy.Passthrough)
-                .setStrategy(HotSpotResolvedJavaMethodProxy.getParameterAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getDeclaredAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, MethodStrategy.Passthrough)
-                .setFallbackInvocationHandler(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, (proxy, method, args, metaAccess) -> {
-                    // The HostInliningPhase can query Truffle-related annotations during replay on jargraal. It is safe to return null.
+                .setStrategy(HotSpotResolvedJavaMethodProxy.getGenericParameterTypesMethod, MethodStrategy.Passthrough)
+                .setStrategy(HotSpotResolvedJavaMethodProxy.getDeclaredAnnotationInfoMethod, MethodStrategy.Passthrough)
+                .setFallbackInvocationHandler(HotSpotResolvedJavaMethodProxy.getDeclaredAnnotationInfoMethod, (proxy, method, args, metaAccess) -> {
+                    // The HostInliningPhase can query Truffle-related annotations during replay on jargraal.
+                    Object function = args[0];
+                    if (function == ANNOTATIONS_INFO_PARSER) {
+                        return AnnotationValueSupport.ParsedDeclaredAnnotationValues.NONE;
+                    }
                     return null;
                 })
-                .setStrategy(HotSpotResolvedJavaMethodProxy.getGenericParameterTypesMethod, MethodStrategy.Passthrough)
                 .setDefaultValueStrategy(HotSpotResolvedJavaMethodProxy.hasCodeAtLevelMethod, false)
                 .setDefaultValue(HotSpotResolvedJavaMethodProxy.isInVirtualMethodTableMethod, false)
                 .setDefaultValue(HotSpotResolvedJavaMethodProxy.intrinsicIdMethod, 0)
@@ -792,8 +803,13 @@ public final class CompilerInterfaceDeclarations {
                     // Record calls to be able to format stable lambda names during replay (using StableMethodNameFormatter).
                     HotSpotResolvedJavaMethod method = (HotSpotResolvedJavaMethod) receiver;
                     List<MethodCallToRecord> calls = new ArrayList<>();
-                    if (LambdaUtils.isLambdaType(method.getDeclaringClass()) || isMethodHandle(method.getDeclaringClass())) {
+                    ResolvedJavaType holder = method.getDeclaringClass();
+                    if (holder.isHidden()) {
                         ConstantPool constantPool = method.getConstantPool();
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.isLinkedMethod, HotSpotResolvedJavaTypeProxy.isLinkedInvokable, null));
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsBooleanMethod, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsBooleanInvokable, new Object[]{false}));
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getInterfacesMethod, HotSpotResolvedObjectTypeProxy.getInterfacesInvokable, null));
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getDeclaredMethodsBooleanMethod, HotSpotResolvedObjectTypeProxy.getDeclaredMethodsBooleanInvokable, new Object[]{false}));
                         calls.add(new MethodCallToRecord(method, HotSpotResolvedJavaMethodProxy.getConstantPoolMethod, HotSpotResolvedJavaMethodProxy.getConstantPoolInvokable, null));
                         for (BytecodeStream stream = new BytecodeStream(method.getCode()); stream.currentBCI() < stream.endBCI(); stream.next()) {
                             int opcode = stream.currentBC();
@@ -816,6 +832,11 @@ public final class CompilerInterfaceDeclarations {
                         }
                     }
                     return calls;
+                })
+                .setStrategy(HotSpotResolvedJavaMethodProxy.isBridgeMethod, MethodStrategy.DefaultValue)
+                .setDefaultValueSupplier(HotSpotResolvedJavaMethodProxy.isBridgeMethod, (proxy, method, args, metaAccess) -> {
+                    ResolvedJavaMethod javaMethod = (ResolvedJavaMethod) proxy;
+                    return (javaMethod.getModifiers() & HotSpotModifiers.BRIDGE) != 0;
                 })
                 .register(declarations);
 
@@ -944,29 +965,6 @@ public final class CompilerInterfaceDeclarations {
             // Ignore LinkageError or TranslatedException.
         }
         return null;
-    }
-
-    /**
-     * Implements a fallback for {@link HotSpotResolvedObjectType#isInstance} calls performed by
-     * {@link HotSpotGraalConstantFieldProvider} when replaying a libgraal compilation on jargraal.
-     * <p>
-     * The provider performs checks like {@code getHotSpotVMConfigType().isInstance(receiver)},
-     * which use snippet types on libgraal and HotSpot types on jargraal. Replay on jargraal needs
-     * to answer these queries when the receiver and argument are HotSpot proxies.
-     */
-    @SuppressWarnings("unused")
-    @ExcludeFromJacocoGeneratedReport("related to replay of libgraal compilations on jargraal")
-    private static boolean objectTypeIsInstanceFallback(Object proxy, CompilationProxy.SymbolicMethod method, Object[] args, MetaAccessProvider metaAccess) {
-        HotSpotResolvedObjectType receiverType = (HotSpotResolvedObjectType) proxy;
-        if (!(args[0] instanceof HotSpotObjectConstant objectConstant)) {
-            return false;
-        }
-        HotSpotResolvedObjectType constantType = objectConstant.getType();
-        if (isGraalClass(receiverType) && !isGraalClass(constantType)) {
-            // Assumes that only a Graal class can subtype a Graal class.
-            return false;
-        }
-        return receiverType.isAssignableFrom(constantType);
     }
 
     /**

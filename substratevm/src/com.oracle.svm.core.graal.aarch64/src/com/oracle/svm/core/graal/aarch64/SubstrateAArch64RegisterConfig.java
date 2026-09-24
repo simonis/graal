@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,8 +24,8 @@
  */
 package com.oracle.svm.core.graal.aarch64;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHereUnexpectedInput;
-import static com.oracle.svm.core.util.VMError.unsupportedFeature;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHereUnexpectedInput;
+import static com.oracle.svm.shared.util.VMError.unsupportedFeature;
 import static jdk.vm.ci.aarch64.AArch64.allRegisters;
 import static jdk.vm.ci.aarch64.AArch64.r0;
 import static jdk.vm.ci.aarch64.AArch64.r1;
@@ -67,10 +67,9 @@ import static jdk.vm.ci.aarch64.AArch64.v9;
 import static jdk.vm.ci.aarch64.AArch64.zr;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 
@@ -82,7 +81,7 @@ import com.oracle.svm.core.graal.code.SubstrateCallingConvention;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionType;
 import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.vm.ci.aarch64.AArch64;
@@ -386,7 +385,7 @@ public class SubstrateAArch64RegisterConfig implements SubstrateRegisterConfig {
                 }
             }
         } else {
-            Set<Register> usedRegisters = new HashSet<>();
+            EconomicSet<Register> usedRegisters = EconomicSet.create();
             VMError.guarantee(parameterTypes.length == type.fixedParameterAssignment.length, "Parameters/assignments size mismatch.");
 
             for (int i = firstActualArgument; i < locations.length; i++) {
@@ -397,7 +396,7 @@ public class SubstrateAArch64RegisterConfig implements SubstrateRegisterConfig {
 
                 AssignedLocation storage = type.fixedParameterAssignment[i];
                 if (storage.assignsToRegister()) {
-                    if (!kind.isNumericInteger() && !kind.isNumericFloat()) {
+                    if (kind == JavaKind.Void || kind == JavaKind.Illegal) {
                         throw unsupportedFeature("Unsupported storage/kind pair - Storage: " + storage + " ; Kind: " + kind);
                     }
                     Register reg = storage.register();
@@ -416,7 +415,17 @@ public class SubstrateAArch64RegisterConfig implements SubstrateRegisterConfig {
         }
 
         JavaKind returnKind = returnType == null ? JavaKind.Void : ObjectLayout.getCallSignatureKind(isEntryPoint, returnType, metaAccess, target);
-        AllocatableValue returnLocation = returnKind == JavaKind.Void ? Value.ILLEGAL : getReturnRegister(returnKind).asValue(valueKindFactory.getValueKind(returnKind.getStackKind()));
+        AllocatableValue returnLocation = Value.ILLEGAL;
+        if (returnKind != JavaKind.Void) {
+            ValueKind<?> returnValueKind = valueKindFactory.getValueKind(returnKind.getStackKind());
+            if (type.customABI() && type.returnSaving.length == 1 && type.returnSaving[0].assignsToRegister()) {
+                Register register = type.returnSaving[0].register();
+                VMError.guarantee(target.arch.canStoreValue(register.getRegisterCategory(), returnValueKind.getPlatformKind()), "Cannot assign return value to register.");
+                returnLocation = register.asValue(returnValueKind);
+            } else {
+                returnLocation = getReturnRegister(returnKind).asValue(returnValueKind);
+            }
+        }
         return new SubstrateCallingConvention(type, kinds, currentStackOffset, returnLocation, locations);
     }
 
@@ -434,5 +443,9 @@ public class SubstrateAArch64RegisterConfig implements SubstrateRegisterConfig {
 
     public List<Register> getJavaGeneralParameterRegs() {
         return generalParameterRegs;
+    }
+
+    public List<Register> getFloatingPointParameterRegs() {
+        return fpParameterRegs;
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,6 @@ package com.oracle.truffle.espresso.runtime.dispatch.staticobject;
 import static com.oracle.truffle.espresso.vm.InterpreterToVM.instanceOf;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.GenerateUncached;
@@ -61,16 +60,29 @@ public class BaseInterop {
 
     @ExportMessage
     public static boolean isString(StaticObject object) {
-        return StaticObject.notNull(object) && object.getKlass() == object.getKlass().getMeta().java_lang_String;
+        Klass klass = object.getKlass();
+        if (klass == null) {
+            return false;
+        }
+        return klass == klass.getMeta().java_lang_String || klass == klass.getMeta().java_lang_Character;
     }
 
     @ExportMessage
+    @TruffleBoundary
     public static String asString(StaticObject object) throws UnsupportedMessageException {
         object.checkNotForeign();
-        if (!isString(object)) {
+        Klass klass = object.getKlass();
+        if (klass == null) {
             throw UnsupportedMessageException.create();
         }
-        return Meta.toHostStringStatic(object);
+        Meta meta = klass.getMeta();
+        if (klass == meta.java_lang_String) {
+            return Meta.toHostStringStatic(object);
+        } else if (klass == meta.java_lang_Character) {
+            return String.valueOf(meta.java_lang_Character_value.getChar(object));
+        } else {
+            throw UnsupportedMessageException.create();
+        }
     }
 
     // region ### Meta-objects
@@ -124,8 +136,10 @@ public class BaseInterop {
     @ExportMessage
     public static Object getMetaObject(StaticObject object,
                     @Cached.Shared("error") @Cached BranchProfile error) throws UnsupportedMessageException {
-        object.checkNotForeign();
         if (hasMetaObject(object)) {
+            if (object.isStaticStorage()) {
+                return object.getKlass().getMeta().java_lang_Object.mirror();
+            }
             return object.getKlass().mirror();
         }
         error.enter();
@@ -224,14 +238,14 @@ public class BaseInterop {
     // region ### Language/DisplayString
     @SuppressWarnings("unused")
     @ExportMessage
-    public static boolean hasLanguage(StaticObject object) {
+    public static boolean hasLanguageId(StaticObject object) {
         return true;
     }
 
     @SuppressWarnings("unused")
     @ExportMessage
-    public static Class<? extends TruffleLanguage<?>> getLanguage(StaticObject object) {
-        return EspressoLanguage.class;
+    public static String getLanguageId(StaticObject object) {
+        return EspressoLanguage.ID;
     }
 
     @ExportMessage

@@ -28,9 +28,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import com.oracle.svm.guest.staging.jdk.InternalVMMethod;
+import com.oracle.svm.util.GuestAnnotationAccess;
 import org.graalvm.word.WordBase;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaType;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
@@ -38,7 +39,8 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.debug.Assertions;
 import jdk.vm.ci.meta.Assumptions.AssumptionResult;
@@ -153,6 +155,8 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
 
     // endregion open-world only fields
 
+    public static final Object UNINITIALIZED = new Object();
+
     /**
      * The unique implementor of this type that can replace it in stamps as an exact type.
      * <p>
@@ -163,7 +167,7 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
      * In open-world analysis the field is set to {@code null} for non-leaf types since we have to
      * assume that there may be some instantiated subtypes that we haven't seen yet.
      */
-    protected HostedType uniqueConcreteImplementation;
+    protected Object uniqueConcreteImplementation = UNINITIALIZED;
 
     /**
      * A more precise subtype that can replace this type as the declared type of values.
@@ -176,7 +180,7 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
      * In open-world analysis the field is set to this type itself for non-leaf types since we have
      * to assume that there may be some instantiated subtypes that we haven't seen yet.
      */
-    protected HostedType strengthenStampType;
+    protected Object strengthenStampType = UNINITIALIZED;
 
     public HostedType(HostedUniverse universe, AnalysisType wrapped, JavaKind kind, JavaKind storageKind, HostedClass superClass, HostedInterface[] interfaces) {
         this.universe = universe;
@@ -189,7 +193,8 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
     }
 
     public HostedType getStrengthenStampType() {
-        return strengthenStampType;
+        VMError.guarantee(strengthenStampType != UNINITIALIZED, "The strengthenStampType field not initialized for %s", this);
+        return (HostedType) strengthenStampType;
     }
 
     public HostedType[] getSubTypes() {
@@ -223,6 +228,18 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
 
     public HostedMethod[] getInterpreterDispatchTable() {
         return RuntimeClassLoading.isSupported() ? getCremaOpenTypeWorldDispatchTables() : getVTable();
+    }
+
+    public int getInterpreterClassVTableLength() {
+        if (itableStartingOffsets != null && itableStartingOffsets.length > 0) {
+            return itableStartingOffsets[0];
+        }
+        /*
+         * i-table offsets are only initialized for open-world dispatch tables. Otherwise the
+         * interpreter dispatch table is just the class vtable, so its full length is correct.
+         */
+        assert SubstrateOptions.useClosedTypeWorldHubLayout() || itableStartingOffsets != null : this;
+        return getInterpreterDispatchTable().length;
     }
 
     @Override
@@ -490,7 +507,8 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
 
     @Override
     public HostedType getSingleImplementor() {
-        return uniqueConcreteImplementation;
+        VMError.guarantee(uniqueConcreteImplementation != UNINITIALIZED, "The uniqueConcreteImplementation field not initialized for %s", this);
+        return (HostedType) uniqueConcreteImplementation;
     }
 
     @Override
@@ -586,7 +604,7 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
 
     @Override
     public List<? extends ResolvedJavaRecordComponent> getRecordComponents() {
-        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
+        return wrapped.getRecordComponents();
     }
 
     @Override
@@ -645,12 +663,6 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
         return wrapped.isCloneableWithAllocation();
     }
 
-    @SuppressWarnings("deprecation")
-    @Override
-    public ResolvedJavaType getHostClass() {
-        return universe.lookup(wrapped.getHostClass());
-    }
-
     @Override
     public ResolvedJavaType unwrapTowardsOriginalType() {
         return wrapped;
@@ -670,5 +682,10 @@ public abstract class HostedType extends HostedElement implements SharedType, Wr
          * trivially statically bound.
          */
         return null;
+    }
+
+    @Override
+    public boolean isInternalVMMethods() {
+        return GuestAnnotationAccess.isAnnotationPresent(this, InternalVMMethod.class);
     }
 }

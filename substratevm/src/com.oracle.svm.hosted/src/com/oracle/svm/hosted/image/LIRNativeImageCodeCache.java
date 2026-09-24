@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,14 +37,14 @@ import org.graalvm.collections.Pair;
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.objectfile.ObjectFile;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.graal.code.SharedCompilationResult;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.DeadlockWatchdog;
 import com.oracle.svm.hosted.code.HostedDirectCallTrampolineSupport;
 import com.oracle.svm.hosted.code.HostedImageHeapConstantPatch;
 import com.oracle.svm.hosted.code.HostedPatcher;
 import com.oracle.svm.hosted.meta.HostedMethod;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.code.CompilationResult.CodeAnnotation;
@@ -70,7 +70,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
     @SuppressWarnings("this-escape")
     public LIRNativeImageCodeCache(Map<HostedMethod, CompilationResult> compilations, NativeImageHeap imageHeap) {
         super(compilations, imageHeap);
-        target = ConfigurationValues.getTarget();
+        target = SubstrateTarget.singleton();
         trampolineMap = new HashMap<>();
         orderedTrampolineMap = new HashMap<>();
 
@@ -134,17 +134,20 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
         return true;
     }
 
-    @SuppressWarnings({"try", "resource"})
     @Override
     public void layoutMethods(DebugContext debug, BigBang bb) {
+        layoutMethods(debug, getOrderedCompilations());
+    }
 
+    @SuppressWarnings({"try", "resource"})
+    private void layoutMethods(DebugContext debug, List<Pair<HostedMethod, CompilationResult>> methodCompilations) {
         try (Indent _ = debug.logAndIndent("layout methods")) {
             // Assign initial location to all methods.
             HostedDirectCallTrampolineSupport trampolineSupport = HostedDirectCallTrampolineSupport.singleton();
             Map<HostedMethod, Integer> curOffsetMap = trampolineSupport.mayNeedTrampolines() ? new HashMap<>() : null;
 
             int curPos = 0;
-            for (Pair<HostedMethod, CompilationResult> entry : getOrderedCompilations()) {
+            for (Pair<HostedMethod, CompilationResult> entry : methodCompilations) {
                 HostedMethod method = entry.getLeft();
                 CompilationResult compilation = entry.getRight();
                 curPos = align(curPos, SharedCompilationResult.getCodeAlignment(compilation));
@@ -163,7 +166,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
                 addDirectCallTrampolines(curOffsetMap);
 
                 // record final code address offsets and trampoline metadata
-                for (Pair<HostedMethod, CompilationResult> pair : getOrderedCompilations()) {
+                for (Pair<HostedMethod, CompilationResult> pair : methodCompilations) {
                     HostedMethod method = pair.getLeft();
                     int methodStartOffset = curOffsetMap.get(method);
                     method.setCodeAddressOffset(methodStartOffset);
@@ -189,7 +192,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
                 }
             }
 
-            Pair<HostedMethod, CompilationResult> lastCompilation = getLastCompilation();
+            Pair<HostedMethod, CompilationResult> lastCompilation = methodCompilations.getLast();
             HostedMethod lastMethod = lastCompilation.getLeft();
 
             // the total code size is aligned up to SubstrateOptions.buildTimeCodeAlignment()
@@ -322,7 +325,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
         patchMethods(debug, relocs, getOrderedCompilations());
     }
 
-    protected void patchMethods(DebugContext debug, RelocatableBuffer relocs, List<Pair<HostedMethod, CompilationResult>> compilations) {
+    protected void patchMethods(DebugContext debug, RelocatableBuffer relocs, List<Pair<HostedMethod, CompilationResult>> methodCompilations) {
         /*
          * Patch instructions which reference code or data by address.
          *
@@ -348,7 +351,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
          * case, the caller will pass a null rodataDisplacecmentFromText, and we behave accordingly
          * by generating extra relocation records.
          */
-        for (Pair<HostedMethod, CompilationResult> entry : compilations) {
+        for (Pair<HostedMethod, CompilationResult> entry : methodCompilations) {
             DeadlockWatchdog.singleton().recordActivity();
             HostedMethod method = entry.getLeft();
             CompilationResult compilation = entry.getRight();
@@ -404,8 +407,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
         }
     }
 
-    private static void processDataReferences(RelocatableBuffer relocs, HostedMethod method, CompilationResult compilation, Map<Integer, HostedPatcher> patches) {
-        int compStart = method.getCodeAddressOffset();
+    protected void processDataReferences(RelocatableBuffer relocs, HostedMethod method, CompilationResult compilation, Map<Integer, HostedPatcher> patches) {
         for (DataPatch dataPatch : compilation.getDataPatches()) {
             assert dataPatch.note == null : "Unexpected note: " + dataPatch.note;
             Reference ref = dataPatch.reference;
@@ -414,10 +416,15 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
             /*
              * Constants are (1) allocated offsets in a separate space, which can be emitted as
              * read-only (.rodata) section, or (2) method pointers that are computed relative to the
-             * PC.
+             * PC, or (3) directly patched accesses to other sections via base address located in
+             * the image heap.
              */
-            patcher.relocate(ref, relocs, compStart);
+            processDataPatch(relocs, method, compilation, ref, patcher);
         }
+    }
+
+    protected void processDataPatch(RelocatableBuffer buffer, HostedMethod method, @SuppressWarnings("unused") CompilationResult compilation, Reference reference, HostedPatcher patcher) {
+        patcher.relocate(reference, buffer, method.getCodeAddressOffset());
     }
 
     private static void processImageHeapConstantsReferences(CompilationResult compilation, Map<Integer, HostedPatcher> patches) {
@@ -448,7 +455,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
         writeCode(buffer, getOrderedCompilations());
     }
 
-    protected void writeCode(RelocatableBuffer buffer, List<Pair<HostedMethod, CompilationResult>> compilations) {
+    protected void writeCode(RelocatableBuffer buffer, List<Pair<HostedMethod, CompilationResult>> methodCompilations) {
         ByteBuffer bufferBytes = buffer.getByteBuffer();
         int startPos = bufferBytes.position();
         /*
@@ -456,7 +463,7 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
          * size is not fixed at the time they are computed). This is just startPos, i.e. we start
          * emitting the code wherever the buffer is positioned when we're called.
          */
-        for (Pair<HostedMethod, CompilationResult> compilationPair : compilations) {
+        for (Pair<HostedMethod, CompilationResult> compilationPair : methodCompilations) {
             HostedMethod method = compilationPair.getLeft();
             CompilationResult compilation = compilationPair.getRight();
 
@@ -503,9 +510,9 @@ public class LIRNativeImageCodeCache extends NativeImageCodeCache {
         }
 
         @Override
-        protected void defineMethodSymbol(String name, boolean global, ObjectFile.Element section, HostedMethod method, CompilationResult result) {
+        protected void defineMethodSymbol(String name, boolean global, boolean exported, ObjectFile.Element section, HostedMethod method, CompilationResult result) {
             final int size = result == null ? 0 : result.getTargetCodeSize();
-            objectFile.createDefinedSymbol(name, section, method.getCodeAddressOffset(), size, true, global);
+            objectFile.createDefinedSymbol(name, section, method.getCodeAddressOffset(), size, true, global, exported);
         }
     }
 

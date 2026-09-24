@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,25 +25,20 @@
 package com.oracle.svm.hosted.phases;
 
 import java.lang.reflect.Method;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
-import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
-import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.nodes.ConstantNode;
-import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.ValueNode;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderContext;
@@ -94,9 +89,10 @@ final class EnumSwitchPlugin implements NodePlugin {
          * check for transitive callees, because we trust that the Eclipse compiler only emits calls
          * that end up in the same class or in the JDK.
          */
-        EnumSwitchFeature feature = ImageSingletons.lookup(EnumSwitchFeature.class);
-        method.ensureGraphParsed(feature.getBigBang());
-        Boolean methodSafeForExecution = feature.isMethodsSafeForExecution(method);
+        EnumSwitchSupport support = EnumSwitchSupport.singleton();
+        AnalysisMetaAccess metaAccess = (AnalysisMetaAccess) b.getMetaAccess();
+        method.ensureGraphParsed(metaAccess.getUniverse().getBigbang());
+        Boolean methodSafeForExecution = support.isMethodsSafeForExecution(method);
         assert methodSafeForExecution != null : "after-parsing hook not executed for method " + method.format("%H.%n(%p)");
         if (!methodSafeForExecution.booleanValue()) {
             return false;
@@ -120,41 +116,21 @@ final class EnumSwitchPlugin implements NodePlugin {
 
 @AutomaticallyRegisteredFeature
 final class EnumSwitchFeature implements InternalFeature {
-
-    private BigBang bb;
-
-    private ConcurrentMap<AnalysisMethod, Boolean> methodsSafeForExecution = new ConcurrentHashMap<>();
-
     @Override
     public void duringSetup(DuringSetupAccess a) {
         DuringSetupAccessImpl access = (DuringSetupAccessImpl) a;
-        bb = access.getBigBang();
-        access.getHostVM().addMethodAfterParsingListener(this::onMethodParsed);
-    }
-
-    private void onMethodParsed(AnalysisMethod method, StructuredGraph graph) {
-        boolean methodSafeForExecution = graph.getNodes().filter(node -> node instanceof EnsureClassInitializedNode).isEmpty();
-
-        Boolean existingValue = methodsSafeForExecution.put(method, methodSafeForExecution);
-        assert existingValue == null || SubstrateCompilationDirectives.isDeoptTarget(method) : "Method parsed twice: " + method.format("%H.%n(%p)");
+        EnumSwitchSupport support = new EnumSwitchSupport();
+        ImageSingletons.add(EnumSwitchSupport.class, support);
+        access.getHostVM().addMethodAfterParsingListener(support::onMethodParsed);
     }
 
     @Override
     public void afterAnalysis(AfterAnalysisAccess access) {
-        bb = null;
-        methodsSafeForExecution = null;
+        EnumSwitchSupport.singleton().afterAnalysis();
     }
 
     @Override
     public void registerGraphBuilderPlugins(Providers providers, Plugins plugins, ParsingReason reason) {
         plugins.appendNodePlugin(new EnumSwitchPlugin(reason));
-    }
-
-    Boolean isMethodsSafeForExecution(AnalysisMethod method) {
-        return methodsSafeForExecution.get(method);
-    }
-
-    public BigBang getBigBang() {
-        return bb;
     }
 }

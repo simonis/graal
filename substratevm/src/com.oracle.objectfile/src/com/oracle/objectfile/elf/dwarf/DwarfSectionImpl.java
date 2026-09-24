@@ -30,7 +30,6 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import com.oracle.objectfile.BasicProgbitsSectionImpl;
 import com.oracle.objectfile.BuildDependency;
@@ -62,6 +61,7 @@ import com.oracle.objectfile.elf.dwarf.constants.DwarfUnitHeader;
 import com.oracle.objectfile.elf.dwarf.constants.DwarfVersion;
 
 import jdk.graal.compiler.debug.DebugContext;
+import org.graalvm.collections.EconomicSet;
 
 /**
  * A class from which all DWARF debug sections inherit providing common behaviours.
@@ -616,32 +616,12 @@ public abstract class DwarfSectionImpl extends BasicProgbitsSectionImpl {
         return pos;
     }
 
-    /*
-     * Write a bare heap location expression as appropriate for a single location. If useHeapBase is
-     * true the generated expression computes the location as a constant offset from the runtime
-     * heap base register. If useHeapBase is false it computes the location as a fixed, relocatable
-     * offset from the link-time heap base address.
-     */
+    /** Write a bare heap location as a constant offset from the runtime heap base register. */
     protected int writeHeapLocation(long offset, byte[] buffer, int p) {
-        if (dwarfSections.useHeapBase()) {
-            return writeHeapLocationBaseRelative(offset, buffer, p);
-        } else {
-            return writeHeapLocationOffset(offset, buffer, p);
-        }
-    }
-
-    private int writeHeapLocationBaseRelative(long offset, byte[] buffer, int p) {
         int pos = p;
         /* Write a location rebasing the offset relative to the heapbase register. */
         pos = writeExprOpcodeBReg(dwarfSections.getHeapbaseRegister(), buffer, pos);
         return writeSLEB(offset, buffer, pos);
-    }
-
-    private int writeHeapLocationOffset(long offset, byte[] buffer, int p) {
-        int pos = p;
-        /* Write a relocatable address relative to the heap section start. */
-        pos = writeExprOpcode(DwarfExpressionOpcode.DW_OP_addr, buffer, pos);
-        return writeHeapOffset(offset, buffer, pos);
     }
 
     /**
@@ -691,8 +671,8 @@ public abstract class DwarfSectionImpl extends BasicProgbitsSectionImpl {
     }
 
     @Override
-    public Set<BuildDependency> getDependencies(Map<ObjectFile.Element, LayoutDecisionMap> decisions) {
-        Set<BuildDependency> deps = super.getDependencies(decisions);
+    public EconomicSet<BuildDependency> getDependencies(Map<ObjectFile.Element, LayoutDecisionMap> decisions) {
+        EconomicSet<BuildDependency> deps = super.getDependencies(decisions);
         String targetName = targetName();
         ELFObjectFile.ELFSection targetSection = (ELFObjectFile.ELFSection) getElement().getOwner().elementForName(targetName);
         LayoutDecision ourContent = decisions.get(getElement()).getDecision(LayoutDecision.Kind.CONTENT);

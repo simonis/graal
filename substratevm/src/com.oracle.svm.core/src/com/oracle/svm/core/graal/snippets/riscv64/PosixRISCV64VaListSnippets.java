@@ -29,14 +29,14 @@ import java.util.Map;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 
-import com.oracle.svm.core.FrameAccess;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.graal.nodes.VaListInitializationNode;
 import com.oracle.svm.core.graal.nodes.VaListNextArgNode;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.graal.snippets.SubstrateTemplates;
 import com.oracle.svm.core.graal.stackvalue.StackValueNode;
 import com.oracle.svm.core.graal.stackvalue.StackValueNode.StackSlotIdentity;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.core.common.memory.BarrierType;
@@ -136,7 +136,7 @@ final class PosixRISCV64VaListSnippets extends SubstrateTemplates implements Sni
         public void lower(VaListInitializationNode node, LoweringTool tool) {
             StructuredGraph graph = node.graph();
 
-            StackValueNode stackValueNode = graph.add(StackValueNode.create(FrameAccess.wordSize(), vaListIdentity, true));
+            StackValueNode stackValueNode = graph.add(StackValueNode.create(SubstrateTarget.getWordSize(), vaListIdentity, true));
             FrameState frameState = new FrameState(BytecodeFrame.UNKNOWN_BCI);
             frameState.invalidateForDeoptimization();
             stackValueNode.setStateAfter(graph.add(frameState));

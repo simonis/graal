@@ -24,28 +24,35 @@
  */
 package com.oracle.svm.core.graal.code;
 
-import static com.oracle.svm.core.util.VMError.intentionallyUnimplemented;
+import static com.oracle.svm.shared.util.VMError.intentionallyUnimplemented;
 
 import java.lang.reflect.Method;
+import java.util.function.Consumer;
+import java.util.random.RandomGenerator;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.LocationIdentity;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.core.RuntimeRandomness;
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
+import com.oracle.svm.core.graal.meta.SharedRuntimeMethod;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode;
 import com.oracle.svm.core.graal.snippets.CFunctionSnippets;
+import com.oracle.svm.core.jni.CallVariant;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.nodes.CFunctionPrologueDataNode;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.common.CompilationIdentifier;
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.target.Backend;
 import jdk.graal.compiler.lir.LIRFrameState;
+import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.nodes.CallTargetNode;
 import jdk.graal.compiler.nodes.IndirectCallTargetNode;
 import jdk.graal.compiler.nodes.LoweredCallTargetNode;
@@ -186,6 +193,21 @@ public abstract class SubstrateBackend extends Backend {
         return !SubstrateUtil.HOSTED;
     }
 
+    public static boolean shouldRandomizeRuntimeCodeOffset(ResolvedJavaMethod method) {
+        return method instanceof SharedRuntimeMethod && SubstrateOptions.MaxRuntimeCodeOffset.getValue() > 0;
+    }
+
+    /**
+     * Insert a random offset before the compiled code and record the location of the actual
+     * prologue start.
+     */
+    public static void randomizeRuntimeCodeOffset(CompilationResultBuilder crb, Consumer<Integer> offsetInserter) {
+        RandomGenerator random = RuntimeRandomness.instance().getRandom();
+        int offset = random.nextInt(SubstrateOptions.MaxRuntimeCodeOffset.getValue());
+        offsetInserter.accept(offset);
+        crb.recordMark(SubstrateMarkId.PROLOGUE_START);
+    }
+
     /**
      * Identity for {@link com.oracle.svm.core.hub.DynamicHub} vtable accesses.
      *
@@ -226,8 +248,11 @@ public abstract class SubstrateBackend extends Backend {
 
     public abstract BasePhase<CoreProviders> newAddressLoweringPhase(CodeCacheProvider codeCache);
 
+    public record CremaJNITrampolineData(ResolvedJavaMethod wrapperMethod, CallVariant callVariant) {
+    }
+
     public abstract CompilationResult createJNITrampolineMethod(ResolvedJavaMethod method, CompilationIdentifier identifier,
-                    RegisterValue threadArg, int threadIsolateOffset, RegisterValue methodIdArg, int methodObjEntryPointOffset);
+                    RegisterValue threadArg, int threadIsolateOffset, RegisterValue methodIdArg, int methodObjEntryPointOffset, CremaJNITrampolineData cremaData);
 
     /**
      * Returns whether the backend can fold the stack overflow check into the method prologue for

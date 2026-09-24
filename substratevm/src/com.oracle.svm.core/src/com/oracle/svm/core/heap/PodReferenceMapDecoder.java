@@ -24,36 +24,36 @@
  */
 package com.oracle.svm.core.heap;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
-import static com.oracle.svm.core.jdk.UninterruptibleUtils.Byte.toUnsignedInt;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.guest.staging.core.jdk.UninterruptibleUtils.Byte.toUnsignedInt;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.JavaMemoryUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.graal.nodes.NewPodInstanceNode;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
+import com.oracle.svm.shared.util.UnsignedUtils;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
-import jdk.graal.compiler.word.BarrieredAccess;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
+import org.graalvm.word.impl.Word;
 
 public final class PodReferenceMapDecoder {
     @DuplicatedInNativeCode
     @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static void walkOffsetsFromPointer(Pointer baseAddress, int layoutEncoding, ObjectReferenceVisitor visitor, Object obj) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
 
         UnsignedWord refOffset = LayoutEncoding.getArrayBaseOffset(layoutEncoding);
         UnsignedWord mapOffset = getReferenceMapOffset(obj, layoutEncoding);
@@ -74,13 +74,13 @@ public final class PodReferenceMapDecoder {
     @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
     private static void callVisitor(Pointer firstObjRef, ObjectReferenceVisitor visitor, Object obj, int count) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
         visitor.visitObjectReferences(firstObjRef, true, referenceSize, obj, count);
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean hasEmptyReferenceMap(Object obj) {
-        DynamicHub hub = KnownIntrinsics.readHub(obj);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
         int layoutEncoding = hub.getLayoutEncoding();
 
         UnsignedWord mapOffset = getReferenceMapOffset(obj, layoutEncoding);
@@ -135,7 +135,7 @@ public final class PodReferenceMapDecoder {
     }
 
     private static void copyArray(Object original, Object copy, int layoutEncoding, int length) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
 
         UnsignedWord refOffset = LayoutEncoding.getArrayBaseOffset(layoutEncoding);
         UnsignedWord mapOffset = LayoutEncoding.getArrayElementOffset(layoutEncoding, length);

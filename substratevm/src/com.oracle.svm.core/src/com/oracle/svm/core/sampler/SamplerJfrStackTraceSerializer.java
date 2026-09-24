@@ -25,20 +25,21 @@
 
 package com.oracle.svm.core.sampler;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoDecoder;
 import com.oracle.svm.core.code.CodeInfoTable;
 import com.oracle.svm.core.code.FrameInfoQueryResult;
 import com.oracle.svm.core.code.UntetheredCodeInfo;
+import com.oracle.svm.core.code.UntetheredCodeInfoAccess;
 import com.oracle.svm.core.jfr.JfrBuffer;
 import com.oracle.svm.core.jfr.JfrFrameType;
 import com.oracle.svm.core.jfr.JfrNativeEventWriter;
@@ -48,9 +49,12 @@ import com.oracle.svm.core.jfr.JfrStackTraceRepository;
 import com.oracle.svm.core.jfr.JfrThreadLocal;
 import com.oracle.svm.core.jfr.SubstrateJVM;
 import com.oracle.svm.core.jfr.events.ExecutionSampleEvent;
-import com.oracle.svm.core.util.VMError;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * A concrete implementation of {@link SamplerStackTraceSerializer} designed for JFR stack trace
@@ -59,6 +63,7 @@ import jdk.graal.compiler.word.Word;
  * All static mutable state in this class is preallocated and reused by multiple threads. This is
  * safe because only one thread at a time may serialize stack traces.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public final class SamplerJfrStackTraceSerializer implements SamplerStackTraceSerializer {
     private static final CodeInfoDecoder.FrameInfoCursor FRAME_INFO_CURSOR = new CodeInfoDecoder.FrameInfoCursor();
     private static final StackTraceVisitorData VISITOR_DATA = new StackTraceVisitorData();
@@ -155,10 +160,8 @@ public final class SamplerJfrStackTraceSerializer implements SamplerStackTraceSe
     private static void visitFrame(JfrNativeEventWriterData data, long address) {
         CodePointer ip = Word.pointer(address);
         UntetheredCodeInfo untetheredInfo = CodeInfoTable.lookupCodeInfo(ip);
-        if (untetheredInfo.isNull()) {
-            /* Unknown frame. Must not happen for AOT-compiled code. */
-            VMError.shouldNotReachHere("Stack walk must walk only frames of known code.");
-        }
+        VMError.guarantee(untetheredInfo.isNonNull(), "Stack walk must walk only frames of known code.");
+        assert UntetheredCodeInfoAccess.isAOTImageCode(untetheredInfo) : "JFR sample stack traces must contain only AOT image code.";
 
         Object tether = CodeInfoAccess.acquireTether(untetheredInfo);
         try {
@@ -192,7 +195,7 @@ public final class SamplerJfrStackTraceSerializer implements SamplerStackTraceSe
     @Uninterruptible(reason = "Prevent JFR recording and epoch change.")
     private static void serializeStackTraceElement(JfrNativeEventWriterData data, FrameInfoQueryResult stackTraceElement) {
         long methodId = SubstrateJVM.getMethodRepo().getMethodId(stackTraceElement.getSourceClass(), stackTraceElement.getSourceMethodName(),
-                        stackTraceElement.getSourceMethodSignature(), stackTraceElement.getSourceMethodId(), stackTraceElement.getSourceMethodModifiers());
+                        stackTraceElement.getSourceMethodSignature(), stackTraceElement.getSourceMethodId(), stackTraceElement.getSourceMethodFlags());
         JfrNativeEventWriter.putLong(data, methodId);
         JfrNativeEventWriter.putInt(data, stackTraceElement.getSourceLineNumber());
         JfrNativeEventWriter.putInt(data, stackTraceElement.getBci());

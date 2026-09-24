@@ -23,15 +23,15 @@ The SBOM feature can be disabled with `--enable-sbom=false`.
 
 ## Extracting SBOM Contents
 
-After embedding the compressed SBOM into the image, there are two possible ways to extract the SBOM contents:
-- using the [Native Image Configure Tool](#native-image-configure-tool)
+For native images with an embedded SBOM, there are two possible ways to extract the SBOM contents:
+- using the [Native Image Utils Tool](#native-image-utils-tool)
 - using [Syft](https://github.com/anchore/syft){:target="_blank"}
 
-### Native Image Configure Tool
+### Native Image Utils Tool
 
-The Native Image Configure Tool can extract the compressed SBOM using the `extract-sbom` command from executables and shared libraries.
+The Native Image Utils Tool can extract the compressed SBOM using the `extract-sbom` command from native executables and shared libraries.
 ```bash
-$JAVA_HOME/bin/native-image-configure extract-sbom --image-path=<path_to_binary>
+$JAVA_HOME/bin/native-image-utils extract-sbom --image-path=<path_to_binary>
 ```
 
 It outputs the contents in the JSON format:
@@ -45,43 +45,46 @@ It outputs the contents in the JSON format:
     "timestamp": "2025-10-06T15:46:50.593277+02:00",
     "tools": {
       "components": [
-        { 
+        {
           "type": "library",
+          "bom-ref": "Oracle:org.graalvm.sdk:nativeimage:25.1.3",
+          "supplier": {
+            "name": "Oracle"
+          },
           "group": "org.graalvm.sdk",
           "name": "nativeimage",
-          "version": "25+37-LTS",
-          "purl": "pkg:maven/org.graalvm.sdk/nativeimage@25%2B37-LTS",
-          "bom-ref": "pkg:maven/org.graalvm.sdk/nativeimage@25%2B37-LTS"
+          "version": "25.1.3",
+          "purl": "pkg:maven/org.graalvm.sdk/nativeimage@25.1.3"
         }
       ]
     },
     "component": {
       "type": "library",
+      "bom-ref": "com.sbom:your-app:1.0.0",
       "group": "com.sbom",
       "name": "your-app",
       "version": "1.0.0",
-      "purl": "pkg:maven/com.sbom/your-app@1.0.0",
-      "bom-ref": "pkg:maven/com.sbom/your-app@1.0.0"
+      "purl": "pkg:maven/com.sbom/your-app@1.0.0"
     }
   },
   "components": [
     {
       "type": "library",
+      "bom-ref": "org.json:json:20211205",
       "group": "org.json",
       "name": "json",
       "version": "20211205",
-      "purl": "pkg:maven/org.json/json@20211205",
-      "bom-ref": "pkg:maven/org.json/json@20211205"
+      "purl": "pkg:maven/org.json/json@20211205"
     },
     ...
   ],
   "dependencies": [
     {
-      "ref": "pkg:maven/com.sbom/your-app@1.0.0",
-      "dependsOn": ["pkg:maven/org.json/json@20211205"]
+      "ref": "com.sbom:your-app:1.0.0",
+      "dependsOn": ["org.json:json:20211205"]
     },
     {
-      "ref": "pkg:maven/org.json/json@20211205",
+      "ref": "org.json:json:20211205",
       "dependsOn": []
     },
     ...
@@ -134,9 +137,9 @@ It also integrates with GitHub Actions, GitLab, and Jenkins Pipelines.
 
 Another popular command-line scanner is `grype`, part of the [Anchore software supply chain management platform](https://anchore.com/){:target="_blank"}.
 With `grype`, you can check whether the libraries listed in your SBOMs have known vulnerabilities documented in Anchore's database.
-The output of the `native-image-configure` tool can be fed directly into `grype` to scan for vulnerable libraries using the following command:
+The output of the `native-image-utils` tool can be fed directly into `grype` to scan for vulnerable libraries using the following command:
 ```bash
-native-image-configure extract-sbom --image-path=<path_to_binary> | grype
+native-image-utils extract-sbom --image-path=<path_to_binary> | grype
 ```
 It produces the following output:
 ```shell
@@ -170,11 +173,10 @@ Below is an example of a component that includes the `hashes` field:
 ```json
 {
   "type": "library",
+  "bom-ref": "io.micronaut:inject:4.2.3",
   "group": "io.micronaut",
   "name": "inject",
   "version": "4.2.3",
-  "purl": "pkg:maven/io.micronaut/inject@4.2.3",
-  "bom-ref": "pkg:maven/io.micronaut/inject@4.2.3",
   "hashes": [
     {
       "alg": "SHA-256",
@@ -184,7 +186,8 @@ Below is an example of a component that includes the `hashes` field:
       "alg": "SHA-512",
       "content": "05f1a81ea70e9fd0607b97bc62d8d210fd66fcc4e5aa6471ab5f278d2bfb41ab52ac013864d5d5529f0f365e677c15912c88ca51452f9419e8dbaee64efb0b03"
     }
-  ]
+  ],
+  "purl": "pkg:maven/io.micronaut/inject@4.2.3"
 }
 ```
 
@@ -304,13 +307,12 @@ The class-level SBOM component would look like this:
 ```json
 {
     "type": "library",
+    "bom-ref": "com.sbom:your-app:1.0.0",
     "group": "com.sbom",
     "name": "your-app",
     "version": "1.0.0",
-    "purl": "pkg:maven/com.sbom/your-app@1.0.0",
-    "bom-ref": "pkg:maven/com.sbom/your-app@1.0.0",
-    "properties": [...],
     "hashes": [...],
+    "purl": "pkg:maven/com.sbom/your-app@1.0.0",
     "components": [
         {
             "type": "library",
@@ -360,7 +362,8 @@ The class-level SBOM component would look like this:
                 }
             ]
         }
-    ]
+    ],
+    "properties": [...]
 }
 ```
 

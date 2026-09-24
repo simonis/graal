@@ -76,6 +76,10 @@
     "allDeclaredConstructors": true, "allPublicConstructors": true, "allDeclaredMethods": true, "allPublicMethods": true, "allDeclaredFields": true, "allPublicFields": true
   },
   {
+    "name": "java.lang.Comparable",
+    "allDeclaredConstructors": true, "allPublicConstructors": true, "allDeclaredMethods": true, "allPublicMethods": true, "allDeclaredFields": true, "allPublicFields": true
+  },
+  {
     "name": "java.util.function.Function",
     "allDeclaredConstructors": true, "allPublicConstructors": true, "allDeclaredMethods": true, "allPublicMethods": true, "allDeclaredFields": true, "allPublicFields": true
   },
@@ -159,12 +163,19 @@
   {
     "name": "com.oracle.truffle.polyglot.InternalResourceRoots",
     "methods": [
-      { "name": "getInstance", "parameterTypes": [] }
+      { "name": "getInstance", "parameterTypes": [] },
+      { "name": "setTestCacheRoot", "parameterTypes": ["java.nio.file.Path", "boolean"] }
     ]
   },
   {
     "name": "com.oracle.truffle.polyglot.FileSystems$PreInitializeContextFileSystem",
     "allDeclaredConstructors": true, "allPublicConstructors": true, "allDeclaredMethods": true, "allPublicMethods": true, "allDeclaredFields": true, "allPublicFields": true
+  },
+  {
+    "name": "com.oracle.truffle.polyglot.isolate.SymbolTable$Source",
+    "fields": [
+      { "name": "MAX_SYMBOL_NAME_LENGTH"}
+    ]
   },
   {
     "name": "java.lang.System",
@@ -201,6 +212,10 @@
   {
     "name": "com.oracle.truffle.api.test.polyglot.TruffleFileTest$TestRegisterOnDisposeHostSupport",
     "allPublicMethods": true
+  },
+  {
+    "name": "com.oracle.truffle.api.test.polyglot.TruffleFileTest$EmptyPathTestFs",
+    "allDeclaredMethods": true, "allPublicMethods": true
   },
   {
     "name": "jdk.internal.module.Modules",
@@ -265,12 +280,6 @@
   {
     "name": "org.hamcrest.core.StringContains",
     "allPublicMethods": true
-  },
-  {
-    "name": "com.oracle.truffle.polyglot.enterprise.EnterprisePolyglotImpl",
-    "methods": [
-      { "name": "getIsolate", "parameterTypes": ["java.lang.Object"] }
-    ]
   },
   {
     "name": "com.oracle.truffle.api.test.host.GR63075Test$BaseClass",

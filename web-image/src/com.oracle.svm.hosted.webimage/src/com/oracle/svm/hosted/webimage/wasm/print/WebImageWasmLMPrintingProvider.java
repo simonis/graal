@@ -28,19 +28,22 @@ package com.oracle.svm.hosted.webimage.wasm.print;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.type.CShortPointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.hosted.webimage.wasm.nodes.WasmPrintNode;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.webimage.functionintrinsics.JSCallNode;
 import com.oracle.svm.webimage.platform.WebImageWasmLMPlatform;
 import com.oracle.svm.webimage.print.WebImagePrintingProvider;
-
-import jdk.graal.compiler.word.Word;
 
 /**
  * Printing functionality for the Wasm backend.
@@ -50,11 +53,12 @@ import jdk.graal.compiler.word.Word;
  */
 @AutomaticallyRegisteredImageSingleton(WebImagePrintingProvider.class)
 @Platforms(WebImageWasmLMPlatform.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class WebImageWasmLMPrintingProvider extends WebImagePrintingProvider {
     @Override
     @Uninterruptible(reason = "Handles untracked pointers.")
     public void print(Descriptor fd, char[] chars) {
-        DynamicHub hub = KnownIntrinsics.readHub(chars);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(chars);
         UnsignedWord baseOffset = LayoutEncoding.getArrayBaseOffset(hub.getLayoutEncoding());
         CShortPointer dataPtr = (CShortPointer) Word.objectToUntrackedPointer(chars).add(baseOffset);
         WasmPrintNode.print(fd.num, 2, dataPtr, Word.unsigned(chars.length));

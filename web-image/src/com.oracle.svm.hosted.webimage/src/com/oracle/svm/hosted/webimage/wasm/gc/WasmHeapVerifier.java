@@ -27,13 +27,14 @@ package com.oracle.svm.hosted.webimage.wasm.gc;
 
 import java.lang.ref.Reference;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.MemoryWalker;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.genscavenge.ImageHeapWalker;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectHeader;
@@ -43,10 +44,8 @@ import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.ReferenceInternals;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.InteriorObjRefWalker;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
 
 /**
  * Verifies correctness of objects in the heap (see {@link #verifyObject}).
@@ -108,7 +107,7 @@ public class WasmHeapVerifier {
             return false;
         }
 
-        int objectAlignment = ConfigurationValues.getObjectLayout().getAlignment();
+        int objectAlignment = ObjectLayout.singleton().getAlignment();
         if (ptr.unsignedRemainder(objectAlignment).notEqual(0)) {
             Log.log().string("Object ").zhex(ptr).string(" is not properly aligned to ").signed(objectAlignment).string(" bytes.").newline();
             return false;
@@ -121,7 +120,7 @@ public class WasmHeapVerifier {
             return false;
         }
 
-        DynamicHub hub = KnownIntrinsics.readHub(obj);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
         if (!Heap.getHeap().isInImageHeap(hub)) {
             Log.log().string("Object ").zhex(ptr).string(" references a hub that is not in the image heap: ").zhex(Word.objectToUntrackedPointer(hub)).newline();
             return false;
@@ -144,7 +143,7 @@ public class WasmHeapVerifier {
         InteriorObjRefWalker.walkObject(obj, REFERENCE_VERIFIER);
 
         boolean success = REFERENCE_VERIFIER.result;
-        DynamicHub hub = KnownIntrinsics.readHub(obj);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(obj);
         if (hub.isReferenceInstanceClass()) {
             // The referent field of java.lang.Reference is excluded from the reference map, so we
             // need to verify it separately.
@@ -239,7 +238,7 @@ public class WasmHeapVerifier {
 
         @Override
         public void visitObject(Object object) {
-            Word pointer = Word.objectToUntrackedPointer(object);
+            Word pointer = Word.objectToUntrackedWord(object);
             if (!Heap.getHeap().isInImageHeap(object)) {
                 Log.log().string("Image heap object ").zhex(pointer).string(" is not considered as part of the image heap.").newline();
                 result = false;

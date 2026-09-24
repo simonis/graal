@@ -41,12 +41,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.util.BasedOnJDKClass;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.BasedOnJDKClass;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.internal.util.StaticProperty;
 
@@ -256,7 +256,7 @@ public final class WebImageFileSystem {
      * <p>
      * The algorithm is ported from {@code JDK_Canonicalize}.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+14/src/java.base/unix/native/libjava/canonicalize_md.c#L48-L125")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+14/src/java.base/unix/native/libjava/canonicalize_md.c#L48-L125")
     public static Path canonicalizePath(String path) throws IOException {
         Path absolute = Path.of(path).toAbsolutePath();
 
@@ -311,7 +311,7 @@ public final class WebImageFileSystem {
      * <p>
      * Replicates the logic from {@code Java_java_io_UnixFileSystem_getBooleanAttributes0}.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L116-L132")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L116-L132")
     private static int getBooleanAttributes0(File f) {
         int rv = 0;
         Path p = f.toPath();
@@ -369,7 +369,7 @@ public final class WebImageFileSystem {
      * <p>
      * Replicates the logic from {@code Java_java_io_UnixFileSystem_checkAccess0}.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L134-L160")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L134-L160")
     private static boolean checkAccess0(File f, int access) {
         Path p = f.toPath();
         if (access == Target_java_io_FileSystem_Web.ACCESS_READ) {
@@ -395,7 +395,7 @@ public final class WebImageFileSystem {
      * <p>
      * Replicates the logic from {@code Java_java_io_UnixFileSystem_setPermission0}.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L163-L210")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+14/src/java.base/unix/native/libjava/UnixFileSystem_md.c#L163-L210")
     private static boolean setPermission0(File f, int access, boolean enable, boolean owneronly) {
         Set<PosixFilePermission> permissions = new HashSet<>();
 

@@ -40,32 +40,30 @@ import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.meta.AnalysisField;
-import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.traits.BuiltinTraits;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.heap.ImageHeapObjectAdder;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedUniverse;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
-import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.NumUtil;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 
 /**
@@ -79,8 +77,13 @@ import jdk.vm.ci.meta.JavaKind;
  * </ol>
  */
 @AutomaticallyRegisteredFeature
-@SingletonTraits(access = BuiltinTraits.BuildtimeAccessOnly.class, layeredCallbacks = CrossLayerFieldUpdaterFeature.LayeredCallbacks.class, layeredInstallationKind = SingletonLayeredInstallationKind.Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = CrossLayerFieldUpdaterFeature.LayeredCallbacks.class)
 public class CrossLayerFieldUpdaterFeature implements InternalFeature {
+    @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(CrossLayerFieldUpdaterFeature.class, this);
+    }
+
     private static final int INVALID = -1;
 
     /**
@@ -115,7 +118,7 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
         final JavaKind kind;
 
         boolean updated;
-        Object updatedValue;
+        JavaConstant updatedValue;
 
         UpdatableFieldStatus(UpdatableField fieldInfo, int heapBaseRelativeOffset, JavaKind kind) {
             this.fieldInfo = fieldInfo;
@@ -144,7 +147,7 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
     public void beforeImageWrite(BeforeImageWriteAccess access) {
         if (extensionLayer) {
             FeatureImpl.BeforeImageWriteAccessImpl config = (FeatureImpl.BeforeImageWriteAccessImpl) access;
-            generateUpdatePatchArray(config.getImage().getHeap(), config.getHostedUniverse().getSnippetReflection());
+            generateUpdatePatchArray(config.getImage().getHeap());
         }
     }
 
@@ -166,7 +169,7 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
      * Records a field which has been updated. This field must have been marked via
      * {@link #markUpdatableField} in a prior layer.
      */
-    void updateField(ImageHeapConstant receiver, AnalysisField field, Object value) {
+    void updateField(ImageHeapConstant receiver, AnalysisField field, JavaConstant value) {
         assert extensionLayer && !sealed : "Updates can only been performed in extension layers";
         int receiverId = ImageHeapConstant.getConstantID(receiver);
         int fieldId = field.getId();
@@ -189,8 +192,9 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
         String addReason = "Registered as a required heap constant within the CrossLayerFieldUpdaterFeature";
 
         for (var info : updateInfoMap.values()) {
-            if (patchFilter(info)) {
-                ImageHeapConstant singletonConstant = (ImageHeapConstant) hUniverse.getSnippetReflection().forObject(info.updatedValue);
+            // Primitive values are encoded directly in the patch array and do not need heap entries.
+            if (patchFilter(info) && info.kind.isObject()) {
+                JavaConstant singletonConstant = hUniverse.getBigBang().getUniverse().getHeapScanner().getImageHeapConstant(info.updatedValue);
                 heap.addConstant(singletonConstant, false, addReason);
             }
         }
@@ -203,7 +207,7 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
      */
     int computeUpdatePatchesLength() {
         assert sealed;
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
         VMError.guarantee(updatePatchesLength == INVALID && updatePatchesHeaderSize == INVALID, "called multiple times");
 
         /*
@@ -295,8 +299,8 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
      * In addition, within the Image Layer Section we immediately store before the array the total
      * array size as a long and the header size as an int value.
      */
-    private void generateUpdatePatchArray(NativeImageHeap heap, SnippetReflectionProvider snippetReflection) {
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+    private void generateUpdatePatchArray(NativeImageHeap heap) {
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
         int shift = ImageSingletons.lookup(CompressEncoding.class).getShift();
         int heapBeginOffset = Heap.getHeap().getImageHeapOffsetInAddressSpace();
 
@@ -316,16 +320,16 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
              */
             buffer.putInt(value.heapBaseRelativeOffset - heapBeginOffset);
             switch (value.kind) {
-                case Boolean -> buffer.put((byte) (((Boolean) value.updatedValue) ? 1 : 0));
-                case Byte -> buffer.put((Byte) value.updatedValue);
-                case Int -> buffer.putInt((Integer) value.updatedValue);
-                case Long -> buffer.putLong((Long) value.updatedValue);
+                case Boolean -> buffer.put((byte) ((value.updatedValue.asBoolean() ? 1 : 0)));
+                case Byte -> buffer.put((byte) value.updatedValue.asInt());
+                case Int -> buffer.putInt(value.updatedValue.asInt());
+                case Long -> buffer.putLong(value.updatedValue.asLong());
                 case Object -> {
                     int encodedValue;
-                    if (value.updatedValue == null) {
+                    if (value.updatedValue == null || value.updatedValue.equals(JavaConstant.NULL_POINTER)) {
                         encodedValue = 0;
                     } else {
-                        var newValue = (ImageHeapConstant) snippetReflection.forObject(value.updatedValue);
+                        var newValue = (ImageHeapConstant) heap.aUniverse.getHeapScanner().getImageHeapConstant(value.updatedValue);
                         var objectInfo = heap.getConstantInfo(newValue);
                         long heapBaseRelativeOffset = objectInfo.getOffset();
                         encodedValue = NumUtil.safeToInt(heapBaseRelativeOffset) >>> shift;
@@ -367,10 +371,10 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
 
     static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
         @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<CrossLayerFieldUpdaterFeature>() {
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<CrossLayerFieldUpdaterFeature>() {
                 @Override
-                public LayeredImageSingleton.PersistFlags doPersist(ImageSingletonWriter writer, CrossLayerFieldUpdaterFeature singleton) {
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, CrossLayerFieldUpdaterFeature singleton) {
                     var updateInfoMap = singleton.updateInfoMap;
                     ArrayList<Integer> fieldIds = new ArrayList<>();
                     ArrayList<Integer> receiverIds = new ArrayList<>();
@@ -386,7 +390,7 @@ public class CrossLayerFieldUpdaterFeature implements InternalFeature {
                     writer.writeIntList("receiverIds", receiverIds);
                     writer.writeIntList("offsets", offsets);
                     writer.writeIntList("javaKindOrdinals", javaKindOrdinals);
-                    return LayeredImageSingleton.PersistFlags.CALLBACK_ON_REGISTRATION;
+                    return LayeredPersistFlags.CALLBACK_ON_REGISTRATION;
                 }
 
                 @Override

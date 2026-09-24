@@ -24,14 +24,12 @@
  */
 package com.oracle.svm.hosted;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.util.LogUtils;
 import org.graalvm.nativeimage.ImageSingletons;
 
-import java.util.Collections;
-import java.util.Set;
-import java.util.concurrent.ConcurrentSkipListMap;
+import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.util.LogUtils;
 
 /**
  * This feature collects <code>System.getProperty("java.home")</code> usage information from the
@@ -40,34 +38,19 @@ import java.util.concurrent.ConcurrentSkipListMap;
  */
 @AutomaticallyRegisteredFeature
 public class AnalyzeJavaHomeAccessFeature implements InternalFeature {
-    private boolean javaHomeUsed = false;
-    private Set<String> javaHomeUsageLocations = Collections.newSetFromMap(new ConcurrentSkipListMap<>());
-
-    public static AnalyzeJavaHomeAccessFeature instance() {
-        return ImageSingletons.lookup(AnalyzeJavaHomeAccessFeature.class);
-    }
-
-    public void setJavaHomeUsed() {
-        javaHomeUsed = true;
-    }
-
-    public boolean getJavaHomeUsed() {
-        return javaHomeUsed;
-    }
-
-    public void addJavaHomeUsageLocation(String location) {
-        javaHomeUsageLocations.add(location);
-    }
-
-    public void printJavaHomeUsageLocations() {
-        for (String location : javaHomeUsageLocations) {
-            LogUtils.warning("System.getProperty(\"java.home\") detected at " + location);
-        }
-        javaHomeUsageLocations.clear();
+    @Override
+    public void afterRegistration(AfterRegistrationAccess access) {
+        ImageSingletons.add(AnalyzeJavaHomeAccessSupport.class, new AnalyzeJavaHomeAccessSupport());
     }
 
     @Override
     public void beforeCompilation(BeforeCompilationAccess access) {
-        AnalyzeJavaHomeAccessFeature.instance().printJavaHomeUsageLocations();
+        AnalyzeJavaHomeAccessSupport support = AnalyzeJavaHomeAccessSupport.singleton();
+        for (String location : support.getJavaHomeUsageLocations()) {
+            LogUtils.warning("System.getProperty(\"java.home\") detected at " + location);
+        }
+        if (!ImageLayerBuildingSupport.buildingSharedLayer()) {
+            support.clearJavaHomeUsageLocations();
+        }
     }
 }

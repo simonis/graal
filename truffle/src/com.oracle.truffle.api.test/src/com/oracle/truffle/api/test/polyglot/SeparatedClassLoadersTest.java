@@ -49,14 +49,8 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.security.ProtectionDomain;
 
-import com.oracle.truffle.api.TruffleLanguage.Registration;
-import com.oracle.truffle.api.TruffleLogger;
-import com.oracle.truffle.api.nodes.RootNode;
-import com.oracle.truffle.api.test.ReflectionUtils;
-import com.oracle.truffle.api.test.SubprocessTestUtils;
-import com.oracle.truffle.api.test.common.AbstractExecutableTestLanguage;
-import com.oracle.truffle.api.test.common.TestUtils;
 import org.graalvm.collections.EconomicMap;
+import org.graalvm.nativebridge.ForeignObject;
 import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.word.WordFactory;
@@ -67,6 +61,13 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.oracle.truffle.api.Truffle;
+import com.oracle.truffle.api.TruffleLanguage.Registration;
+import com.oracle.truffle.api.TruffleLogger;
+import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.test.ReflectionUtils;
+import com.oracle.truffle.api.test.SubprocessTestUtils;
+import com.oracle.truffle.api.test.common.AbstractExecutableTestLanguage;
+import com.oracle.truffle.api.test.common.TestUtils;
 import com.oracle.truffle.tck.tests.TruffleTestAssumptions;
 
 public class SeparatedClassLoadersTest {
@@ -85,6 +86,9 @@ public class SeparatedClassLoadersTest {
 
     @Test
     public void sdkAndTruffleAPIInSeparateClassLoaders() {
+        /* This test is specific to HotSpot. */
+        Assume.assumeFalse(ImageInfo.inImageCode());
+
         ClassLoaders classLoaders = createContextClassLoaders();
         Object contextClassLoaderEngine = createEngineInContextClassLoader(classLoaders);
         try {
@@ -165,12 +169,15 @@ public class SeparatedClassLoadersTest {
         URL nativeURL = ImageInfo.class.getProtectionDomain().getCodeSource().getLocation();
         Assume.assumeNotNull(nativeURL);
 
+        URL nativeBridgeURL = ForeignObject.class.getProtectionDomain().getCodeSource().getLocation();
+        Assume.assumeNotNull(nativeBridgeURL);
+
         URL truffleURL = Truffle.class.getProtectionDomain().getCodeSource().getLocation();
         Assume.assumeNotNull(truffleURL);
 
         ClassLoader parent = Engine.class.getClassLoader().getParent();
 
-        URLClassLoader sdkLoader = new URLClassLoader(new URL[]{collectionsURL, wordURL, nativeURL, polyglotURL}, parent);
+        URLClassLoader sdkLoader = new URLClassLoader(new URL[]{collectionsURL, wordURL, nativeURL, nativeBridgeURL, polyglotURL}, parent);
         URLClassLoader truffleLoader = new URLClassLoader(new URL[]{truffleURL}, sdkLoader);
         return new ClassLoaders(sdkLoader, truffleLoader);
     }
@@ -179,7 +186,10 @@ public class SeparatedClassLoadersTest {
         Thread.currentThread().setContextClassLoader(classLoaders.truffleLoader);
         try {
             Class<?> engineClass = classLoaders.sdkLoader.loadClass(Engine.class.getName());
-            return engineClass.getMethod("create").invoke(null);
+            Class<?> builderClass = classLoaders.sdkLoader.loadClass(Engine.Builder.class.getName());
+            Object builder = engineClass.getMethod("newBuilder").invoke(null);
+            builderClass.getMethod("useSystemProperties", boolean.class).invoke(builder, false);
+            return builderClass.getMethod("build").invoke(builder);
         } catch (ReflectiveOperationException roe) {
             throw new AssertionError(roe);
         }

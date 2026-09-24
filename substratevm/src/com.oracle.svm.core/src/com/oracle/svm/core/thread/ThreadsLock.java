@@ -24,21 +24,21 @@
  */
 package com.oracle.svm.core.thread;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.NeverInline;
+import com.oracle.svm.shared.NeverInline;
 import com.oracle.svm.core.StaticFieldsSupport;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.locks.VMCondition;
 import com.oracle.svm.core.locks.VMMutex;
 import com.oracle.svm.core.nodes.CFunctionEpilogueNode;
 import com.oracle.svm.core.nodes.CFunctionPrologueNode;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.shared.Uninterruptible;
 
 import jdk.internal.misc.Unsafe;
 
@@ -145,10 +145,10 @@ public final class ThreadsLock {
     private static final long STATE_OFFSET = U.objectFieldOffset(ThreadsLock.class, "state");
 
     private static final VMMutex READ_MUTEX = new VMMutex("threadsRead");
-    private static final VMCondition READ_CONDITION = new VMCondition(READ_MUTEX);
+    private static final VMCondition READ_CONDITION = new VMCondition(READ_MUTEX, "threadsRead");
 
     private static final VMMutex WRITE_MUTEX = new VMMutex("threadsWrite");
-    private static final VMCondition WRITE_CONDITION = new VMCondition(WRITE_MUTEX);
+    private static final VMCondition WRITE_CONDITION = new VMCondition(WRITE_MUTEX, "threadsWrite");
 
     /** Only updated via {@link #casState} so that always the same memory barriers are used. */
     private static volatile long state;

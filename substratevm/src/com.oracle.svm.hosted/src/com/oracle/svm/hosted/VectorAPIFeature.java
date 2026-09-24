@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -44,16 +44,16 @@ import com.oracle.svm.core.ParsingReason;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.core.deopt.VectorAPIDeoptimizationSupport;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.VectorAPIEnabled;
 import com.oracle.svm.core.jdk.VectorAPISupport;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.jdk.VarHandleFeature;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import jdk.graal.compiler.phases.util.Providers;
@@ -63,6 +63,7 @@ import jdk.vm.ci.meta.JavaKind;
 
 @AutomaticallyRegisteredFeature
 public class VectorAPIFeature implements InternalFeature {
+    // JVMCI migration blocked by GR-72591: Migrate VectorAPIFeature to terminus
 
     public static final String VECTOR_API_PACKAGE_NAME = "jdk.incubator.vector";
     public static final Class<?> PAYLOAD_CLASS = ReflectionUtil.lookupClass("jdk.internal.vm.vector.VectorSupport$VectorPayload");
@@ -76,24 +77,26 @@ public class VectorAPIFeature implements InternalFeature {
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
-        boolean vectorAPIEnabled = VectorAPIEnabled.getValue();
-        boolean vectorAPIAvailable = access.findClassByName(VECTOR_API_PACKAGE_NAME + ".VectorShape") != null;
-
-        if (vectorAPIEnabled && !vectorAPIAvailable) {
-            // If vectorAPIEnabled becomes the default, this warning should be removed.
+        if (SubstrateOptions.VectorAPISupport.hasBeenSet() && SubstrateOptions.VectorAPISupport.getValue() && !VectorAPIEnabled.isVectorAPIModulePresent()) {
             LogUtils.warning("Native image option %s was used, but the application does not have access to the Vector API module. Did you forget to add '--add-modules %s'?",
                             SubstrateOptionsParser.commandArgument(SubstrateOptions.VectorAPISupport, "+"), VECTOR_API_PACKAGE_NAME);
         }
-        if (!vectorAPIEnabled && vectorAPIAvailable) {
-            LogUtils.warning("The application has access to the Vector API module %s. Consider using %s to optimize Vector API operations.",
-                            VECTOR_API_PACKAGE_NAME, SubstrateOptionsParser.commandArgument(SubstrateOptions.VectorAPISupport, "+"));
-        }
-
-        return vectorAPIEnabled && vectorAPIAvailable;
+        return VectorAPIEnabled.getValue();
     }
 
     @Override
     public void duringSetup(DuringSetupAccess access) {
+        /*
+         * Initialize fields of the VarHandle corresponding to the ValueLayout instances eagerly, so
+         * that during method handle intrinsification their loads can be constant-folded.
+         * 
+         * Note that we use an object replacer instead of an object reachability handler because we
+         * want the replacement to happen early, as part of method inlining before analysis. If we
+         * used an object reachability hook we'd only see its effects later, during analysis, when
+         * the VarHandle object itself is marked as reachable. The goal of intrinsification is to
+         * actually avoid making the VarHandle object itself reachable. See also VarHandleFeature
+         * where we use the same approach.
+         */
         access.registerObjectReplacer(VectorAPIFeature::eagerlyInitializeValueLayout);
     }
 
@@ -533,7 +536,7 @@ public class VectorAPIFeature implements InternalFeature {
 
     @Override
     public void registerInvocationPlugins(Providers providers, GraphBuilderConfiguration.Plugins plugins, ParsingReason reason) {
-        if (VectorAPIIntrinsics.intrinsificationSupported(HostedOptionValues.singleton())) {
+        if (VectorAPIIntrinsics.intrinsificationSupported(HostedOptionValues.singleton().get())) {
             VectorAPIIntrinsics.registerPlugins(plugins.getInvocationPlugins());
         }
     }

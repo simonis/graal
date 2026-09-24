@@ -28,10 +28,10 @@ package com.oracle.svm.webimage.jtt.api;
 import java.util.function.Function;
 
 import org.graalvm.webimage.api.JS;
-import org.graalvm.webimage.api.JSError;
+import org.graalvm.webimage.api.ThrownFromJavaScript;
 import org.graalvm.webimage.api.JSValue;
 
-import com.oracle.svm.core.NeverInline;
+import com.oracle.svm.shared.NeverInline;
 
 /**
  * Tests the implementation of the JavaScript {@code Proxy} handler and its traps that is used for
@@ -123,7 +123,7 @@ public class JavaProxyTest {
         try {
             r.run();
             System.out.println("ERROR: Expected JS error for " + name);
-        } catch (JSError jsError) {
+        } catch (ThrownFromJavaScript thrownFromJavaScript) {
             System.out.println("Caught JS error for " + name);
         }
     }

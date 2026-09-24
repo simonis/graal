@@ -29,10 +29,10 @@ import java.util.List;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.hub.RuntimeInstanceReferenceMapSupport;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 
 @AutomaticallyRegisteredFeature
 public class RuntimeClassLoadingFeature implements InternalFeature {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,11 +34,11 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.code.InstalledCodeObserver;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.meta.SharedMethod;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.code.CompilationResult;
@@ -57,7 +57,7 @@ public final class SubstrateDebugInfoInstaller implements InstalledCodeObserver 
                         Specify formats for run-time debug info generation as a comma-separated list.
                         Possible values are:
                           "objfile" (default): Generate and install a full in-memory object file for each run-time compilation.
-                          "jitdump": Create <RuntimeJitdumpDir>/jit-<pid>.dump and append to it. Each run-time compilation adds one or more records to the file.""")//
+                          "jitdump": Include support for writing run-time compilation metadata in jitdump format. Enable writing at image runtime with RuntimeJitdump.""")//
         public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> RuntimeDebugInfoFormat = new HostedOptionKey<>(
                         AccumulatingLocatableMultiOptionValue.Strings.buildWithCommaDelimiter(),
                         Options::validateRuntimeDebugInfoFormat);
@@ -101,6 +101,9 @@ public final class SubstrateDebugInfoInstaller implements InstalledCodeObserver 
 
         @Override
         public InstalledCodeObserver create(DebugContext debugContext, SharedMethod method, CompilationResult compilation, Pointer code, int codeSize) {
+            if (!writer.isEnabled()) {
+                return null;
+            }
             try {
                 return new SubstrateDebugInfoInstaller(debugContext, writer, method, compilation, runtimeConfig, code, codeSize);
             } catch (Throwable t) {

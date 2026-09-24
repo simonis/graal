@@ -36,7 +36,6 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodHandles.Lookup;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,20 +55,20 @@ import org.graalvm.nativeimage.impl.RuntimeForeignAccessSupport;
 import com.oracle.svm.configure.ConfigurationParserOption;
 import com.oracle.svm.configure.ForeignConfigurationParser;
 import com.oracle.svm.configure.UnresolvedAccessCondition;
-import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.foreign.MemoryLayoutParser.MemoryLayoutParserException;
 import com.oracle.svm.hosted.reflect.NativeImageConditionResolver;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
 import com.oracle.svm.util.TypeResult;
 
 import jdk.graal.compiler.util.json.JsonFormatter;
 import jdk.graal.compiler.util.json.JsonParserException;
 import jdk.internal.foreign.layout.ValueLayouts;
 
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+22/src/java.base/share/classes/jdk/internal/foreign/abi/LinkerOptions.java")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+22/src/java.base/share/classes/jdk/internal/foreign/abi/LinkerOptions.java")
 @Platforms(Platform.HOSTED_ONLY.class)
 public class ForeignFunctionsConfigurationParser extends ForeignConfigurationParser<FunctionDescriptor, Linker.Option[]> {
     private static final String DOWNCALL_OPTION_CAPTURE_CALL_STATE = "captureCallState";
@@ -135,16 +134,17 @@ public class ForeignFunctionsConfigurationParser extends ForeignConfigurationPar
         }
 
         /*
-         * A FunctionDescriptor was provided, so we use it to create the MethodType and to lookup
+         * A FunctionDescriptor was provided, so we use it to create the MethodType and to look up
          * the method. Since we have a MethodType, there should be exactly one method.
          */
         MethodType methodType = descriptor.toMethodType();
         MethodHandle target;
         try {
-            target = getImplLookup().findStatic(aClass, methodName, methodType);
+            Method m = aClass.getDeclaredMethod(methodName, methodType.parameterArray());
+            target = getImplLookup().unreflect(m);
         } catch (NoSuchMethodException | IllegalAccessException e) {
             handleMissingElement(e, "Method '%s.%s(%s)' could not be registered as an upcall target method. " +
-                            "Please verify that the method is static and that the parameter types match.",
+                            "Please verify that the method is present and that the parameter types match.",
                             className, methodName, methodType);
             return;
         }
@@ -170,7 +170,7 @@ public class ForeignFunctionsConfigurationParser extends ForeignConfigurationPar
         // FunctionDescriptor was not provided; derive from method signature(s)
         try {
             descriptors = new LinkedList<>();
-            for (Method method : findStaticMethods(aClass, methodName)) {
+            for (Method method : findDeclaredMethods(aClass, methodName)) {
                 try {
                     descriptors.add(Pair.create(deriveFunctionDescriptor(method), getImplLookup().unreflect(method)));
                 } catch (AmbiguousParameterType | InvalidCarrierType e) {
@@ -198,10 +198,10 @@ public class ForeignFunctionsConfigurationParser extends ForeignConfigurationPar
         }
     }
 
-    private static List<Method> findStaticMethods(Class<?> clazz, String methodName) throws NoSuchMethodException {
+    private static List<Method> findDeclaredMethods(Class<?> clazz, String methodName) throws NoSuchMethodException {
         List<Method> result = new LinkedList<>();
         for (Method method : clazz.getDeclaredMethods()) {
-            if (Modifier.isStatic(method.getModifiers()) && methodName.equals(method.getName())) {
+            if (methodName.equals(method.getName())) {
                 result.add(method);
             }
         }

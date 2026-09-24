@@ -49,18 +49,20 @@ import java.util.List;
 public final class CodeEntry {
     private final int functionIndex;
     private final int maxStackSize;
-    private final byte[] localTypes;
-    private final byte[] resultTypes;
+    private final int maxLegacyCatchDepth;
+    private final int[] localTypes;
+    private final int[] resultTypes;
     private final List<CallNode> callNodes;
     private final int bytecodeStartOffset;
     private final int bytecodeEndOffset;
     private final boolean usesMemoryZero;
     private final int exceptionTableOffset;
 
-    public CodeEntry(int functionIndex, int maxStackSize, byte[] localTypes, byte[] resultTypes, List<CallNode> callNodes, int startOffset, int endOffset, boolean usesMemoryZero,
-                    int exceptionTableOffset) {
+    public CodeEntry(int functionIndex, int maxStackSize, int maxLegacyCatchDepth, int[] localTypes, int[] resultTypes, List<CallNode> callNodes, int startOffset, int endOffset,
+                    boolean usesMemoryZero, int exceptionTableOffset) {
         this.functionIndex = functionIndex;
         this.maxStackSize = maxStackSize;
+        this.maxLegacyCatchDepth = maxLegacyCatchDepth;
         this.localTypes = localTypes;
         this.resultTypes = resultTypes;
         this.callNodes = callNodes;
@@ -74,15 +76,19 @@ public final class CodeEntry {
         return maxStackSize;
     }
 
+    public int maxLegacyCatchDepth() {
+        return maxLegacyCatchDepth;
+    }
+
     public int functionIndex() {
         return functionIndex;
     }
 
-    public byte[] localTypes() {
+    public int[] localTypes() {
         return localTypes;
     }
 
-    public byte[] resultTypes() {
+    public int[] resultTypes() {
         return resultTypes;
     }
 

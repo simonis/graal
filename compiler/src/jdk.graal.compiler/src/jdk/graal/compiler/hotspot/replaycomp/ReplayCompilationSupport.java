@@ -24,16 +24,20 @@
  */
 package jdk.graal.compiler.hotspot.replaycomp;
 
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Path;
 import java.util.function.Predicate;
 
 import jdk.graal.compiler.code.CompilationResult;
 import jdk.graal.compiler.core.common.CompilerProfiler;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.common.spi.ForeignCallSignature;
 import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.DebugOptions;
+import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.debug.MethodFilter;
 import jdk.graal.compiler.debug.PathUtilities;
 import jdk.graal.compiler.debug.TTY;
@@ -44,9 +48,13 @@ import jdk.graal.compiler.hotspot.Platform;
 import jdk.graal.compiler.hotspot.meta.HotSpotHostForeignCallsProvider;
 import jdk.graal.compiler.hotspot.meta.HotSpotProviders;
 import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.options.EnumOptionKey;
+import jdk.graal.compiler.options.LibGraalSupport;
+import jdk.graal.compiler.options.Option;
+import jdk.graal.compiler.options.OptionType;
 import jdk.graal.compiler.options.OptionValues;
-import jdk.graal.compiler.printer.CanonicalStringGraphPrinter;
 import jdk.graal.compiler.replacements.SnippetTemplate;
+import jdk.graal.compiler.serviceprovider.GraalServices;
 import jdk.graal.compiler.util.json.JsonWriter;
 import jdk.vm.ci.hotspot.HotSpotCompilationRequest;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
@@ -67,8 +75,8 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * <p>
  * <b>Proxies.</b> Recording and replay require creating proxies for JVMCI objects. During
  * recording, these proxies record the arguments and results of methods to serialize them into a
- * JSON file ({@link RecordedOperationPersistence}). During replay, they look up and return the
- * appropriate results. The behavior of every proxy and method is configured in
+ * replay file ({@link JsonReplayCodec}/{@link BinaryReplayCodec}). During replay, they look up and
+ * return the appropriate results. The behavior of every proxy and method is configured in
  * {@link CompilerInterfaceDeclarations}.
  *
  * <p>
@@ -91,9 +99,9 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * <b>Local Mirrors.</b> During replay, we search for equivalent JVMCI objects for some of the
  * proxies ({@link #findLocalMirrors}). This is useful when the compiler queries information that
  * was not recorded, including the information used to process snippets. There are also local-only
- * proxies that do not originate from the recorded JSON but are instead created from local JVMCI
- * objects (created using {@link CompilationProxies#proxify}). The exact rules when operations are
- * delegated to local mirrors are dictated by the strategies defined in
+ * proxies that do not originate from the recorded replay file but are instead created from local
+ * JVMCI objects (created using {@link CompilationProxies#proxify}). The exact rules when operations
+ * are delegated to local mirrors are dictated by the strategies defined in
  * {@link CompilerInterfaceDeclarations}.
  *
  * <p>
@@ -103,6 +111,72 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * replay is close to the code compiled during recording.
  */
 public final class ReplayCompilationSupport {
+    /**
+     * Supported on-disk formats for recorded replay compilation files.
+     */
+    public enum ReplayFileFormat {
+        /**
+         * Legacy JSON replay format.
+         */
+        Json(".json"),
+
+        /**
+         * Compact binary replay format.
+         */
+        Binary(".replay");
+
+        private final String fileExtension;
+
+        ReplayFileFormat(String fileExtension) {
+            this.fileExtension = fileExtension;
+        }
+
+        /**
+         * Gets the file extension associated with this replay file format.
+         */
+        public String fileExtension() {
+            return fileExtension;
+        }
+
+        private boolean matchesFileName(String fileName) {
+            return fileName.endsWith(fileExtension);
+        }
+
+        /**
+         * Determines whether a file name uses one of the supported replay file extensions.
+         */
+        public static boolean isReplayFile(String fileName) {
+            for (ReplayFileFormat format : values()) {
+                if (format.matchesFileName(fileName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Determines the replay file format from a file name.
+         *
+         * @throws IllegalArgumentException if {@code fileName} does not match a supported replay
+         *             file extension
+         */
+        public static ReplayFileFormat fromFileName(String fileName) {
+            for (ReplayFileFormat format : values()) {
+                if (format.matchesFileName(fileName)) {
+                    return format;
+                }
+            }
+            throw new IllegalArgumentException("Unsupported replay file: " + fileName);
+        }
+    }
+
+    public static class Options {
+        // @formatter:off
+        @Option(help = "Format used for recorded replay compilation files.", type = OptionType.Debug)
+        public static final EnumOptionKey<ReplayFileFormat> ReplayFileFormat = new EnumOptionKey<>(ReplayCompilationSupport.ReplayFileFormat.Binary);
+        // @formatter:on
+    }
+
     /**
      * Checks whether the given method's compilation should be recorded according to the given
      * options.
@@ -136,9 +210,9 @@ public final class ReplayCompilationSupport {
     private RecordedForeignCallLinkages recordedForeignCallLinkages;
 
     /**
-     * The compilation artifacts of the current compiler thread.
+     * The product of the last compilation task.
      */
-    private final ThreadLocal<CompilationArtifacts> compilationArtifacts = ThreadLocal.withInitial(() -> null);
+    private final ThreadLocal<CompilationTaskProduct> compilationProduct = ThreadLocal.withInitial(() -> null);
 
     /**
      * The compiler's configuration name.
@@ -270,18 +344,29 @@ public final class ReplayCompilationSupport {
             String directory = PathUtilities.getPath(DebugOptions.getDumpDirectory(initialOptions), "replaycomp");
             PathUtilities.createDirectories(directory);
             String requestId = Integer.toString(originalRequest.getId());
-            String fileName = requestId + ".json";
+            ReplayFileFormat format = Options.ReplayFileFormat.getValue(initialOptions);
+            String fileName = requestId + format.fileExtension();
             Path path = Path.of(directory, fileName);
-            RecordedOperationPersistence persistence = new RecordedOperationPersistence(proxies.getDeclarations(), Platform.ofCurrentHost(),
-                            HotSpotJVMCIRuntime.runtime().getHostJVMCIBackend().getTarget());
+            Platform hostPlatform = Platform.ofCurrentHost();
+            var hostTarget = HotSpotJVMCIRuntime.runtime().getHostJVMCIBackend().getTarget();
             RecordingCompilationProxies recordingCompilationProxies = (RecordingCompilationProxies) proxies;
-            CompilationArtifacts artifacts = clearCompilationArtifacts();
-            String finalCanonicalGraph = (artifacts == null) ? null : artifacts.finalCanonicalGraph();
-            RecordedOperationPersistence.RecordedCompilationUnit compilationUnit = new RecordedOperationPersistence.RecordedCompilationUnit(originalRequest, compilerConfigurationName,
-                            LibGraalSupport.inLibGraalRuntime(), recordingCompilationProxies.targetPlatform(), linkages, finalCanonicalGraph,
+            CompilationTaskProduct product = clearCompilationTaskProduct();
+            RecordedCompilationUnit compilationUnit = new RecordedCompilationUnit(originalRequest, compilerConfigurationName,
+                            LibGraalSupport.inLibGraalRuntime(), recordingCompilationProxies.targetPlatform(), GraalServices.getSavedProperties(), linkages, product,
                             recordingCompilationProxies.collectOperationsForSerialization());
-            try (JsonWriter jsonWriter = new JsonWriter(path)) {
-                persistence.dump(compilationUnit, jsonWriter);
+            switch (format) {
+                case Json -> {
+                    JsonReplayCodec codec = new JsonReplayCodec(proxies.getDeclarations(), hostPlatform, hostTarget);
+                    try (JsonWriter jsonWriter = new JsonWriter(path)) {
+                        codec.dump(compilationUnit, jsonWriter);
+                    }
+                }
+                case Binary -> {
+                    BinaryReplayCodec codec = new BinaryReplayCodec(proxies.getDeclarations(), hostPlatform, hostTarget);
+                    try (var output = new BufferedOutputStream(PathUtilities.openOutputStream(path.toString()))) {
+                        codec.write(compilationUnit, output);
+                    }
+                }
             }
             TTY.println("Serialized " + originalRequest + " to " + path);
         } catch (Exception exception) {
@@ -378,41 +463,39 @@ public final class ReplayCompilationSupport {
     }
 
     /**
-     * The artifacts produced by a compilation.
+     * Records the exception thrown by the last compilation task of the current compiler thread.
      *
-     * @param graph the final graph
-     * @param result the compilation result
+     * @param e the thrown exception
      */
-    public record CompilationArtifacts(StructuredGraph graph, CompilationResult result) {
-        /**
-         * Returns the canonical graph string for the final graph.
-         */
-        public String finalCanonicalGraph() {
-            return CanonicalStringGraphPrinter.getCanonicalGraphString(graph, false, true);
+    public void recordCompilationTaskException(Throwable e) {
+        try (StringWriter stringWriter = new StringWriter(); PrintWriter out = new PrintWriter(stringWriter)) {
+            e.printStackTrace(out);
+            compilationProduct.set(new CompilationTaskProduct.CompilationTaskException(e.getClass().getName(), stringWriter.toString()));
+        } catch (IOException ex) {
+            throw new GraalError(ex);
         }
     }
 
     /**
-     * Records the artifacts produced by the last compilation of the current compiler thread.
+     * Records the artifacts produced by a successful compilation task of the current compiler
+     * thread.
      *
      * @param graph the final graph
      * @param result the compilation result
      */
-    public void recordCompilationArtifacts(StructuredGraph graph, CompilationResult result) {
-        compilationArtifacts.set(new CompilationArtifacts(graph, result));
+    public void recordCompilationTaskArtifacts(StructuredGraph graph, CompilationResult result) {
+        compilationProduct.set(new CompilationTaskProduct.CompilationTaskArtifacts(graph, result));
     }
 
     /**
-     * Clears and returns the artifacts produced by the last successfully completed compilation of
-     * the current compiler thread. May return {@code null} if the last compilation did not complete
-     * successfully.
+     * Clears and returns the product of the last compilation task of the current compiler thread.
      *
-     * @return the cleared compilation artifacts or {@code null}
+     * @return the cleared product of the last compilation task
      */
-    public CompilationArtifacts clearCompilationArtifacts() {
-        CompilationArtifacts result = compilationArtifacts.get();
-        compilationArtifacts.remove();
-        return result;
+    public CompilationTaskProduct clearCompilationTaskProduct() {
+        CompilationTaskProduct product = compilationProduct.get();
+        compilationProduct.remove();
+        return product;
     }
 
     /**

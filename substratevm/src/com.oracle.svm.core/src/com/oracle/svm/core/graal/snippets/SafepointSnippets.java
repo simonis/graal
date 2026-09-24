@@ -33,7 +33,7 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 import org.graalvm.word.LocationIdentity;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
@@ -78,7 +78,7 @@ public final class SafepointSnippets extends SubstrateTemplates implements Snipp
     private static void safepointSnippet() {
         final boolean needSlowPath = SafepointCheckNode.test();
         if (BranchProbabilityNode.probability(BranchProbabilityNode.VERY_SLOW_PATH_PROBABILITY, needSlowPath)) {
-            callSlowPathSafepointCheck(SafepointSlowpath.ENTER_SLOW_PATH_SAFEPOINT_CHECK);
+            callSlowPathSafepointCheck(SafepointSlowpath.ENTER_SLOW_PATH_SAFEPOINT_CHECK_CALLEE_SAVED_CCONV);
         }
     }
 
@@ -99,7 +99,7 @@ public final class SafepointSnippets extends SubstrateTemplates implements Snipp
             if (tool.getLoweringStage() == LoweringTool.StandardLoweringStage.LOW_TIER) {
                 if (((SharedMethod) node.graph().method()).isUninterruptible()) {
                     /* Basic sanity check to catch errors during safepoint insertion. */
-                    throw GraalError.shouldNotReachHere("Must not insert safepoints in Uninterruptible code: " + node.stateBefore().toString(Verbosity.Debugger)); // ExcludeFromJacocoGeneratedReport
+                    throw GraalError.shouldNotReachHere("Must not insert safepoints in Uninterruptible code: " + node.stateBefore().toString(Verbosity.All)); // ExcludeFromJacocoGeneratedReport
                 }
                 Arguments args = new Arguments(safepoint, node.graph(), tool.getLoweringStage());
                 template(tool, node, args).instantiate(tool.getMetaAccess(), node, SnippetTemplate.DEFAULT_REPLACER, args);

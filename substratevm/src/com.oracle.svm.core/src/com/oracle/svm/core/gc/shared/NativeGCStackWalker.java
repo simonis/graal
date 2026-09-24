@@ -44,20 +44,20 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
+import com.oracle.svm.core.code.RuntimeCodeInstallation;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
 import com.oracle.svm.core.gc.shared.NativeGCStructs.CodeInfos;
 import com.oracle.svm.core.gc.shared.NativeGCStructs.CodeInfosPerThread;
 import com.oracle.svm.core.gc.shared.NativeGCStructs.StackFrame;
 import com.oracle.svm.core.gc.shared.NativeGCStructs.StackFrames;
 import com.oracle.svm.core.gc.shared.NativeGCStructs.StackFramesPerThread;
-import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
 import com.oracle.svm.core.heap.StoredContinuationAccess.ContinuationStackFrameVisitor;
@@ -69,9 +69,8 @@ import com.oracle.svm.core.stack.ParameterizedStackFrameVisitor;
 import com.oracle.svm.core.thread.ContinuationSupport;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads;
-import com.oracle.svm.core.util.VMError;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.util.VMError;
+import org.graalvm.word.impl.Word;
 
 /**
  * Whenever GC-related C++ code needs information about the stack frames, it calls into Native Image
@@ -97,14 +96,14 @@ public final class NativeGCStackWalker {
         funcFreeThreadStackFrames = CEntryPointLiteral.create(NativeGCStackWalker.class, "freeThreadStackFrames", Isolate.class, IsolateThread.class, StackFramesPerThread.class);
 
         if (ContinuationSupport.isSupported()) {
-            funcFetchContinuationStackFrames = CEntryPointLiteral.create(NativeGCStackWalker.class, "fetchContinuationStackFrames", Isolate.class, PointerBase.class, Pointer.class);
-            funcFreeContinuationStackFrames = CEntryPointLiteral.create(NativeGCStackWalker.class, "freeContinuationStackFrames", Isolate.class, PointerBase.class, StackFrames.class);
+            funcFetchContinuationStackFrames = CEntryPointLiteral.create(NativeGCStackWalker.class, "fetchContinuationStackFrames", Isolate.class, Pointer.class);
+            funcFreeContinuationStackFrames = CEntryPointLiteral.create(NativeGCStackWalker.class, "freeContinuationStackFrames", Isolate.class, StackFrames.class);
         } else {
             funcFetchContinuationStackFrames = null;
             funcFreeContinuationStackFrames = null;
         }
 
-        if (RuntimeCompilation.isEnabled()) {
+        if (RuntimeCodeInstallation.isEnabled()) {
             funcFetchCodeInfos = CEntryPointLiteral.create(NativeGCStackWalker.class, "fetchCodeInfos", Isolate.class, IsolateThread.class);
             funcFreeCodeInfos = CEntryPointLiteral.create(NativeGCStackWalker.class, "freeCodeInfos", Isolate.class, IsolateThread.class, CodeInfosPerThread.class);
         } else {
@@ -133,7 +132,7 @@ public final class NativeGCStackWalker {
     @Uninterruptible(reason = "GC may only call uninterruptible code.")
     @CEntryPoint(include = UseNativeGCAndContinuations.class, publishAs = Publish.NotPublished)
     @CEntryPointOptions(prologue = InitializeReservedRegistersForUnattachedThread.class, epilogue = CEntryPointOptions.NoEpilogue.class)
-    public static StackFrames fetchContinuationStackFrames(@SuppressWarnings("unused") Isolate isolate, @SuppressWarnings("unused") PointerBase heapBase, Pointer storedContinuation) {
+    public static StackFrames fetchContinuationStackFrames(@SuppressWarnings("unused") Isolate isolate, Pointer storedContinuation) {
         StoredContinuation s = (StoredContinuation) storedContinuation.toObject();
         ContinuationStackFrameCollectorData data = StackValue.get(ContinuationStackFrameCollectorData.class);
         ContinuationStackFrameCollector.initialize(data);
@@ -144,7 +143,7 @@ public final class NativeGCStackWalker {
     @Uninterruptible(reason = "May be called by an unattached thread (during or outside of a safepoint).")
     @CEntryPoint(include = UseNativeGCAndContinuations.class, publishAs = Publish.NotPublished)
     @CEntryPointOptions(prologue = InitializeReservedRegistersForUnattachedThread.class, epilogue = CEntryPointOptions.NoEpilogue.class)
-    public static void freeContinuationStackFrames(@SuppressWarnings("unused") Isolate isolate, @SuppressWarnings("unused") PointerBase heapBase, StackFrames stackFrames) {
+    public static void freeContinuationStackFrames(@SuppressWarnings("unused") Isolate isolate, StackFrames stackFrames) {
         NullableNativeMemory.free(stackFrames);
     }
 

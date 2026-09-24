@@ -39,14 +39,20 @@ import org.graalvm.nativeimage.c.type.CTypeConversion.CCharPointerHolder;
 import com.oracle.svm.core.attach.AttachApiFeature;
 import com.oracle.svm.core.attach.AttachApiSupport;
 import com.oracle.svm.core.attach.AttachListenerThread;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.jdk.management.Target_jdk_internal_vm_VMSupport;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
 /** The attach mechanism on Linux and macOS uses a UNIX domain socket for communication. */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = PartiallyLayerAware.class)
 public class PosixAttachApiSupport implements AttachApiSupport {
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicBoolean shutdownRequested = new AtomicBoolean();
@@ -67,7 +73,7 @@ public class PosixAttachApiSupport implements AttachApiSupport {
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L344-L360")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L344-L360")
     public void startup() {
         String path = getSocketFilePath();
         try (CCharPointerHolder f = CTypeConversion.toCString(path)) {
@@ -76,7 +82,7 @@ public class PosixAttachApiSupport implements AttachApiSupport {
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L409-L440")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L409-L440")
     public boolean isInitTrigger() {
         String filename = ".attach_pid" + ProcessHandle.current().pid();
         if (isInitTrigger0(filename)) {
@@ -94,7 +100,7 @@ public class PosixAttachApiSupport implements AttachApiSupport {
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L373-L395")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L373-L395")
     public void initialize() {
         lock.lock();
         try {
@@ -130,7 +136,7 @@ public class PosixAttachApiSupport implements AttachApiSupport {
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L169-L180")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L169-L180")
     public void shutdown(boolean inTeardownHook) {
         if (!shutdownRequested.compareAndSet(false, true) && Thread.currentThread() instanceof AttachListenerThread) {
             /*
@@ -186,7 +192,7 @@ public class PosixAttachApiSupport implements AttachApiSupport {
         return cachedSocketFilePath;
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L185-L249")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L185-L249")
     private boolean createListener() {
         assert lock.isHeldByCurrentThread();
 

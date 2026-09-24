@@ -24,43 +24,43 @@
  */
 package com.oracle.svm.core.thread;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.ApplicationLayerOnly;
 
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
-import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.imagelayer.LastImageBuildPredicate;
 import com.oracle.svm.core.jdk.StackTraceUtils;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.core.jni.JNIThreadLocalPendingException;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.stack.StackFrameVisitor;
-import com.oracle.svm.core.threadlocal.FastThreadLocal;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalLong;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.ApplicationLayerOnly;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalLong;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Implements operations on {@linkplain Target_java_lang_Thread Java threads}, which are on a higher
@@ -180,11 +180,6 @@ public final class JavaThreads {
         return toTarget(thread).interrupted;
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public static long getParentThreadId(Thread thread) {
-        return toTarget(thread).parentThreadId;
-    }
-
     /**
      * Indicates whether a thread is <em>truly</em> virtual, whereas {@link Thread#isVirtual()} also
      * returns {@code true} for platform threads of type {@code BoundVirtualThread}.
@@ -208,6 +203,15 @@ public final class JavaThreads {
     public static boolean isCurrentThreadVirtualAndPinned() {
         Target_java_lang_Thread carrier = JavaThreads.toTarget(Target_java_lang_Thread.currentCarrierThread());
         return carrier != null && carrier.vthread != null && Target_jdk_internal_vm_Continuation.isPinned(carrier.cont.getScope());
+    }
+
+    /**
+     * Returns the carrier thread. Note that this method may only be called for the current thread
+     * or during a VM operation. Otherwise, the result could be stale.
+     */
+    public static Thread getVirtualThreadCarrier(Target_java_lang_VirtualThread thread) {
+        assert SubstrateUtil.cast(thread, Thread.class) == Thread.currentThread() || VMOperation.isInProgressAtSafepoint() : "otherwise, this information could change at any time";
+        return thread.carrierThread;
     }
 
     @SuppressFBWarnings(value = "BC", justification = "Cast for @TargetClass")
@@ -308,6 +312,10 @@ public final class JavaThreads {
     }
 
     public static void dispatchUncaughtException(Thread thread, Throwable throwable) {
+        // Clear any pending exception before dispatching to potentially non-VM code
+        // as the dispatch might read and rethrow a pending exception.
+        JNIThreadLocalPendingException.clear();
+
         try {
             /* Get the uncaught exception handler for the Thread, or the default one. */
             UncaughtExceptionHandler handler = thread.getUncaughtExceptionHandler();
@@ -322,8 +330,10 @@ public final class JavaThreads {
                  * If no uncaught exception handler is present, then just report the Throwable in
                  * the same way as it is done by ThreadGroup.uncaughtException().
                  */
+                // Checkstyle: allow System.err (for compatibility with JDK)
                 System.err.print("Exception in thread \"" + thread.getName() + "\" ");
                 throwable.printStackTrace(System.err);
+                // Checkstyle: disallow System.err
             }
         } catch (Throwable e) {
             /* See JavaThread::exit() in HotSpot. */
@@ -376,20 +386,6 @@ public final class JavaThreads {
             assert id != 0 && id == getThreadId(Thread.currentThread());
         }
         return id;
-    }
-
-    /**
-     * Similar to {@link #getCurrentThreadId()} but returns 0 if the thread id is not present. There
-     * is a small number of situations where the thread id might not be available, e.g., when a
-     * freshly attached thread causes a GC (before it initializes its {@link java.lang.Thread}
-     * object) or when a VM operation is enqueued by a non-Java thread.
-     */
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public static long getCurrentThreadIdOrZero() {
-        if (CurrentIsolate.getCurrentThread().isNonNull()) {
-            return currentVThreadId.get();
-        }
-        return 0L;
     }
 
     @Uninterruptible(reason = "Ensure consistency of vthread and cached vthread id.")

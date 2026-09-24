@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,15 +27,15 @@ package com.oracle.svm.hosted.analysis;
 import static com.oracle.svm.core.classinitialization.ClassInitializationInfo.InitState.FullyInitialized;
 import static com.oracle.svm.core.classinitialization.ClassInitializationInfo.InitState.InitializationError;
 
-import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.oracle.svm.core.hub.DynamicHubCompanion;
+import com.oracle.svm.core.hub.crema.CremaSupport;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
 import com.oracle.graal.pointsto.BigBang;
-import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
@@ -45,15 +45,13 @@ import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.BaseLayerType;
 import com.oracle.graal.pointsto.util.AnalysisError;
-import com.oracle.svm.core.BuildPhaseProvider;
+import com.oracle.svm.shared.BuildPhaseProvider;
 import com.oracle.svm.core.classinitialization.ClassInitializationInfo;
 import com.oracle.svm.core.encoder.IdentitySymbolEncoder;
 import com.oracle.svm.core.encoder.SymbolEncoder;
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.hub.DynamicHubCompanion;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.BootLoaderSupport;
 import com.oracle.svm.hosted.ClassLoaderFeature;
 import com.oracle.svm.hosted.ExceptionSynthesizer;
@@ -63,7 +61,9 @@ import com.oracle.svm.hosted.classinitialization.SimulateClassInitializerSupport
 import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
 import com.oracle.svm.hosted.jdk.HostedClassLoaderPackageManagement;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 
 import jdk.graal.compiler.debug.Assertions;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
@@ -81,12 +81,29 @@ public class DynamicHubInitializer {
 
     private final Map<InterfacesEncodingKey, DynamicHub[]> interfacesEncodings;
 
-    private final Field hubCompanionArrayHubField;
-    private final Field hubCompanionClassInitializationInfo;
-    private final Field hubCompanionInterfacesEncoding;
-    private final Field hubCompanionAnnotationsEnumConstantsReference;
-    private final Field hubCompanionInterpreterType;
+    private final ResolvedJavaField hubCompanionArrayHubField;
+    private final ResolvedJavaField hubCompanionClassInitializationInfo;
+    private final ResolvedJavaField hubCompanionInterfacesEncoding;
+    private final ResolvedJavaField hubCompanionAnnotationsEnumConstantsReference;
+    private final ResolvedJavaField hubCompanionInterpreterType;
     private final SVMImageLayerLoader layerLoader;
+
+    private static final class MetadataInitializationReason extends ScanReason {
+        private static final String PREFIX = "Metadata initialization for ";
+        private static final String SUFFIX = " triggered from class com.oracle.svm.hosted.analysis.DynamicHubInitializer";
+
+        private final DynamicHub hub;
+
+        private MetadataInitializationReason(DynamicHub hub) {
+            super(null, null);
+            this.hub = hub;
+        }
+
+        @Override
+        public String toString() {
+            return PREFIX + hub.getName() + SUFFIX;
+        }
+    }
 
     public DynamicHubInitializer(BigBang bb) {
         this.bb = bb;
@@ -96,12 +113,12 @@ public class DynamicHubInitializer {
         this.symbolEncoder = SymbolEncoder.singleton();
 
         this.interfacesEncodings = new ConcurrentHashMap<>();
-
-        hubCompanionArrayHubField = ReflectionUtil.lookupField(DynamicHubCompanion.class, "arrayHub");
-        hubCompanionClassInitializationInfo = ReflectionUtil.lookupField(DynamicHubCompanion.class, "classInitializationInfo");
-        hubCompanionInterfacesEncoding = ReflectionUtil.lookupField(DynamicHubCompanion.class, "interfacesEncoding");
-        hubCompanionAnnotationsEnumConstantsReference = ReflectionUtil.lookupField(DynamicHubCompanion.class, "enumConstantsReference");
-        hubCompanionInterpreterType = ReflectionUtil.lookupField(DynamicHubCompanion.class, "interpreterType");
+        ResolvedJavaType dynamicHubCompanionType = GuestAccess.get().lookupType(DynamicHubCompanion.class);
+        hubCompanionArrayHubField = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubCompanionType, "arrayHub");
+        hubCompanionClassInitializationInfo = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubCompanionType, "classInitializationInfo");
+        hubCompanionInterfacesEncoding = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubCompanionType, "interfacesEncoding");
+        hubCompanionAnnotationsEnumConstantsReference = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubCompanionType, "enumConstantsReference");
+        hubCompanionInterpreterType = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubCompanionType, "interpreterType");
         layerLoader = HostedImageLayerBuildingSupport.singleton().getLoader();
     }
 
@@ -113,7 +130,7 @@ public class DynamicHubInitializer {
         Class<?> javaClass = type.getJavaClass();
         DynamicHub hub = hostVM.dynamicHub(type);
 
-        ScanReason reason = new OtherReason("Metadata initialization for " + hub.getName() + " triggered from " + DynamicHubInitializer.class);
+        ScanReason reason = new MetadataInitializationReason(hub);
         /*
          * Since the javaClass is java.lang.Object for BaseLayerTypes, the java.lang package would
          * be registered in the wrong class loader.
@@ -166,7 +183,7 @@ public class DynamicHubInitializer {
             ResolvedJavaType interpreterType = RuntimeClassLoading.createInterpreterType(hub, type);
             hub.setInterpreterType(interpreterType);
             heapScanner.rescanField(hub.getCompanion(), hubCompanionInterpreterType, reason);
-            heapScanner.rescanObject(interpreterType.getDeclaredMethods(false), reason);
+            heapScanner.rescanObject(CremaSupport.singleton().getAllDeclaredMethods(interpreterType), reason);
         }
     }
 
@@ -179,7 +196,7 @@ public class DynamicHubInitializer {
     private boolean shouldRescanHub(ImageHeapScanner heapScanner, DynamicHub hub, ScanReason reason) {
         if (hostVM.buildingExtensionLayer()) {
             ImageHeapConstant hubConstant = (ImageHeapConstant) heapScanner.createImageHeapConstant(hub, reason);
-            return hubConstant == null || !hubConstant.isInBaseLayer();
+            return hubConstant == null || !hubConstant.isInSharedLayer();
         }
         return true;
     }
@@ -263,7 +280,7 @@ public class DynamicHubInitializer {
             } else {
                 info = buildRuntimeInitializationInfo(type, hasInitializer, typeReachedTracked);
             }
-            VMError.guarantee(!type.isInBaseLayer() || layerLoader.isInitializationInfoStable(type, info));
+            VMError.guarantee(!type.isInSharedLayer() || layerLoader.isInitializationInfoStable(type, info));
         }
         hub.setClassInitializationInfo(info);
         if (rescan) {

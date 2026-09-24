@@ -30,7 +30,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.nmt.NativeMemoryTracking;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 public class VMNativeMemoryDCmd extends AbstractDCmd {
     private static final DCmdOption<Boolean> SUMMARY = new DCmdOption<>(Boolean.class, "summary",
@@ -38,15 +38,15 @@ public class VMNativeMemoryDCmd extends AbstractDCmd {
                     false, false);
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.hpp#L49-L52")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.cpp#L34-L64")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.hpp#L49-L52")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.cpp#L34-L64")
     public VMNativeMemoryDCmd() {
         super("VM.native_memory", "Print native memory usage", Impact.Low, new DCmdOption<?>[0], new DCmdOption<?>[]{SUMMARY},
                         new String[]{"$ jcmd <pid> VM.native_memory summary"});
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.cpp#L72-L149")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+18/src/hotspot/share/nmt/nmtDCmd.cpp#L72-L149")
     public String execute(DCmdArguments args) throws Throwable {
         boolean summary = args.get(SUMMARY);
         if (args.hasBeenSet(SUMMARY) && !summary) {

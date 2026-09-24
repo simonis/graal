@@ -27,7 +27,7 @@ package com.oracle.svm.interpreter;
 import jdk.graal.compiler.api.replacements.Fold;
 
 import com.oracle.svm.interpreter.metadata.Bytecodes;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 final class ConstantBytecodes {
 
@@ -44,16 +44,5 @@ final class ConstantBytecodes {
     @Fold
     public static int lengthOf(int opcode) {
         return Bytecodes.lengthOf(opcode);
-    }
-
-    /**
-     * Version of {@link Bytecodes#stackEffectOf(int)} that returns a constant. The opcode must be a
-     * compile-time constant.
-     * 
-     * @see Bytecodes#stackEffectOf(int)
-     */
-    @Fold
-    public static int stackEffectOf(int opcode) {
-        return Bytecodes.stackEffectOf(opcode);
     }
 }

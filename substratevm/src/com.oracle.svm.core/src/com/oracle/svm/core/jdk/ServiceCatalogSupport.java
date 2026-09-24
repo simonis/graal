@@ -36,13 +36,18 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.svm.core.encoder.SymbolEncoder;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.internal.module.ServicesCatalog;
 
 @AutomaticallyRegisteredImageSingleton
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 @Platforms(Platform.HOSTED_ONLY.class)
 public class ServiceCatalogSupport {
     final ConcurrentHashMap<String, Set<String>> omittedServiceProviders = new ConcurrentHashMap<>();
@@ -89,6 +94,21 @@ public class ServiceCatalogSupport {
             }
             SymbolEncoder encoder = SymbolEncoder.singleton();
             return providers.stream().map(encoder::encodeClass).toList();
+        });
+        registerModuleDescriptorSetTransformer(access, ModuleDescriptor.class, "requires");
+        registerModuleDescriptorSetTransformer(access, ModuleDescriptor.class, "exports");
+        registerModuleDescriptorSetTransformer(access, ModuleDescriptor.class, "opens");
+        registerModuleDescriptorSetTransformer(access, ModuleDescriptor.class, "provides");
+        registerModuleDescriptorSetTransformer(access, ModuleDescriptor.class, "packages");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void registerModuleDescriptorSetTransformer(Feature.BeforeAnalysisAccess access, Class<?> clazz, String fieldName) {
+        access.registerAsInHeap(Set.of().getClass());
+        access.registerAsInHeap(Set.of("", "x").getClass());
+        access.registerFieldValueTransformer(ReflectionUtil.lookupField(clazz, fieldName), (_, original) -> {
+            Set<Object> set = (Set<Object>) original;
+            return Set.copyOf(set);
         });
     }
 }

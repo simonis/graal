@@ -41,6 +41,7 @@ import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.runtime.EspressoExitException;
 import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
+import com.oracle.truffle.espresso.vm.VM;
 
 /**
  * Provides bridges to guest world thread implementation.
@@ -56,7 +57,8 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
         if (g == null) {
             g = getThreadFromHost(t);
         }
-        doInterrupt(g);
+        doInterruptGuest(g);
+        interruptHostIfResponsive(t, g);
     }
 
     @Override
@@ -65,7 +67,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
         if (g == null) {
             g = getThreadFromHost(t);
         }
-        return isInterrupted(g, false);
+        return isGuestInterrupted(g, false);
     }
 
     @Override
@@ -106,7 +108,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
      * not yet been registered.
      */
     public Thread getHost(StaticObject guest) {
-        return (Thread) meta.HIDDEN_HOST_THREAD.getHiddenObject(guest);
+        return (Thread) meta.java_lang_Thread_0hostThread.getHiddenObject(guest);
     }
 
     void setPriority(StaticObject thread, int priority) {
@@ -313,7 +315,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     private EspressoLock getToNativeLock(StaticObject thread) {
-        return (EspressoLock) meta.HIDDEN_TO_NATIVE_LOCK.getHiddenObject(thread);
+        return (EspressoLock) meta.java_lang_Thread_0toNativeLock.getHiddenObject(thread);
     }
 
     // endregion thread state transition
@@ -354,20 +356,18 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     /**
-     * Implementation of {@link Thread#isInterrupted()}.
+     * Implementation of the guests {@link Thread#isInterrupted()}.
      */
-    public boolean isInterrupted(StaticObject guest, boolean clear) {
+    public boolean isGuestInterrupted(StaticObject guest, boolean clear) {
         if (getContext().getJavaVersion().java13OrEarlier() && !isAlive(guest)) {
             return false;
         }
-        boolean isInterrupted = meta.HIDDEN_INTERRUPTED.getBoolean(guest, true);
-        if (clear) {
+        boolean isInterrupted = meta.java_lang_Thread_0interrupted.getBoolean(guest, true);
+        if (clear && isInterrupted) {
             Thread host = getHost(guest);
             EspressoError.guarantee(host == Thread.currentThread(), "Thread#isInterrupted(true) is only supported for the current thread.");
-            if (host != null && host.isInterrupted()) {
-                Thread.interrupted();
-            }
-            clearInterruptStatus(guest);
+            clearInterruptEvent(guest);
+            meta.java_lang_Thread_0interrupted.setBoolean(guest, false, true);
         }
         return isInterrupted;
     }
@@ -389,26 +389,52 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
         getContext().getBlockingSupport().guestInterrupt(getHost(guest), guest);
     }
 
-    private void doInterrupt(StaticObject guest) {
-        if (getContext().getJavaVersion().java13OrEarlier() && isAlive(guest)) {
+    private void doInterruptGuest(StaticObject guest) {
+        if (getJavaVersion().java13OrEarlier() && isAlive(guest)) {
             // In JDK 13+, the interrupted status is set in java code.
-            meta.HIDDEN_INTERRUPTED.setBoolean(guest, true, true);
+            meta.java_lang_Thread_0interrupted.setBoolean(guest, true, true);
+        }
+        VM vm = getVM();
+        if (vm.needsThreadInterruptedNotification() && isAlive(guest)) {
+            vm.notifyThreadInterrupted(guest, true);
         }
     }
 
-    /**
-     * Implementation of {@code Thread.clearInterruptEvent} (JDK 13+).
-     */
-    public void clearInterruptEvent() {
-        assert !getContext().getJavaVersion().java13OrEarlier();
-        Thread.interrupted();
+    private void interruptHostIfResponsive(Thread host, StaticObject guest) {
+        /*
+         * In the context of EspressoNoNative we substitute native methods of java standard libraries
+         * using public java API. Some of those native methods are supposed to be uninterruptible but
+         * their naive implementation is inherently interruptible.
+         *
+         * For such substitutions we avoid being guest interrupted by transitioning the thread to native
+         * before doing the uninterruptible operation (See com.oracle.truffle.espresso.io.TruffleIO.readBytes(int, java.nio.ByteBuffer)).
+         * Then here we check if the thread is in native before calling interrupt.
+         *
+         * Going forward one has to be careful when calling interrupt in the host as it might
+         * trigger ClosedByInterruptExceptions for such "uninterruptible" substitutions.
+         *
+         * Implementation details: We did not introduce a new ThreadState for those "uninterruptible"
+         * substitutions and instead just reused the IN_NATIVE ThreadState. As a consequence threads
+         * which are truly in native will now cease to be (host) interrupted. This is okay as threads
+         * in native are agnostic to java interrupts anyway.
+         */
+        blockNativeTransitions(guest, true);
+        try {
+            // Make sure thread is initialized and responsive (i.e. not in native)
+            if (host != null && isResponsive(guest)) {
+                host.interrupt(); // Host interrupt to wake up the thread.
+            }
+        } finally {
+            blockNativeTransitions(guest, false);
+        }
     }
 
-    /**
-     * Sets the interrupted field of the given thread to {@code false}.
-     */
-    public void clearInterruptStatus(StaticObject guest) {
-        meta.HIDDEN_INTERRUPTED.setBoolean(guest, false, true);
+    public void clearInterruptEvent(StaticObject guest) {
+        Thread.interrupted();
+        VM vm = getVM();
+        if (vm.needsThreadInterruptedNotification()) {
+            vm.notifyThreadInterrupted(guest, false);
+        }
     }
 
     /**
@@ -441,7 +467,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     public boolean isManaged(StaticObject guest) {
-        return meta.HIDDEN_ESPRESSO_MANAGED.getBoolean(guest, true);
+        return meta.java_lang_Thread_0espressoManaged.getBoolean(guest, true);
     }
 
     /**
@@ -454,7 +480,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
         host.setPriority(getPriority(guest));
         String guestName = getContext().getThreadAccess().getThreadName(guest);
         host.setName(guestName);
-        if (isInterrupted(guest, false)) {
+        if (isGuestInterrupted(guest, false)) {
             host.interrupt();
         }
         // Prepare guest thread
@@ -470,10 +496,13 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     public void initializeHiddenFields(StaticObject guest, Thread host, boolean isManaged) {
-        meta.HIDDEN_HOST_THREAD.setHiddenObject(guest, host);
-        meta.HIDDEN_ESPRESSO_MANAGED.setBoolean(guest, isManaged);
-        meta.HIDDEN_THREAD_PARK_LOCK.setHiddenObject(guest, EspressoLock.create(getContext().getBlockingSupport()));
-        meta.HIDDEN_TO_NATIVE_LOCK.setHiddenObject(guest, EspressoLock.create(getContext().getBlockingSupport()));
+        meta.java_lang_Thread_0hostThread.setHiddenObject(guest, host);
+        meta.java_lang_Thread_0espressoManaged.setBoolean(guest, isManaged);
+        meta.java_lang_Thread_0parkLock.setHiddenObject(guest, EspressoLock.create(getContext().getBlockingSupport()));
+        meta.java_lang_Thread_0toNativeLock.setHiddenObject(guest, EspressoLock.create(getContext().getBlockingSupport()));
+        if (meta.java_lang_Thread_0interruptedEvent != null) {
+            meta.java_lang_Thread_0interruptedEvent.setHiddenObject(guest, getVM().createInterruptedEvent());
+        }
     }
 
     // endregion thread control
@@ -605,7 +634,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
          * synchronously.
          */
         synchronized (guest) {
-            DeprecationSupport support = (DeprecationSupport) meta.HIDDEN_DEPRECATION_SUPPORT.getHiddenObject(guest, true);
+            DeprecationSupport support = (DeprecationSupport) meta.java_lang_Thread_0deprecationSupport.getHiddenObject(guest, true);
             if (support != null) {
                 return support.status != NORMAL;
             }
@@ -614,13 +643,13 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     private DeprecationSupport getDeprecationSupport(StaticObject guest, boolean initIfNull) {
-        DeprecationSupport support = (DeprecationSupport) meta.HIDDEN_DEPRECATION_SUPPORT.getHiddenObject(guest);
+        DeprecationSupport support = (DeprecationSupport) meta.java_lang_Thread_0deprecationSupport.getHiddenObject(guest);
         if (initIfNull && support == null) {
             synchronized (guest) {
-                support = (DeprecationSupport) meta.HIDDEN_DEPRECATION_SUPPORT.getHiddenObject(guest, true);
+                support = (DeprecationSupport) meta.java_lang_Thread_0deprecationSupport.getHiddenObject(guest, true);
                 if (support == null) {
                     support = new DeprecationSupport(guest);
-                    meta.HIDDEN_DEPRECATION_SUPPORT.setHiddenObject(guest, support, true);
+                    meta.java_lang_Thread_0deprecationSupport.setHiddenObject(guest, support, true);
                 }
             }
         }
@@ -628,15 +657,15 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     public void setDepthFirstNumber(StaticObject thread, int i) {
-        meta.HIDDEN_THREAD_DEPTH_FIRST_NUMBER.setHiddenObject(thread, i);
+        meta.java_lang_Thread_0depthFirstNumber.setHiddenObject(thread, i);
     }
 
     public int getDepthFirstNumber(StaticObject thread) {
-        return (int) meta.HIDDEN_THREAD_DEPTH_FIRST_NUMBER.getHiddenObject(thread);
+        return (int) meta.java_lang_Thread_0depthFirstNumber.getHiddenObject(thread);
     }
 
     public StaticObject getScopedValueCache(StaticObject platformThread) {
-        StaticObject cache = (StaticObject) meta.HIDDEN_THREAD_SCOPED_VALUE_CACHE.getHiddenObject(platformThread);
+        StaticObject cache = (StaticObject) meta.java_lang_Thread_0scopedValueCache.getHiddenObject(platformThread);
         if (cache == null) {
             return StaticObject.NULL;
         }
@@ -644,7 +673,7 @@ public final class ThreadAccess extends ContextAccessImpl implements GuestInterr
     }
 
     public void setScopedValueCache(StaticObject platformThread, StaticObject cache) {
-        meta.HIDDEN_THREAD_SCOPED_VALUE_CACHE.setHiddenObject(platformThread, cache);
+        meta.java_lang_Thread_0scopedValueCache.setHiddenObject(platformThread, cache);
     }
 
     private final class DeprecationSupport {

@@ -2,13 +2,42 @@
 
 This changelog summarizes major changes between Truffle versions relevant to languages implementors building upon the Truffle framework. The main focus is on APIs exported by Truffle.
 
+## Version 25.4
+* GR-77721: Removed Truffle Object APIs deprecated in 22.2 and no longer in use.
+* GR-77721: Removed Truffle Strings methods deprecated in 23.0 or earlier.
+* GR-77721: Removed `InteropException.initCause(Throwable)`, deprecated since 20.2.
+* GR-77721: Removed debugger APIs deprecated in 21.2 or earlier.
+* GR-77721: Removed instrumentation APIs deprecated in 23.0 or earlier.
+* GR-77721: Removed core Truffle APIs deprecated in 23.0 or earlier.
+* GR-77721: Removed profile factory methods deprecated in 23.0.
+* GR-79122: Added host interoperability for `java.time.OffsetDateTime` and `java.time.OffsetTime`.
+* GR-79418: Guest-language inlining now uses Graal IR call-site frequencies instead of runtime direct-call counters. Language implementations should ensure that injected branch probabilities are accurate because inaccurate probabilities are likely to cause peak-performance regressions.
+* GR-61178: Bytecode DSL: Added support for `StackValue`s, handles to temporary stack operands. Languages can use `BindStackValue` to obtain a `StackValue` and then access the current operand value with `LoadStackValue` and `StoreStackValue`. Stack values are useful for supporting common subexpressions/temporary values without using locals.
+* GR-72480: Bytecode DSL: Implemented compressed source information, configurable with `@GenerateBytecode(enableCompressedSources = true|false)`. Compression is enabled by default and reduces the source-table memory footprint, at the cost of slower decoding when source information is accessed.
+
+## Version 25.3
+* GR-57730: Improved descriptive `toString()` output for Polyglot API objects and builders.
+* GR-73530: Added `StaticShape.Builder.safetyChecks(boolean)` to let language implementations configure safety checks for individual static shapes. Added `engine.ForceStaticObjectSafetyChecks` to enable safety checks for all static shapes, overriding the builder setting.
+* GR-54730: Setting `sandbox.MaxCPUTime` to a zero duration now disables the CPU time limit instead of enforcing a zero-duration limit.
+* GR-77584: Bytecode DSL: `Source` and `SourceSection` are now metadata-only operations that do not affect the operation tree shape. The previous semantics, which treated source operations like regular sequencing operations, were unsound and could cause inconsistent behaviour between reparses.
+* GR-77584: Bytecode DSL: Improved generation of source section table entries. Entries covering empty bytecode ranges are no longer emitted, and entries covering consecutive ranges are only combined when they come from the same `SourceSection` operation.
+
+## Version 25.2
+* GR-77583: Bytecode DSL: Added `BytecodeRootNode.interceptIncomingValue(Object)` and `BytecodeRootNode.interceptOutgoingValue(Object)` to convert values exchanged with tag instrumentation.
+* GR-75459: Bytecode DSL: Added multi-operand support for `@Yield` operations.
+* GR-75438: Bytecode DSL: Added `@Return` for user-defined return operations that customize the value returned from a bytecode root node.
+* GR-77108: Added `HostCompilerDirectives.BytecodeInterpreterHandlerConfig#secondarySwitch()` to prevent handler outlining when a secondary bytecode interpreter switch is compiled separately.
+
 ## Version 25.1
+* GR-76434: Added `engine.DynamicCompilationThresholdsHighLoadSlope` to tune dynamic compilation threshold scaling under high compilation queue load. The default value of `engine.DynamicCompilationThresholdsMinNormalLoad` is now `0`, which disables low-load threshold reduction by default.
+* GR-71645: Host adapter instances created with `TruffleLanguage.Env#createHostAdapter` now delegate unresolved direct member operations to the original guest object, while Java host members and the special `super` and `this` adapter members take precedence.
+* GR-75236: Added engine option `engine.CompilerThreadStackSize` to set the requested stack size of Truffle compiler threads. By default compiler threads use `640KB` stack space. The requested size is rounded up to implementation-specific minima and page sizes as needed.
+* GR-73900: Added `Engine.persistCache(Engine.CancellationCallback)` to persist the auxiliary engine cache into an in-memory `ByteBuffer` with callback-based cancellation support.
 * GR-65048: Introduced `InternalResource.OS.UNSUPPORTED` and `InternalResource.CPUArchitecture.UNSUPPORTED` to represent unsupported platforms. Execution on unsupported platforms must be explicitly enabled using the system property `-Dpolyglot.engine.allowUnsupportedPlatform=true`. If this property is not set, calls to `OS.getCurrent()` or `CPUArchitecture.getCurrent()` will throw an `IllegalStateException` when running on an unsupported platform. `InternalResource` implementations should handle the unsupported platform and describe possible steps in the error message on how to proceed.
 * GR-66839: Deprecate `Location#isFinal()` as it always returns false.
 * GR-67702: Specialization DSL: For nodes annotated with `@GenerateInline`, inlining warnings emitted for `@Cached SomeNode helper` expressions are now suppressed if the helper node class is explicitly annotated with `@GenerateInline(false)`, or is not a DSL node. This avoids unnecessary warnings if inlining for a node was explicitly disabled, and makes it possible to remove `@Cached(inline = false)` in most cases.
 * GR-68165: `DynamicObjectLibrary#setDynamicType` transitions are now weak, like `DynamicObjectLibrary#putConstant` transitions.
 * GR-67821: `TruffleLanguage.Env#createSystemThread` is now allowed to be be called from a system thread now without an explicitly entered context.
-* GR-67702: Specialization DSL: For nodes annotated with `@GenerateInline`, inlining warnings emitted for `@Cached` expressions are now suppressed if the inlined node is explicitly annotated with `@GenerateInline(false)`. This avoids unnecessary warnings if inlining for a node was explicitly disabled.
 * GR-66310: Added support for passing arrays of primitive types to native code through the Truffle NFI Panama backend.
 * GR-61292: Specialization DSL: Single specialization nodes no longer specialize on first execution unless they use assumptions, cached state, or multiple instances. This was done to improve the interpreter performance and memory footprint of such nodes. As a result, these nodes no longer invalidate on first execution, which means they can no longer be used as an implicit branch profile. Language implementations are encouraged to check whether they are relying on this behavior and insert explicit branch profiles instead (see `BranchProfile` or `InlinedBranchProfile`).
 * GR-64005: Bytecode DSL: `@Operation` annotated classes can now inherit specializations and methods from super classes which are also declared in the same bytecode root node class. Language implementations no longer need to use operation proxies to use specialization inheritance.
@@ -16,9 +45,8 @@ This changelog summarizes major changes between Truffle versions relevant to lan
 * GR-67146: Specialization DSL: Added `@Bind` support for frames (including materialized frames).
 * GR-67146: Bytecode DSL: Added support for user-defined yield operations using `@Yield`. These operations behave like the built-in yield but allow you to customize the yield result or perform custom logic on yield.
 * GR-69495: Bytecode DSL: Added a new `storeBytecodeIndex` attribute to all operation annotations to configure whether the bytecode index needs to be stored. When `@GenerateBytecode(storeBytecodeIndexInFrame = true)` is set and the attribute is left at its default, the DSL will emit a warning recommending explicit configuration. Additionally, introduced the `@StoreBytecodeIndex` annotation, which lets you specify bytecode index updates for individual specializations or fallbacks.
-
-* GR-68916: Added `TruffleString.MaterializeLazySubstringNode`. Use this node to free any unnecessary memory held by lazy substrings.
-* GR-68916: Added `TruffleString.MaterializeSubstringNode`. Use this node to free any unnecessary memory held by lazy substrings.
+* GR-69853: TruffleStrings: Added explicit little-endian and big-endian methods to `ReadCharUTF16Node`.
+* GR-68916: Added `TruffleString.MaterializeLazySubstringNode` and `TruffleString.MaterializeSubstringNode`. Use these nodes to free any unnecessary memory held by lazy substrings.
 * GR-8251: Added `DebuggerSession.disposeStepping(Thread)` to the debugger API to allow disposal of any pending step on a thread.
 * GR-8251: Pending steps are no longer removed when no debugging action is prepared on a `SuspendedEvent`. In practice, this means that the lifecycle of steps is now independent of breakpoint hits.
 * GR-8251: `DebuggerSession.resumeThread(Thread)` no longer cancels ongoing step operations. Stepping is now independent of other debugger actions to enhance flexibility.
@@ -26,6 +54,75 @@ This changelog summarizes major changes between Truffle versions relevant to lan
 * GR-69649: Bytecode DSL now encodes primitive constant operands directly in the bytecode, reducing memory indirections in the interpreter. This optimization is enabled by default; you can configure it with `@GenerateBytecode(inlinePrimitiveConstants = true)`.
 * GR-68993: Added `HostCompilerDirectives.markThreadedSwitch(int)` to mark a switch statement within a loop as a candidate for threaded switch optimization.
 * GR-68993: Bytecode DSL: All bytecode interpreters are now using the threaded switch optimization by default. This new optimization can be configured using `@GenerateBytecode(enableThreadedSwitch=true|false)`.
+* GR-71030: Bytecode DSL now generates a new `MyBytecodeRootNodeGen.Bytecode` class that can be accessed via the `MyBytecodeRootNodeGen.BYTECODE` singleton. This class which extends the added `BytecodeDescriptor` allows you to parse, serialize and deserialize bytecode nodes in addition to the already existing static methods in the generated code.
+* GR-71030: Bytecode DSL now provides an `InstructionDescriptor` generated implementation for the bytecode interpreter. The instructions can be accessed via the new BytecodeDescriptor like this: `MyBytecodeRootNodeGen.BYTECODE.getInstructionDescriptors()`. There is also `MyBytecodeRootNodeGen.BYTECODE.dump()` to produce a human-readable instruction format.
+* GR-71031: Added new method `BytecodeDescriptor.update(MyLanguage, BytecodeConfig)` to update the bytecode config for all current root nodes and root nodes created in the future of a language.
+* GR-51945: Bytecode DSL, added `InstructionTracer` with `onInstructionEnter(InstructionAccess, BytecodeNode, int, Frame)`. Tracers can be attached per root via `BytecodeRootNodes.addInstructionTracer(InstructionTracer)` and per descriptor via `BytecodeDescriptor.addInstructionTracer(TruffleLanguage, InstructionTracer)`. Attaching a tracer invalidates affected roots and may trigger reparse and comes at a significant cost.
+* GR-51945: Bytecode DSL: added instruction tracer reference implementations `PrintInstructionTracer` and `InstructionHistogramTracer`. These are intended for diagnostics.
+* GR-51945: Added option `engine.TraceBytecode` to enable printing each executed Bytecode DSL instruction. Use the `engine.BytecodeMethodFilter` option to print instructions only for a given method.
+* GR-51945: Added option `engine.BytecodeHistogram` to enable printing a bytecode histogram on engine close. Use `engine.BytecodeHistogramInterval` to configure the interval at which the histogram is reset and printed.
+* GR-70086: Added `replacementOf` and `replacementMethod` attributes to `GenerateLibrary.Abstract` annotation. They enable automatic generation of legacy delegators during message library evolution, while allowing custom conversions when needed.
+* GR-70086 Deprecated `Message.resolve(Class<?>, String)`. Use `Message.resolveExact(Class<?>, String, Class<?>...)` with argument types instead. This deprecation was necessary as library messages are no longer unique by message name, if the previous message was deprecated.
+* GR-71299 Improved the responsiveness of the Truffle compilation queue by refining the computation of the execution rate of compilation units in the queue.
+  * Added `engine.TraversingQueueRateHalfLife` to allow fine-tuning of the compilation queue responsiveness.
+* GR-71245: Exposed `ByteBufferDataInput` as public and added a `position` method that returns the underlying buffer's position. Added `SerializationUtils.createByteBufferDataInput` factory method and deprecated `SerializationUtils.createDataInput`.
+* GR-36894: Added `DynamicObject` nodes for dealing with `DynamicObject` properties and shapes, as a more lightweight replacement for `DynamicObjectLibrary`, including:
+    * `DynamicObject.GetNode`: gets the value of a property or a default value if absent
+    * `DynamicObject.PutNode`: adds a new property or sets the value of an existing property
+    * `DynamicObject.ContainsKeyNode`: checks if the object contains a specific property
+    * `DynamicObject.RemoveKeyNode`: removes a property
+    * `DynamicObject.GetKeyArrayNode`: gets an array of keys of all the object's properties
+    * `DynamicObject.CopyPropertiesNode`: copies all properties from one object to another
+    * `DynamicObject.GetShapeFlagsNode` and `SetShapeFlagsNode`: gets and sets flags in the object's shape, respectively
+    * `DynamicObject.GetDynamicTypeNode` and `SetDynamicTypeNode`: gets and sets the dynamic type id in the object's shape, respectively
+    * See [`DynamicObject` javadoc](https://www.graalvm.org/truffle/javadoc/com/oracle/truffle/api/object/DynamicObject.html) for a complete list and more information. There's an equivalent for every `DynamicObjectLibrary` message.
+    * Note: Unlike `DynamicObjectLibrary`, cached property keys are always compared by identity (`==`) rather than equality (`equals`). If you rely on key equality, cache the key using an `equals` guard and pass the cached canonical key to the node.
+* GR-36894: Deprecated `DynamicObjectLibrary`. Use `DynamicObject` nodes instead. See the [migration guide](https://github.com/oracle/graal/blob/master/truffle/docs/DynamicObjectLibraryMigration.md) for an overview of the required changes.
+* GR-66335: DynamicObject: Allow constant-folding of final property values of constant receivers (using `GetNode`).
+* GR-69861: Bytecode DSL: Added a `BytecodeFrame` abstraction for capturing frame state and accessing frame data. This abstraction should be preferred over `BytecodeNode` access methods because it captures the correct interpreter location data.
+* GR-69861: Bytecode DSL: Added a `captureFramesForTrace` parameter to `@GenerateBytecode` that enables capturing of frames in `TruffleStackTraceElement`s. Previously, frame data was unreliably available in stack traces; now, it is guaranteed to be available if requested. Languages must use the `BytecodeFrame` abstraction to access frame data from `TruffleStackTraceElement`s rather than access the frame directly.
+* GR-69614: The methods `InteropLibrary#hasLanguage` and `InteropLibrary#getLanguage` have been replaced with `InteropLibrary#hasLanguageId` and `InteropLibrary#getLanguageId`. Language implementers are encouraged to update their code to the new API.
+* GR-69614: Added `TruffleInstrument.Env.getHostLanguage()` returning the host language info. This allows instruments to lookup the top scope of the host language using `Env.getScope(LanguageInfo)`.
+* GR-71468: Significantly improve optimized performance of host proxy interfaces (`org.graalvm.polyglot.proxy.Proxy`).
+* GR-71088 Added `CompilerDirectives.EarlyInline` annotation that performs a conservative early inlining pass for methods before partial evaluation. This is intended to expose small branch/bytecode handlers and similar helpers to optimizations such as @ExplodeLoop, in particular for MERGE_EXPLODE bytecode interpreter loops.
+* GR-71088 Added `CompilerDirectives.EarlyEscapeAnalysis` annotation that runs partial escape analysis early before partial evaluation enabling partial-evaluation-constant scalar replacements. 
+* GR-71870 Truffle DSL no longer supports mixed exclusive and shared inlined caches. Sharing will now be disabled if mixing was used. To resolve the new warnings it is typically necessary to use either `@Exclusive` or `@Shared` for all caches.
+* GR-71887: Bytecode DSL: Added a `ClearLocal` operation for fast clearing of local values.
+* GR-71402: Added `InteropLibrary#isHostObject` and `InteropLibrary#asHostObject` for accessing the Java host-object representation of a Truffle guest object. Deprecated `Env#isHostObject`, `Env#isHostException`, `Env#isHostFunction`, `Env#isHostSymbol`, `Env#asHostObject`, and `Env#asHostException` in favor of the new InteropLibrary messages.
+* GR-71402: Added `InteropLibrary#hasStaticScope` and `InteropLibrary#getStaticScope` returning the static scope representing static or class-level members associated with the given meta object.
+* GR-72022 `AtomicLongFieldUpdater`, `AtomicIntegerFieldUpdater` and `AtomicReferenceFieldUpdater` can now be used on partially evaluated code paths when the updater is a PE constant and the compiler can prove receiver and value correctness during partial evaluation, otherwise compilation permanently bails out.
+* GR-44829: Added `TruffleString.CodePointAtIndexUTF32Node` for better interpreter performance of UTF-32 strings.
+* GR-44829: `TruffleString` nodes no longer profile the `expectedEncoding` parameter for interpreter performance reasons. Languages with non-constant string encodings should profile the encoding before passing it to `TruffleString` nodes.
+* GR-75002: Specialization DSL: Handwritten `inline(InlineTarget)` methods are now preferred over synthesized generated inline signatures when resolving inlined caches. Generated inline metadata now preserves public node subtypes for `ReferenceField`-backed fields, while non-public or generated helper node types continue to use generic `Node`/`Node[]` types. If you need stable inline APIs, you can continue to pin `ReferenceField` requirements to a stable public supertype such as `Node` in a handwritten `inline` method.
+* GR-57579: Added `TruffleString.ByteIndexOfStringSetNode` for fast multi-string searches.
+
+* GR-61161: Bytecode DSL: Added support for basic instruction rewriting. At bytecode build time, the builder can perform peephole optimization to remove redundant loads. This new optimization can be configured using `@GenerateBytecode(enableInstructionRewriting=true|false)`.
+* GR-71765: Bytecode DSL: Added support for specifying an illegal local exception via `@GenerateBytecode(illegalLocalException=SomeException.class)`. This configures the interpreter to throw a custom exception when loading a cleared local, as an alternative to the default behaviour (throwing a `FrameSlotTypeException`). This option is mutually exclusive with the default local value option (`@GenerateBytecode(defaultLocalValue = "someValue")`).
+* GR-69499 Added `HostCompilerDirectives.BytecodeInterpreterHandler` annotation, enabling one compilation per bytecode handler in the Truffle bytecode interpreter while maintaining performance statistics. Introduced support for tail call threading among bytecode handlers in native image. See the [One Compilation per Bytecode Handler documentation](https://github.com/oracle/graal/blob/master/truffle/docs/OneCompilationPerBytecodeHandler.md) for more details.
+* GR-35913: Added `AbstractTruffleException#createGuestStackTrace(Throwable)`, which returns the default interop representation of a throwable’s stack trace.
+* GR-35913: Added `InteropLibrary#hasByteCodeIndex` and `InteropLibrary#getByteCodeIndex` to expose a bytecode index for interop objects representing stack trace elements.
+* GR-35913: Added `InteropLibrary#isInternal` to allow interop objects to be marked as internal. Stack trace element objects can be marked internal so they are omitted from stack trace printing.
+* GR-72486: Bytecode DSL: Added support for all source section representations (e.g., line numbers). Builders now define different `beginSourceSection` and `endSourceSection` overloads for each source section representation.
+* GR-71311: `TruffleString.FromNativePointerNode` and `MutableTruffleString.FromNativePointerNode` now also accept boxed long values in place of their native pointer parameters.
+* GR-44312: Added `TruffleString.FromByteArrayWithCompactionUTF32Node` and `TruffleString.FromNativePointerWithCompactionUTF32Node`, to allow creation of UTF-32 strings from existing compacted strings.
+* GR-73519: `InteropLibrary#getExceptionCause` may return an interop null object if the exception supports a cause but the cause itself is `null`.
+* GR-44465: Added `TruffleString.FromZeroTerminatedNativePointerNode` to support creating TruffleStrings from zero-terminated native buffers.
+* GR-72022: Added `@GenerateBytecode(enableTailCallHandlers=true)` to enable the tail call bytecode handler annotations.
+* GR-72022: Deprecated `BytecodeDebugListener.beforeInstructionExecute(...)` and `BytecodeDebugListener.afterInstructionExecute(...)`. Please use instrumentation based instruction tracing instead.
+* GR-73953: Starting with Truffle 25.1, the optimizing runtime is supported only with GraalVM 25.1 or later, including Oracle GraalVM and GraalVM Community Edition. It is no longer supported with GraalVM 25.0 or earlier, or on plain OpenJDK or Oracle JDK via jargraal (`org.graalvm.compiler:compiler` on `--upgrade-module-path`). The fallback runtime remains supported on standard JDKs and remains backwards compatible down to JDK 21, but runs without runtime compilation. If you need the optimizing runtime on plain OpenJDK or Oracle JDK, continue using the 25.0 LTS release.
+* GR-73707: Bytecode DSL: Added `BytecodeRootNode#traceTransition(BytecodeTransition, Frame)`, an optional hook invoked whenever the interpreter transitions between bytecode nodes due to deoptimization (`isTransferToInterpreter()`) or a bytecode update (`isBytecodeUpdate()`). Deoptimization events retain precise locations for compilation roots and continuation resumes, but deoptimization events in inlined root nodes may be associated with the compilation root instead.
+* GR-73707: Added `CompilerDirectives.preserveFrameStateHere()` to insert a state-split marker at a specific program point so deoptimization restores the precise frame state for that location. Use this in bytecode interpreters when transfer-to-interpreter transitions must be attributed reliably to the current bytecode location.
+* GR-73707: Added engine option `engine.TraceBytecodeTransition` to log bytecode interpreter transition events engine-wide. Supported values are `true` (all kinds), `transferToInterpreter`, `bytecode`, `tier`, `tag`, and `instrumentation` (comma-separated for combinations). Use `engine.BytecodeMethodFilter` and `engine.BytecodeLanguageFilter` to scope tracing.
+* GR-72488: Bytecode DSL: Added support for lazy loading of source content using `@GenerateBytecode(sourceContentSupplier=...)`. This attribute allows to parse sources without content and only load source content upon request, reducing interpreter footprint when full source content is not needed.
+* GR-74314: Bytecode DSL: Added generated `BytecodeRootNode#getSource()` to return the source associated with a bytecode root node, or `null` when no source information is available.
+* GR-74761: Bytecode DSL: Tightened validation of invalid bytecode indices across Bytecode DSL APIs. Constructing a `BytecodeFrame` or `BytecodeLocation` from a `TruffleStackTraceElement` with illegal bytecode index now throws an `IllegalArgumentException`; `BytecodeNode#getBytecodeLocation(Frame, Node)` now reliably returns `null` when no valid bytecode index can be determined; other `BytecodeNode` APIs that take a `bytecodeIndex` or `FrameInstance` now consistently assert that the bytecode index is valid.
+* GR-74761: Bytecode DSL: Added `BytecodeFrame.getTop(...)` and `BytecodeFrame.iterateBytecodeFrames(...)` helpers for accessing Bytecode DSL frames during stack walks.
+* GR-73555: Bytecode DSL: Changed frame descriptor of `ContinuationRootNode`. Continuations no longer have the same `FrameDescriptor` as their source root nodes.
+* GR-73872: Added support for constant options via the `constant` attribute on `@Option`, together with `ConstantOptionKey<T>`. When `@Option(constant = true)` is used on a `static final ConstantOptionKey<T>` field, the option value is fixed before runtime initialization (from `-Dpolyglot.<option-name>=<value>` or the declared default) and cannot be changed at runtime. Calls to `ConstantOptionKey.getConstantValue()` are partial-evaluation final, enabling dead-branch elimination in Truffle interpreters. In native image, these constants can be folded statically at image build time. On HotSpot, such static folding is not guaranteed due to class initialization timing.
+* GR-73872: Added support for native-image preset options. Polyglot options provided during native-image build are captured as preset defaults at image build time, then applied at runtime as defaults.
+* GR-75360: Bytecode DSL: Generated root nodes now support delegation to parent implementations of `RootNode.isInstrumentable()`, `RootNode.prepareForCall()`, and `RootNode.prepareForInstrumentation(tags)`, when available.
+* GR-76069: Added `ArrayUtils.arraycopy(int[], int, int[], int, int)`, a specialized variant of `System.arraycopy`.
+* GR-75854: Bytecode DSL: `@EpilogReturn` instructions are now associated with the source sections and local scopes active at the return.
 
 ## Version 25.0
 * GR-31495 Added ability to specify language and instrument specific options using `Source.Builder.option(String, String)`. Languages may describe available source options by implementing `TruffleLanguage.getSourceOptionDescriptors()` and `TruffleInstrument.getSourceOptionDescriptors()` respectively.
@@ -100,7 +197,6 @@ This changelog summarizes major changes between Truffle versions relevant to lan
 * GR-32682 Added detection of boxing overloads to support state sharing and better boxing elimination. See `Specialization#rewriteOn` for details. 
     * `TruffleSafepoint#poll(Node)` does not require a non-null location anymore. However, it is still recommended to always pass a location node, if available. 
 * GR-57838 Added `InternalResource#unpackResourceFiles(Path, Path, Path, Predicate)` to allow filtering of resources to unpack. 
-
 ## Version 24.1.0
 * GR-43839 Added optional parameter to TruffleString.ByteIndexOfCodePointSetNode to choose whether the node may calculate the input string's precise code range.
 * GR-51253 Extend allowed DynamicObject shape flags from 8 to 16 bits.

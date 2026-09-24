@@ -52,7 +52,7 @@ public final class MissingReflectionRegistrationUtils extends MissingRegistratio
         report(exception);
     }
 
-    public static void reportUnsafeAllocation(Class<?> clazz) {
+    public static MissingReflectionRegistrationError reportUnsafeAllocation(Class<?> clazz) {
         ConfigurationType type = getConfigurationType(clazz);
         type.setUnsafeAllocated();
         String json = elementToJSON(type);
@@ -60,6 +60,7 @@ public final class MissingReflectionRegistrationUtils extends MissingRegistratio
                         reflectionError("unsafe instantiate", typeDescriptor(clazz), json),
                         Class.class, null, clazz.getTypeName(), null);
         report(exception);
+        return exception;
     }
 
     public static void reportFieldQuery(Class<?> declaringClass, String fieldName) {
@@ -110,8 +111,8 @@ public final class MissingReflectionRegistrationUtils extends MissingRegistratio
                         executable.getClass(), executable.getDeclaringClass(), executable.getName(), executable.getParameterTypes());
         report(exception);
         /*
-         * If report doesn't throw, we throw the exception anyway since this is a Native
-         * Image-specific error that is unrecoverable in any case.
+         * If report doesn't throw, we return the exception so the caller can throw it in
+         * unrecoverable cases.
          */
         return exception;
     }
@@ -132,8 +133,8 @@ public final class MissingReflectionRegistrationUtils extends MissingRegistratio
                         Proxy.class, null, null, interfaces);
         report(exception);
         /*
-         * If report doesn't throw, we throw the exception anyway since this is a Native
-         * Image-specific error that is unrecoverable in any case.
+         * If report doesn't throw, we return the exception so the caller can throw it in
+         * unrecoverable cases.
          */
         return exception;
     }
@@ -146,8 +147,8 @@ public final class MissingReflectionRegistrationUtils extends MissingRegistratio
                         null, null, null, null);
         report(exception);
         /*
-         * If report doesn't throw, we throw the exception anyway since this is a Native
-         * Image-specific error that is unrecoverable in any case.
+         * If report doesn't throw, we return the exception so the caller can throw it in
+         * unrecoverable cases.
          */
         return exception;
     }

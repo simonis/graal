@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.threadlocal;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHereUnexpectedInput;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHereUnexpectedInput;
 
 import java.util.function.IntSupplier;
 
@@ -34,11 +34,17 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.WordBase;
 
-import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.shared.BuildPhaseProvider.ReadyForCompilation;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.graal.thread.LoadVMThreadLocalNode;
 import com.oracle.svm.core.graal.thread.StoreVMThreadLocalNode;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalBytes;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalLong;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalObject;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalWord;
 
 import jdk.vm.ci.meta.JavaKind;
 
@@ -118,7 +124,7 @@ public class VMThreadLocalInfo {
         } else if (threadLocalClass == FastThreadLocalLong.class) {
             storageKind = JavaKind.Long;
         } else if (threadLocalClass == FastThreadLocalWord.class) {
-            storageKind = ConfigurationValues.getWordKind();
+            storageKind = SubstrateTarget.getWordKind();
         } else if (threadLocalClass == FastThreadLocalObject.class) {
             storageKind = JavaKind.Object;
         } else if (threadLocalClass == FastThreadLocalBytes.class) {

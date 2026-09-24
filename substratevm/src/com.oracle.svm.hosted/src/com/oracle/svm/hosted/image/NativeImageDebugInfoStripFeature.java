@@ -34,22 +34,19 @@ import com.oracle.objectfile.ObjectFile;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.util.InterruptImageBuilding;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.AfterImageWriteAccessImpl;
+import com.oracle.svm.hosted.ProgressReporter;
 import com.oracle.svm.hosted.c.util.FileUtils;
-import com.oracle.svm.util.LogUtils;
-
+import com.oracle.svm.shared.util.LogUtils;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.debug.Indent;
 
 @AutomaticallyRegisteredFeature
 public class NativeImageDebugInfoStripFeature implements InternalFeature {
-
-    private Boolean hasStrippedSuccessfully = null;
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -60,28 +57,23 @@ public class NativeImageDebugInfoStripFeature implements InternalFeature {
     public void afterImageWrite(AfterImageWriteAccess access) {
         AfterImageWriteAccessImpl accessImpl = (AfterImageWriteAccessImpl) access;
         try (Indent _ = accessImpl.getDebugContext().logAndIndent("Stripping debuginfo")) {
+            boolean strippedSuccessfully;
             switch (ObjectFile.getNativeFormat()) {
                 case ELF:
-                    hasStrippedSuccessfully = stripLinux(accessImpl);
+                    strippedSuccessfully = stripLinux(accessImpl);
                     break;
                 case PECOFF:
                     // debug info is always "stripped" to a pdb file by linker
-                    hasStrippedSuccessfully = true;
+                    strippedSuccessfully = true;
                     break;
                 case MACH_O:
                     // Not supported. See warning in SubstrateOptions.validateStripDebugInfo
-                    break;
+                    return;
                 default:
                     throw UserError.abort("Unsupported object file format");
             }
+            ProgressReporter.singleton().setStrippedDebugInfoSuccessfully(strippedSuccessfully);
         }
-    }
-
-    public boolean hasStrippedSuccessfully() {
-        if (hasStrippedSuccessfully == null) {
-            throw VMError.shouldNotReachHere("hasStrippedSuccessfully not available yet");
-        }
-        return hasStrippedSuccessfully;
     }
 
     @SuppressFBWarnings(value = "", justification = "FB reports null pointer dereferencing although it is not possible in this case.")

@@ -24,15 +24,20 @@
  */
 package com.oracle.svm.core.gc.shenandoah.graal;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.gc.shared.graal.NativeGCAllocationSupport;
 import com.oracle.svm.core.gc.shenandoah.ShenandoahConstants;
 import com.oracle.svm.core.gc.shenandoah.ShenandoahHeap;
 import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahLibrary;
 import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class ShenandoahAllocationSupport extends NativeGCAllocationSupport {
     @Override
     public Word getTLABInfo() {
@@ -52,28 +57,28 @@ public class ShenandoahAllocationSupport extends NativeGCAllocationSupport {
     @Override
     @Uninterruptible(reason = "The newly allocated object must be young or all its covered cards must be dirty.", callerMustBe = true, calleeMustBe = false)
     protected Object allocateInstance0(DynamicHub hub) {
-        Word result = ShenandoahLibrary.allocateInstance(Word.objectToUntrackedPointer(hub));
+        Word result = ShenandoahLibrary.allocateInstance(Word.objectToUntrackedWord(hub));
         return result.toObject();
     }
 
     @Override
     @Uninterruptible(reason = "The newly allocated object must be young or all its covered cards must be dirty.", callerMustBe = true, calleeMustBe = false)
     protected Object allocateArray0(int length, DynamicHub hub) {
-        Word result = ShenandoahLibrary.allocateArray(Word.objectToUntrackedPointer(hub), length);
+        Word result = ShenandoahLibrary.allocateArray(Word.objectToUntrackedWord(hub), length);
         return result.toObject();
     }
 
     @Override
     @Uninterruptible(reason = "The newly allocated object must be young or all its covered cards must be dirty.", callerMustBe = true, calleeMustBe = false)
     protected Object allocateStoredContinuation0(int length, DynamicHub hub) {
-        Word result = ShenandoahLibrary.allocateStoredContinuation(Word.objectToUntrackedPointer(hub), length);
+        Word result = ShenandoahLibrary.allocateStoredContinuation(Word.objectToUntrackedWord(hub), length);
         return result.toObject();
     }
 
     @Override
     @Uninterruptible(reason = "The newly allocated object must be young or all its covered cards must be dirty.", callerMustBe = true, calleeMustBe = false)
     protected Object allocatePod0(int length, DynamicHub hub) {
-        Word result = ShenandoahLibrary.allocatePod(Word.objectToUntrackedPointer(hub), length);
+        Word result = ShenandoahLibrary.allocatePod(Word.objectToUntrackedWord(hub), length);
         return result.toObject();
     }
 }

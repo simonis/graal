@@ -24,21 +24,20 @@
  */
 package com.oracle.svm.hosted.code;
 
-import static com.oracle.svm.core.Uninterruptible.Utils.isUninterruptible;
+import com.oracle.svm.hosted.CEntryPointBuiltinImplementationGuestValue;
+import static com.oracle.svm.core.UninterruptibleAnnotationUtils.isUninterruptible;
 
-import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+import com.oracle.svm.core.BuilderUtil;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Isolate;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.c.constant.CEnum;
 import org.graalvm.nativeimage.c.constant.CEnumLookup;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
-import org.graalvm.nativeimage.c.function.CEntryPoint.IsolateContext;
-import org.graalvm.nativeimage.c.function.CEntryPoint.IsolateThreadContext;
 
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.infrastructure.ResolvedSignature;
@@ -46,29 +45,28 @@ import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.HostedProviders;
-import com.oracle.graal.pointsto.util.GraalAccess;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.function.CEntryPointBuiltins;
-import com.oracle.svm.core.c.function.CEntryPointBuiltins.CEntryPointBuiltinImplementation;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoEpilogue;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoPrologue;
-import com.oracle.svm.core.c.function.CEntryPointSetup;
+import com.oracle.svm.guest.staging.c.function.CEntryPointBuiltins;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoEpilogue;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoPrologue;
+import com.oracle.svm.guest.staging.c.function.CEntryPointSetup;
 import com.oracle.svm.core.code.IsolateEnterStub;
 import com.oracle.svm.core.graal.nodes.CEntryPointLeaveNode;
 import com.oracle.svm.core.graal.nodes.CEntryPointLeaveNode.LeaveAction;
 import com.oracle.svm.core.graal.nodes.LoweredDeadEndNode;
 import com.oracle.svm.core.graal.replacements.SubstrateGraphKit;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.c.CInterfaceWrapper;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.c.info.ElementInfo;
 import com.oracle.svm.hosted.c.info.EnumInfo;
 import com.oracle.svm.hosted.phases.CInterfaceEnumTool;
 import com.oracle.svm.hosted.phases.HostedGraphKit;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.GuestAccess;
 
+import jdk.graal.compiler.annotation.AnnotationValue;
 import jdk.graal.compiler.core.common.calc.FloatConvert;
 import jdk.graal.compiler.core.common.type.StampFactory;
 import jdk.graal.compiler.debug.DebugContext;
@@ -130,7 +128,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  */
 public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
     static CEntryPointCallStubMethod create(BigBang bb, AnalysisMethod targetMethod, CEntryPointData entryPointData) {
-        MetaAccessProvider originalMetaAccess = GraalAccess.getOriginalProviders().getMetaAccess();
+        MetaAccessProvider originalMetaAccess = GuestAccess.get().getProviders().getMetaAccess();
         ResolvedJavaType declaringClass = originalMetaAccess.lookupJavaType(IsolateEnterStub.class);
         ConstantPool constantPool = IsolateEnterStub.getConstantPool(originalMetaAccess);
         return new CEntryPointCallStubMethod(entryPointData, targetMethod, declaringClass, constantPool, bb.getMetaAccess());
@@ -141,7 +139,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
     private final ResolvedSignature<AnalysisType> targetSignature;
 
     private CEntryPointCallStubMethod(CEntryPointData entryPointData, AnalysisMethod targetMethod, ResolvedJavaType holderClass, ConstantPool holderConstantPool, AnalysisMetaAccess metaAccess) {
-        super(SubstrateUtil.uniqueStubName(targetMethod.getWrapped()), holderClass, createSignature(targetMethod, metaAccess), holderConstantPool);
+        super(BuilderUtil.uniqueStubName(targetMethod.getWrapped()), holderClass, createSignature(targetMethod, metaAccess), holderConstantPool);
         this.entryPointData = entryPointData;
         this.targetMethod = targetMethod.getWrapped();
         this.targetSignature = targetMethod.getSignature();
@@ -189,7 +187,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
 
     @Override
     public StructuredGraph buildGraph(DebugContext debug, AnalysisMethod method, HostedProviders providers, Purpose purpose) {
-        if (entryPointData.getBuiltin() != CEntryPointData.DEFAULT_BUILTIN) {
+        if (entryPointData.getBuiltin() != CEntryPointData.NO_BUILTIN) {
             return buildBuiltinGraph(debug, method, providers);
         }
 
@@ -207,7 +205,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
         }
 
         /* Invoke the prologue. This call is the only one that may be inlined. */
-        InvokeWithExceptionNode invokePrologue = generatePrologue(kit, parameterLoadTypes, targetMethod.getParameterAnnotations(), args);
+        InvokeWithExceptionNode invokePrologue = generatePrologue(kit, parameterLoadTypes, GuestAnnotationAccess.getParameterAnnotationValues(targetMethod), args);
         if (invokePrologue != null) {
             ResolvedJavaMethod prologueMethod = invokePrologue.callTarget().targetMethod();
             JavaKind prologueReturnKind = prologueMethod.getSignature().getReturnKind();
@@ -220,12 +218,12 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
                 /* Prologue returned non-zero, start the error handling. */
                 kit.elsePart();
 
-                Class<?> bailoutCustomizer = entryPointData.getPrologueBailout();
+                ResolvedJavaType bailoutCustomizer = entryPointData.getPrologueBailout();
                 JavaKind targetMethodReturnKind = targetMethod.getSignature().getReturnKind();
 
                 /* Generate the default bailout logic if no custom bailout logic was registered. */
                 boolean createdReturnNode = false;
-                if (bailoutCustomizer == CEntryPointOptions.AutomaticPrologueBailout.class) {
+                if (bailoutCustomizer.equals(CEntryPointData.AUTOMATIC_PROLOGUE_BAILOUT)) {
                     if (targetMethodReturnKind == JavaKind.Int) {
                         /* Directly return the error code that was returned from the prologue. */
                         kit.createReturn(invokePrologue, JavaKind.Int);
@@ -241,7 +239,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
 
                 /* Invoke the custom bailout logic if necessary. */
                 if (!createdReturnNode) {
-                    AnalysisMethod[] bailoutMethods = kit.getMetaAccess().lookupJavaType(bailoutCustomizer).getDeclaredMethods(false);
+                    AnalysisMethod[] bailoutMethods = kit.getMetaAccess().getUniverse().lookup(bailoutCustomizer).getDeclaredMethods(false);
                     UserError.guarantee(bailoutMethods.length == 1 && bailoutMethods[0].isStatic(), "Prologue bailout customization class must declare exactly one static method: %s -> %s",
                                     targetMethod, bailoutCustomizer);
 
@@ -314,24 +312,24 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
         HostedGraphKit kit = new HostedGraphKit(debug, providers, method);
         AnalysisMethod aTargetMethod = kit.getMetaAccess().getUniverse().lookup(targetMethod);
 
-        UserError.guarantee(entryPointData.getPrologue() == CEntryPointData.DEFAULT_PROLOGUE,
+        UserError.guarantee(entryPointData.getPrologue().equals(CEntryPointData.AUTOMATIC_PROLOGUE),
                         "@%s method declared as built-in must not have a custom prologue: %s", CEntryPoint.class.getSimpleName(), aTargetMethod);
-        UserError.guarantee(entryPointData.getEpilogue() == CEntryPointData.DEFAULT_EPILOGUE,
+        UserError.guarantee(entryPointData.getEpilogue().equals(CEntryPointData.DEFAULT_EPILOGUE),
                         "@%s method declared as built-in must not have a custom epilogue: %s", CEntryPoint.class.getSimpleName(), aTargetMethod);
-        UserError.guarantee(entryPointData.getExceptionHandler() == CEntryPointData.DEFAULT_EXCEPTION_HANDLER,
+        UserError.guarantee(entryPointData.getExceptionHandler().equals(CEntryPointData.FATAL_EXCEPTION_HANDLER),
                         "@%s method declared as built-in must not have a custom exception handler: %s", CEntryPoint.class.getSimpleName(), aTargetMethod);
 
         if (ImageSingletons.contains(CInterfaceWrapper.class)) {
             ImageSingletons.lookup(CInterfaceWrapper.class).tagCEntryPointPrologue(kit, method);
         }
 
-        ExecutionContextParameters executionContext = findExecutionContextParameters(kit, aTargetMethod.toParameterList(), aTargetMethod.getParameterAnnotations());
+        ExecutionContextParameters executionContext = findExecutionContextParameters(kit, aTargetMethod.toParameterList(), GuestAnnotationAccess.getParameterAnnotationValues(aTargetMethod));
 
         /* Find the target method for the built-in. */
         CEntryPoint.Builtin builtin = entryPointData.getBuiltin();
         AnalysisMethod builtinCallee = null;
         for (AnalysisMethod candidate : kit.getMetaAccess().lookupJavaType(CEntryPointBuiltins.class).getDeclaredMethods(false)) {
-            CEntryPointBuiltinImplementation annotation = candidate.getAnnotation(CEntryPointBuiltinImplementation.class);
+            CEntryPointBuiltinImplementationGuestValue annotation = CEntryPointBuiltinImplementationGuestValue.get(candidate);
             if (annotation != null && annotation.builtin().equals(builtin)) {
                 VMError.guarantee(builtinCallee == null, "More than one candidate for @%s built-in %s", CEntryPoint.class.getSimpleName(), builtin);
                 builtinCallee = candidate;
@@ -456,17 +454,17 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
         }
     }
 
-    private InvokeWithExceptionNode generatePrologue(HostedGraphKit kit, List<AnalysisType> parameterTypes, Annotation[][] parameterAnnotations, ValueNode[] args) {
-        Class<?> prologueClass = entryPointData.getPrologue();
-        if (prologueClass == NoPrologue.class) {
+    private InvokeWithExceptionNode generatePrologue(HostedGraphKit kit, List<AnalysisType> parameterTypes, List<List<AnnotationValue>> parameterAnnotations, ValueNode[] args) {
+        ResolvedJavaType prologueClass = entryPointData.getPrologue();
+        if (prologueClass.equals(CEntryPointData.NO_PROLOGUE)) {
             UserError.guarantee(isUninterruptible(targetMethod), "%s.%s is allowed only for methods annotated with @%s: %s",
-                            CEntryPointOptions.class.getSimpleName(), NoPrologue.class.getSimpleName(), Uninterruptible.class.getSimpleName(), targetMethod);
+                            CEntryPointOptions.class.getSimpleName(), NoPrologue.class.getSimpleName(), GuestAccess.elements().Uninterruptible.toJavaName(false), targetMethod);
             return null;
         }
 
         /* Generate a call to a custom prologue method, if one is registered. */
-        if (prologueClass != CEntryPointOptions.AutomaticPrologue.class) {
-            AnalysisType prologue = kit.getMetaAccess().lookupJavaType(prologueClass);
+        if (!prologueClass.equals(CEntryPointData.AUTOMATIC_PROLOGUE)) {
+            AnalysisType prologue = kit.getMetaAccess().getUniverse().lookup(prologueClass);
             AnalysisMethod[] prologueMethods = prologue.getDeclaredMethods(false);
             UserError.guarantee(prologueMethods.length == 1 && prologueMethods[0].isStatic(), "Prologue class must declare exactly one static method: %s -> %s", targetMethod, prologue);
             ValueNode[] prologueArgs = matchPrologueParameters(kit, parameterTypes, args, prologueMethods[0]);
@@ -486,14 +484,14 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
 
         /* Generate the call to EnterPrologue.enter(...). */
         ValueNode contextValue = args[contextIndex];
-        prologueClass = CEntryPointSetup.EnterPrologue.class;
-        AnalysisMethod[] prologueMethods = kit.getMetaAccess().lookupJavaType(prologueClass).getDeclaredMethods(false);
+        AnalysisMethod[] prologueMethods = kit.getMetaAccess().lookupJavaType(CEntryPointSetup.EnterPrologue.class).getDeclaredMethods(false);
         assert prologueMethods.length == 1 && prologueMethods[0].isStatic() : "Prologue class must declare exactly one static method";
         return createInvokeStaticWithFatalExceptionHandler(kit, prologueMethods[0], contextValue);
     }
 
     private static InvokeWithExceptionNode createInvokeStaticWithFatalExceptionHandler(SubstrateGraphKit kit, AnalysisMethod method, ValueNode... args) {
-        UserError.guarantee(isUninterruptible(method), "The method %s must be annotated with @%s as it is used for a prologue, epilogue, or bailout.", Uninterruptible.class.getSimpleName(), method);
+        UserError.guarantee(isUninterruptible(method), "The method %s must be annotated with @%s as it is used for a prologue, epilogue, or bailout.",
+                        GuestAccess.elements().Uninterruptible.toJavaName(false), method);
 
         /* Generate the call. */
         InvokeWithExceptionNode invoke = kit.startInvokeWithException(method, InvokeKind.Static, kit.getFrameState(), kit.bci(), args);
@@ -515,7 +513,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
         int designatedThreadIndex = -1;
     }
 
-    private ExecutionContextParameters findExecutionContextParameters(HostedGraphKit kit, List<AnalysisType> parameterTypes, Annotation[][] parameterAnnotations) {
+    private ExecutionContextParameters findExecutionContextParameters(HostedGraphKit kit, List<AnalysisType> parameterTypes, List<List<AnnotationValue>> parameterAnnotations) {
         AnalysisType isolateType = kit.getMetaAccess().lookupJavaType(Isolate.class);
         AnalysisType threadType = kit.getMetaAccess().lookupJavaType(IsolateThread.class);
 
@@ -527,20 +525,21 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
             boolean isLong = declaredType.getJavaKind() == JavaKind.Long;
             boolean designated = false;
 
-            for (Annotation ann : parameterAnnotations[i]) {
-                if (ann.annotationType() == IsolateContext.class) {
-                    UserError.guarantee(isIsolate || isLong, "@%s parameter %d is annotated with @%s, but does not have type %s: %s",
-                                    CEntryPoint.class.getSimpleName(), i, CEntryPoint.IsolateContext.class.getSimpleName(), Isolate.class.getSimpleName(), targetMethod);
-                    designated = true;
-                    isIsolate = true;
-                } else if (ann.annotationType() == IsolateThreadContext.class) {
-                    UserError.guarantee(isThread || isLong, "@%s parameter %d is annotated with @%s, but does not have type %s: %s",
-                                    CEntryPoint.class.getSimpleName(), i, CEntryPoint.IsolateThreadContext.class.getSimpleName(), IsolateThread.class.getSimpleName(), targetMethod);
-                    designated = true;
-                    isThread = true;
+            if (parameterAnnotations != null) {
+                for (AnnotationValue annotation : parameterAnnotations.get(i)) {
+                    if (annotation.getAnnotationType().equals(GuestAccess.elements().CEntryPoint_IsolateContext)) {
+                        UserError.guarantee(isIsolate || isLong, "@%s parameter %d is annotated with @%s, but does not have type %s: %s",
+                                        CEntryPoint.class.getSimpleName(), i, CEntryPoint.IsolateContext.class.getSimpleName(), Isolate.class.getSimpleName(), targetMethod);
+                        designated = true;
+                        isIsolate = true;
+                    } else if (annotation.getAnnotationType().equals(GuestAccess.elements().CEntryPoint_IsolateThreadContext)) {
+                        UserError.guarantee(isThread || isLong, "@%s parameter %d is annotated with @%s, but does not have type %s: %s",
+                                        CEntryPoint.class.getSimpleName(), i, CEntryPoint.IsolateThreadContext.class.getSimpleName(), IsolateThread.class.getSimpleName(), targetMethod);
+                        designated = true;
+                        isThread = true;
+                    }
                 }
             }
-
             UserError.guarantee(!(isIsolate && isThread), "@%s parameter %d has a type as both an %s and a %s: %s",
                             CEntryPoint.class.getSimpleName(), i, Isolate.class.getSimpleName(), IsolateThread.class.getSimpleName(), targetMethod);
 
@@ -586,7 +585,7 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
     }
 
     private void generateExceptionHandler(ResolvedJavaMethod method, HostedGraphKit kit, ExceptionObjectNode exception, JavaKind returnKind) {
-        if (entryPointData.getExceptionHandler() == CEntryPoint.FatalExceptionHandler.class) {
+        if (entryPointData.getExceptionHandler().equals(CEntryPointData.FATAL_EXCEPTION_HANDLER)) {
             /* Exceptions are fatal errors by default. */
             CEntryPointLeaveNode leave = new CEntryPointLeaveNode(LeaveAction.ExceptionAbort, exception);
             kit.append(leave);
@@ -596,10 +595,11 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
 
         /* Determine which method was registered as the exception handler. */
         AnalysisType throwable = kit.getMetaAccess().lookupJavaType(Throwable.class);
-        AnalysisType handler = kit.getMetaAccess().lookupJavaType(entryPointData.getExceptionHandler());
+        AnalysisType handler = kit.getMetaAccess().getUniverse().lookup(entryPointData.getExceptionHandler());
         AnalysisMethod[] handlerMethods = handler.getDeclaredMethods(false);
         UserError.guarantee(handlerMethods.length == 1 && handlerMethods[0].isStatic(), "Exception handler class must declare exactly one static method: %s -> %s", targetMethod, handler);
-        UserError.guarantee(isUninterruptible(handlerMethods[0]), "Exception handler method must be annotated with @%s: %s", Uninterruptible.class.getSimpleName(), handlerMethods[0]);
+        UserError.guarantee(isUninterruptible(handlerMethods[0]), "Exception handler method must be annotated with @%s: %s", GuestAccess.elements().Uninterruptible.toJavaName(false),
+                        handlerMethods[0]);
 
         List<AnalysisType> handlerParameterTypes = handlerMethods[0].toParameterList();
         UserError.guarantee(handlerParameterTypes.size() == 1 && handlerParameterTypes.getFirst().isAssignableFrom(throwable),
@@ -662,14 +662,14 @@ public final class CEntryPointCallStubMethod extends EntryPointCallStubMethod {
     }
 
     private void generateEpilogue(HostedGraphKit kit) {
-        Class<?> epilogueClass = entryPointData.getEpilogue();
-        if (epilogueClass == NoEpilogue.class) {
+        ResolvedJavaType epilogueClass = entryPointData.getEpilogue();
+        if (epilogueClass.equals(CEntryPointData.NO_EPILOGUE)) {
             UserError.guarantee(isUninterruptible(targetMethod), "%s.%s is allowed only for methods annotated with @%s: %s",
-                            CEntryPointOptions.class.getSimpleName(), NoEpilogue.class.getSimpleName(), Uninterruptible.class.getSimpleName(), targetMethod);
+                            CEntryPointOptions.class.getSimpleName(), NoEpilogue.class.getSimpleName(), GuestAccess.elements().Uninterruptible.toJavaName(false), targetMethod);
             return;
         }
 
-        AnalysisType epilogue = kit.getMetaAccess().lookupJavaType(epilogueClass);
+        AnalysisType epilogue = kit.getMetaAccess().getUniverse().lookup(epilogueClass);
         AnalysisMethod[] epilogueMethods = epilogue.getDeclaredMethods(false);
         UserError.guarantee(epilogueMethods.length == 1 && epilogueMethods[0].isStatic() && epilogueMethods[0].getSignature().getParameterCount(false) == 0,
                         "Epilogue class must declare exactly one static method without parameters: %s -> %s", targetMethod, epilogue);

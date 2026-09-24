@@ -54,7 +54,7 @@ import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 
 import com.oracle.svm.core.deopt.DeoptTest;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.Pod;
 import com.oracle.svm.core.heap.Pod.Builder;
@@ -68,7 +68,11 @@ import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.NativeImageSystemClassLoader;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.vm.ci.meta.JavaKind;
 
@@ -105,6 +109,7 @@ public interface PodSupport {
 
 @AutomaticallyRegisteredFeature
 @Platforms(InternalPlatform.NATIVE_ONLY.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 final class PodFeature implements PodSupport, InternalFeature {
     private static final AtomicInteger GENERATED_COUNTER = new AtomicInteger();
 
@@ -128,8 +133,12 @@ final class PodFeature implements PodSupport, InternalFeature {
     }
 
     @Override
-    public void afterRegistration(AfterRegistrationAccess access) {
+    public void onRegistration(OnRegistrationAccess access) {
         ImageSingletons.add(PodSupport.class, this);
+    }
+
+    @Override
+    public void afterRegistration(AfterRegistrationAccess access) {
         ImageSingletons.add(Pod.RuntimeSupport.class, new Pod.RuntimeSupport());
 
         registerSuperclass(Object.class, Supplier.class);

@@ -24,12 +24,12 @@
  */
 package com.oracle.svm.core.metaspace;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.word.Pointer;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.hub.DynamicHub;
 
@@ -91,6 +91,9 @@ public interface Metaspace {
 
     /** Allocates an int array. */
     int[] allocateIntArray(int length);
+
+    /** Allocates a pure-instance object of the given class. */
+    <T> T allocateObject(Class<T> clazz);
 
     default byte[] copyToMetaspace(byte[] heapArray) {
         byte[] result = Metaspace.singleton().allocateByteArray(heapArray.length);

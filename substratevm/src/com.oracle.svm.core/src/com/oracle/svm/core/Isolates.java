@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.Isolate;
 import org.graalvm.nativeimage.StackValue;
@@ -32,18 +32,19 @@ import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.WordBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.os.CommittedMemoryProvider;
 import com.oracle.svm.core.util.PointerUtils;
-import com.oracle.svm.core.util.TimeUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.TimeUtils;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.NamedLocationIdentity;
-import jdk.graal.compiler.word.Word;
 
 public class Isolates {
     public static final String IMAGE_HEAP_BEGIN_SYMBOL_NAME = "__svm_heap_begin";
@@ -73,9 +74,7 @@ public class Isolates {
     public static final CGlobalData<Word> IMAGE_HEAP_WRITABLE_PATCHED_END = CGlobalDataFactory.forSymbol(IMAGE_HEAP_WRITABLE_PATCHED_END_SYMBOL_NAME);
     public static final CGlobalData<Pointer> ISOLATE_COUNTER = CGlobalDataFactory.createWord((WordBase) Word.unsigned(1));
 
-    /* Only used if SpawnIsolates is disabled. */
-    private static final CGlobalData<Pointer> SINGLE_ISOLATE_ALREADY_CREATED = CGlobalDataFactory.createWord();
-
+    private static boolean startTimesAssigned;
     private static long startTimeNanos;
     private static long initDoneTimeMillis;
     private static long isolateId = -1;
@@ -87,6 +86,7 @@ public class Isolates {
      * explicitly or implicitly shared between the isolates of the process (for example, because
      * they have a single native state that does not distinguish between isolates).
      */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static boolean isCurrentFirst() {
         VMError.guarantee(isolateId >= 0);
         return isolateId == 0;
@@ -110,34 +110,37 @@ public class Isolates {
     }
 
     public static void assignStartTime() {
-        assert startTimeNanos == 0 : startTimeNanos;
-        assert initDoneTimeMillis == 0 : initDoneTimeMillis;
+        assert !startTimesAssigned;
         startTimeNanos = System.nanoTime();
         initDoneTimeMillis = TimeUtils.currentTimeMillis();
+        startTimesAssigned = true;
     }
 
     /** Epoch-based timestamp. If possible, {@link #getStartTimeNanos()} should be used instead. */
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static long getInitDoneTimeMillis() {
-        assert initDoneTimeMillis != 0;
+        assert startTimesAssigned;
         return initDoneTimeMillis;
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static long getUptimeMillis() {
-        assert startTimeNanos != 0;
-        return TimeUtils.millisSinceNanos(startTimeNanos);
+        return TimeUtils.millisSinceNanos(getStartTimeNanos());
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static long getStartTimeNanos() {
-        assert startTimeNanos != 0;
+        assert startTimesAssigned;
         return startTimeNanos;
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static boolean isStartTimeAssigned() {
+        return startTimesAssigned;
+    }
+
     /**
-     * Gets an identifier for the current isolate that is guaranteed to be unique for the first
-     * {@code 2^64 - 1} isolates in the process.
+     * Gets an identifier for the current isolate that is guaranteed to be unique and non-negative.
      */
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static long getIsolateId() {
@@ -149,7 +152,7 @@ public class Isolates {
     public static int checkIsolate(Isolate isolate) {
         if (isolate.isNull()) {
             return CEntryPointErrors.NULL_ARGUMENT;
-        } else if (SubstrateOptions.SpawnIsolates.getValue() && !PointerUtils.isAMultiple(isolate, Word.signed(Heap.getHeap().getHeapBaseAlignment()))) {
+        } else if (!PointerUtils.isAMultiple(isolate, Word.signed(Heap.getHeap().getHeapBaseAlignment()))) {
             /*
              * The Isolate pointer is currently the same as the heap base, so we can check if the
              * alignment matches the one that is expected for the heap base. This will detect most
@@ -162,12 +165,6 @@ public class Isolates {
 
     @Uninterruptible(reason = "Thread state not yet set up.")
     public static int create(WordPointer isolatePointer, IsolateArguments arguments) {
-        if (!SubstrateOptions.SpawnIsolates.getValue()) {
-            if (!SINGLE_ISOLATE_ALREADY_CREATED.get().logicCompareAndSwapWord(0, Word.zero(), Word.signed(1), NamedLocationIdentity.OFF_HEAP_LOCATION)) {
-                return CEntryPointErrors.SINGLE_ISOLATE_ALREADY_CREATED;
-            }
-        }
-
         WordPointer heapBasePointer = StackValue.get(WordPointer.class);
         int result = CommittedMemoryProvider.get().initialize(heapBasePointer, arguments);
         if (result != CEntryPointErrors.NO_ERROR) {

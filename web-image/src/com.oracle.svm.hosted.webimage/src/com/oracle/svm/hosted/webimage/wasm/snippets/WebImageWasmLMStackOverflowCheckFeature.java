@@ -27,7 +27,7 @@ package com.oracle.svm.hosted.webimage.wasm.snippets;
 
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.graal.snippets.StackOverflowCheckFeature;
 import com.oracle.svm.hosted.webimage.WebImageDelegateFeature;
 import com.oracle.svm.webimage.platform.WebImageWasmLMPlatform;

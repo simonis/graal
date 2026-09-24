@@ -27,7 +27,7 @@ package com.oracle.svm.core;
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.heap.ObjectVisitor;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 
 /** A walker over different kinds of allocated memory. */
 public final class MemoryWalker {
@@ -46,11 +46,9 @@ public final class MemoryWalker {
 
         UnsignedWord getSize(T region);
 
-        String getRegionName(T region);
-
         boolean isWritable(T region);
 
-        boolean consistsOfHugeObjects(T region);
+        boolean usesUnalignedChunks(T region);
 
         void visitObjects(T region, ObjectVisitor visitor);
     }

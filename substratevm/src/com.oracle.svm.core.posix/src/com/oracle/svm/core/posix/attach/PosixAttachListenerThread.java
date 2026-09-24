@@ -32,7 +32,7 @@ import org.graalvm.word.PointerBase;
 import com.oracle.svm.core.attach.AttachListenerThread;
 import com.oracle.svm.core.posix.PosixUtils;
 import com.oracle.svm.core.posix.headers.Unistd;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 public final class PosixAttachListenerThread extends AttachListenerThread {
     private final int listener;
@@ -42,7 +42,7 @@ public final class PosixAttachListenerThread extends AttachListenerThread {
     }
 
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L256-L313")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L256-L313")
     protected AttachOperation dequeue() {
         while (true) {
             int socket = AttachHelper.waitForRequest(listener);
@@ -60,7 +60,7 @@ public final class PosixAttachListenerThread extends AttachListenerThread {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L102-L139")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+18/src/hotspot/os/posix/attachListener_posix.cpp#L102-L139")
     private static class PosixAttachSocketChannel extends AttachSocketChannel {
         private int socket;
 

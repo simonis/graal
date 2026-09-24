@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,11 +24,15 @@
  */
 package com.oracle.svm.core.meta;
 
-import com.oracle.svm.core.Uninterruptible;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+
+import org.graalvm.nativeimage.c.function.CFunctionPointer;
+
 import com.oracle.svm.core.code.ImageCodeInfo;
 import com.oracle.svm.core.deopt.Deoptimizer;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionType;
+import com.oracle.svm.shared.Uninterruptible;
 
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
@@ -40,6 +44,20 @@ public interface SharedMethod extends ResolvedJavaMethod {
     boolean isUninterruptible();
 
     boolean needSafepointCheck();
+
+    boolean isLambdaFormCompiled();
+
+    /**
+     * @return true if the stack overflow check in the method's prologue cannot be omitted.
+     */
+    default boolean needStackOverflowCheck() {
+        /*
+         * Uninterruptible methods are allowed to use the yellow and red zones of the stack. Also,
+         * the thread register and stack boundary might not be set up. We cannot do a stack overflow
+         * check.
+         */
+        return !isUninterruptible();
+    }
 
     /**
      * Returns true if this method is a native entry point, i.e., called from C code. The method
@@ -76,7 +94,7 @@ public interface SharedMethod extends ResolvedJavaMethod {
      * Note normally in the open type world {@code indirectCallTarget == this}. Only for special
      * HotSpot-specific methods such as miranda and overpass methods will the indirectCallTarget be
      * a different method. The logic for setting the indirectCallTarget can be found in
-     * {@code OpenTypeWorldFeature#calculateIndirectCallTarget}.
+     * {@code OpenTypeWorldSupport#computeIndirectCallTargets}.
      *
      * <p>
      * In the closed type world, this method will always return {@code this}.
@@ -89,17 +107,25 @@ public interface SharedMethod extends ResolvedJavaMethod {
      */
     Deoptimizer.StubType getDeoptStubType();
 
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     ImageCodeInfo getImageCodeInfo();
 
     boolean hasImageCodeOffset();
 
     int getImageCodeOffset();
 
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    /**
+     * Returns the encoded relative IP of this method's deoptimization entry point in image code.
+     *
+     * @see com.oracle.svm.core.code.CodeInfoAccess#relativeIP(com.oracle.svm.core.code.CodeInfo,
+     *      org.graalvm.nativeimage.c.function.CodePointer)
+     */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     int getImageCodeDeoptOffset();
 
-    /** Always call this method indirectly, even if it is normally called directly. */
+    /**
+     * Always call this method indirectly, even if it is normally called directly.
+     */
     boolean forceIndirectCall();
 
     /**
@@ -108,4 +134,29 @@ public interface SharedMethod extends ResolvedJavaMethod {
      */
     @Override
     boolean isDeclared();
+
+    /**
+     * Returns a function pointer to the method if it can be called directly without any dispatch.
+     * <p>
+     * This method should be overridden in implementations to provide raw access to the direct
+     * address of this method. This is solely reserved for types present during image building and
+     * should only be used at runtime for just-in-time compiled code calling into the image built
+     * method.
+     *
+     * @return an AOT compiled entry point of this method or {@code Word.nullPointer()} if no
+     *         compiled entry point is available.
+     */
+    CFunctionPointer getAOTEntrypoint();
+
+    /**
+     * Returns the interpreter method representation for this method at runtime.
+     *
+     * @return interpreter method for target method, or {@code null} if not applicable
+     */
+    ResolvedJavaMethod getInterpreterMethod();
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    default boolean hasInterpreterMethod() {
+        return false;
+    }
 }

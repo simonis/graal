@@ -31,7 +31,7 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 
 import com.oracle.svm.core.GCRelatedMXBeans;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.code.SubstrateBackendFactory;
@@ -40,6 +40,7 @@ import com.oracle.svm.core.graal.code.SubstrateRegisterConfigFactory;
 import com.oracle.svm.core.graal.code.SubstrateSuitesCreatorProvider;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
+import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig.ConfigKind;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.graal.snippets.SubstrateAllocationSnippets;
 import com.oracle.svm.hosted.webimage.codegen.WebImageJSBackend;
@@ -47,12 +48,23 @@ import com.oracle.svm.hosted.webimage.codegen.WebImageNoRegisterConfig;
 import com.oracle.svm.hosted.webimage.codegen.phase.WebImageJSSuitesCreatorProvider;
 import com.oracle.svm.hosted.webimage.js.WebImageJSLoweringProvider;
 import com.oracle.svm.hosted.webimage.snippets.WebImageIdentityHashCodeSnippets;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.webimage.platform.WebImageJSPlatform;
 
+import jdk.graal.compiler.core.common.spi.ForeignCallsProvider;
+import jdk.graal.compiler.core.common.spi.MetaAccessExtensionProvider;
 import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.nodes.spi.PlatformConfigurationProvider;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.util.Providers;
+import jdk.graal.compiler.replacements.DefaultJavaLoweringProvider;
 import jdk.graal.compiler.replacements.TargetGraphBuilderPlugins;
+import jdk.vm.ci.code.RegisterConfig;
+import jdk.vm.ci.code.TargetDescription;
+import jdk.vm.ci.meta.MetaAccessProvider;
 
 @AutomaticallyRegisteredFeature
 @Platforms(WebImageJSPlatform.class)
@@ -65,17 +77,12 @@ public class WebImageJSFeature implements InternalFeature {
 
     @Override
     public void afterRegistration(Feature.AfterRegistrationAccess access) {
-        ImageSingletons.add(SubstrateRegisterConfigFactory.class, (config, metaAccess, target, preserveFramePointer) -> new WebImageNoRegisterConfig());
+        ImageSingletons.add(SubstrateRegisterConfigFactory.class, new WebImageSubstrateRegisterConfigFactory());
 
         // TODO: Introduce separate backends and lowering providers for WebImageJSPlatform.
-        ImageSingletons.add(SubstrateBackendFactory.class, new SubstrateBackendFactory() {
-            @Override
-            public SubstrateBackend newBackend(Providers newProviders) {
-                return new WebImageJSBackend(newProviders);
-            }
-        });
+        ImageSingletons.add(SubstrateBackendFactory.class, new WebImageSubstrateBackendFactory());
 
-        ImageSingletons.add(SubstrateLoweringProviderFactory.class, WebImageJSLoweringProvider::new);
+        ImageSingletons.add(SubstrateLoweringProviderFactory.class, new WebImageJSLoweringProviderFactory());
         ImageSingletons.add(TargetGraphBuilderPlugins.class, new JSGraphBuilderPlugins());
         ImageSingletons.add(SubstrateSuitesCreatorProvider.class, new WebImageJSSuitesCreatorProvider());
 
@@ -84,8 +91,32 @@ public class WebImageJSFeature implements InternalFeature {
 
     @Override
     public void registerLowerings(RuntimeConfiguration runtimeConfig, OptionValues options, Providers providers, Map<Class<? extends Node>, NodeLoweringProvider<?>> lowerings, boolean hosted) {
-        SubstrateAllocationSnippets allocationSnippets = ImageSingletons.lookup(SubstrateAllocationSnippets.class);
-        SubstrateAllocationSnippets.Templates templates = new SubstrateAllocationSnippets.Templates(options, providers, allocationSnippets);
+        SubstrateAllocationSnippets.Templates templates = new SubstrateAllocationSnippets.Templates(options, providers);
         templates.registerLowering(lowerings);
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
+    private static final class WebImageSubstrateRegisterConfigFactory implements SubstrateRegisterConfigFactory {
+        @Override
+        public RegisterConfig newRegisterFactory(ConfigKind config, MetaAccessProvider metaAccess, TargetDescription target, Boolean preserveFramePointer) {
+            return new WebImageNoRegisterConfig();
+        }
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
+    private static final class WebImageSubstrateBackendFactory extends SubstrateBackendFactory {
+        @Override
+        public SubstrateBackend newBackend(Providers newProviders) {
+            return new WebImageJSBackend(newProviders);
+        }
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
+    private static final class WebImageJSLoweringProviderFactory implements SubstrateLoweringProviderFactory {
+        @Override
+        public DefaultJavaLoweringProvider newLoweringProvider(MetaAccessProvider metaAccess, ForeignCallsProvider foreignCalls, PlatformConfigurationProvider platformConfig,
+                        MetaAccessExtensionProvider metaAccessExtensionProvider, TargetDescription target) {
+            return new WebImageJSLoweringProvider(metaAccess, foreignCalls, platformConfig, metaAccessExtensionProvider, target);
+        }
     }
 }

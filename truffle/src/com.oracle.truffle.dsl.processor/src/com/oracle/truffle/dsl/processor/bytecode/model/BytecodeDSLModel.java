@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -48,6 +48,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
@@ -62,13 +63,24 @@ import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
 import com.oracle.truffle.dsl.processor.ProcessorContext;
+import com.oracle.truffle.dsl.processor.TruffleSuppressedWarnings;
 import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.ImmediateKind;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.InstructionImmediate;
 import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.InstructionKind;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.QuickeningKind;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionPatternModel.Binding;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionPatternModel.ImmediatePattern;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionPatternModel.Literal;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionPatternModel.Wildcard;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionRewriteRuleModel.RewriteSection;
+import com.oracle.truffle.dsl.processor.bytecode.model.InstructionRewriteRuleModel.RewriteSectionKind;
 import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationKind;
+import com.oracle.truffle.dsl.processor.bytecode.model.Signature.Operand;
 import com.oracle.truffle.dsl.processor.expression.DSLExpression;
 import com.oracle.truffle.dsl.processor.generator.BitSet;
 import com.oracle.truffle.dsl.processor.generator.NodeState;
 import com.oracle.truffle.dsl.processor.java.ElementUtils;
+import com.oracle.truffle.dsl.processor.java.model.CodeTreeBuilder;
 import com.oracle.truffle.dsl.processor.library.ExportsData;
 import com.oracle.truffle.dsl.processor.model.MessageContainer;
 import com.oracle.truffle.dsl.processor.model.Template;
@@ -76,20 +88,19 @@ import com.oracle.truffle.dsl.processor.model.TypeSystemData;
 
 public class BytecodeDSLModel extends Template implements PrettyPrintable {
 
+    // Limit the number of stack values supported by rewrite rules.
+    private static final int MAX_STACK_VALUE_REWRITE_COUNT = 8;
+
     private final ProcessorContext context;
     public final TypeElement templateType;
     // The generated class.
     public final String modelName;
-    // The abstract builder class (different from builderType if GenerateBytecodeTestVariants used)
-    public final TypeMirror abstractBuilderType;
 
-    public BytecodeDSLModel(ProcessorContext context, TypeElement templateType, AnnotationMirror mirror, String name,
-                    TypeMirror abstractBuilderType) {
+    public BytecodeDSLModel(ProcessorContext context, TypeElement templateType, AnnotationMirror mirror, String name) {
         super(context, templateType, mirror);
         this.context = context;
         this.templateType = templateType;
         this.modelName = name;
-        this.abstractBuilderType = abstractBuilderType;
     }
 
     private int operationId = 1;
@@ -108,11 +119,14 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     private final HashMap<OperationModel, CustomOperationModel> operationsToCustomOperations = new HashMap<>();
     private final List<CustomOperationModel> instrumentations = new ArrayList<>();
     private final List<CustomOperationModel> customYieldOperations = new ArrayList<>();
+    private final List<CustomOperationModel> customReturnOperations = new ArrayList<>();
     private LinkedHashMap<String, InstructionModel> instructions = new LinkedHashMap<>();
+    public InstructionRewriterModel instructionRewriterModel;
     // instructions indexed by # of short immediates (i.e., their lengths are [2, 4, 6, ...]).
     public InstructionModel[] invalidateInstructions;
 
     public DeclaredType languageClass;
+    public String languageId;
     public boolean enableUncachedInterpreter;
     public String defaultUncachedThreshold;
     public DSLExpression defaultUncachedThresholdExpression;
@@ -122,6 +136,7 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public boolean enableYield;
     public boolean enableMaterializedLocalAccesses;
     public boolean storeBciInFrame;
+    public boolean captureFramesForTrace;
     public boolean bytecodeDebugListener;
     public boolean additionalAssertions;
     public boolean inlinePrimitiveConstants;
@@ -131,16 +146,59 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public boolean enableRootBodyTagging;
     public boolean enableBlockScoping;
     public boolean enableThreadedSwitch;
+    public boolean enableTailCallHandlers;
+    public boolean enableCompressedSources;
+
+    public enum LoadIllegalLocalStrategy {
+        FRAME_SLOT_TYPE_EXCEPTION,
+        DEFAULT_VALUE,
+        CUSTOM_EXCEPTION
+    }
+
+    public LoadIllegalLocalStrategy loadIllegalLocalStrategy;
     public String defaultLocalValue;
     public DSLExpression defaultLocalValueExpression;
+    public DeclaredType illegalLocalException;
+    public String illegalLocalExceptionFactoryName;
+
+    /**
+     * Models a resolved illegal local exception factory method with parsed parameters.
+     */
+    public record IllegalLocalExceptionFactory(ExecutableElement method, List<ParameterKind> parameters) {
+        public enum ParameterKind {
+            NODE,
+            BYTECODE_NODE,
+            BYTECODE_LOCATION,
+            LOCAL_VARIABLE
+        }
+
+        public boolean binds(ParameterKind parameter) {
+            for (ParameterKind p : parameters) {
+                if (p == parameter) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    public IllegalLocalExceptionFactory illegalLocalExceptionFactory;
+
+    public ExecutableElement sourceContentSupplier;
+
     public String variadicStackLimit;
     public DSLExpression variadicStackLimitExpression;
 
+    public boolean enableInstructionTracing;
+    public boolean enableInstructionRewriting;
     public ExecutableElement fdConstructor;
     public ExecutableElement fdBuilderConstructor;
     public ExecutableElement interceptControlFlowException;
+    public ExecutableElement interceptIncomingValue;
     public ExecutableElement interceptInternalException;
+    public ExecutableElement interceptOutgoingValue;
     public ExecutableElement interceptTruffleException;
+    public ExecutableElement traceTransition;
 
     public TypeSystemData typeSystem;
     public Set<TypeMirror> boxingEliminatedTypes = Set.of();
@@ -156,6 +214,9 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public OperationModel finallyHandlerOperation;
     public OperationModel loadConstantOperation;
     public OperationModel loadNullOperation;
+    public OperationModel bindStackValueOperation;
+    public OperationModel loadStackValueOperation;
+    public OperationModel storeStackValueOperation;
     public OperationModel loadLocalOperation;
     public OperationModel loadLocalMaterializedOperation;
     public OperationModel tagOperation;
@@ -171,7 +232,6 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public CustomOperationModel epilogReturn = null;
     public CustomOperationModel epilogExceptional = null;
 
-    public InstructionModel nullInstruction;
     public InstructionModel popInstruction;
     public InstructionModel dupInstruction;
     public InstructionModel returnInstruction;
@@ -182,6 +242,9 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public InstructionModel throwInstruction;
     public InstructionModel loadConstantInstruction;
     public InstructionModel loadNullInstruction;
+    public InstructionModel loadStackValueInstruction;
+    public InstructionModel storeStackValueInstruction;
+    public InstructionModel loadArgumentInstruction;
     public InstructionModel yieldInstruction;
     public InstructionModel loadVariadicInstruction;
     public InstructionModel splatVariadicInstruction;
@@ -194,6 +257,9 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     public InstructionModel tagYieldNullInstruction;
     public InstructionModel tagResumeInstruction;
     public InstructionModel clearLocalInstruction;
+    public InstructionModel traceInstruction;
+
+    public BytecodeConfigEncoding bytecodeConfigEncoding;
 
     public ExportsData tagTreeNodeLibrary;
 
@@ -213,6 +279,11 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
      * {@link #hasCustomVariadic}.
      */
     public boolean hasVariadicReturn;
+
+    /**
+     * Describes the set of local accessors used by custom operations.
+     */
+    public final Set<TypeMirror> localAccessorsUsed = new HashSet<>();
 
     public String getName() {
         return modelName;
@@ -242,12 +313,50 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         return providedTagsSet.contains(ElementUtils.getUniqueIdentifier(tagClass));
     }
 
-    public Signature signature(Class<?> returnType, Class<?>... argumentTypes) {
-        TypeMirror[] arguments = new TypeMirror[argumentTypes.length];
-        for (int i = 0; i < arguments.length; i++) {
-            arguments[i] = context.getType(argumentTypes[i]);
+    public Signature signature(Class<?> returnType) {
+        return signature(returnType, List.of(), List.of());
+    }
+
+    public Signature signature(Class<?> returnType, String name, Class<?> type, Class<?> staticType) {
+        return signature(returnType, List.of(name), List.of(staticType), type);
+    }
+
+    public Signature signature(Class<?> returnType, String name1, Class<?> type1, Class<?> staticType1, String name2, Class<?> type2, Class<?> staticType2) {
+        return signature(returnType, List.of(name1, name2), List.of(staticType1, staticType2), type1, type2);
+    }
+
+    public Signature signature(Class<?> returnType, List<String> names, List<Class<?>> staticTypes, Class<?>... argumentTypes) {
+        return signature(returnType, names, resolveTypes(staticTypes), resolveTypes(List.of(argumentTypes)));
+    }
+
+    private List<TypeMirror> resolveTypes(List<Class<?>> classes) {
+        List<TypeMirror> resolvedTypes = new ArrayList<>(classes.size());
+        for (Class<?> c : classes) {
+            resolvedTypes.add(context.getType(c));
         }
-        return new Signature(context.getType(returnType), List.of(arguments));
+        return resolvedTypes;
+    }
+
+    public Signature signature(TypeMirror returnType, String name1, TypeMirror type1, TypeMirror staticType1) {
+        return signature(returnType, List.of(name1), List.of(staticType1), List.of(type1));
+    }
+
+    public Signature signature(TypeMirror returnType, String name1, TypeMirror type1, TypeMirror staticType1, String name2, TypeMirror type2, TypeMirror staticType2) {
+        return signature(returnType, List.of(name1, name2), List.of(staticType1, staticType2), List.of(type1, type2));
+    }
+
+    public Signature signature(Class<?> returnType, List<String> names, List<TypeMirror> staticTypes, List<TypeMirror> argumentTypes) {
+        return signature(context.getType(returnType), names, staticTypes, argumentTypes);
+    }
+
+    public Signature signature(TypeMirror returnType, List<String> names, List<TypeMirror> staticTypes, List<TypeMirror> argumentTypes) {
+        Operand[] operands = new Operand[argumentTypes.size()];
+        for (int i = 0; i < operands.length; i++) {
+            TypeMirror dynamicType = argumentTypes.get(i);
+            TypeMirror staticType = staticTypes.get(i);
+            operands[i] = new Operand(dynamicType, staticType, names.get(i), i, i, null);
+        }
+        return new Signature(returnType, List.of(operands));
     }
 
     public TypeMirror findProvidedTag(TypeMirror searchTag) {
@@ -271,17 +380,25 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     }
 
     public boolean isBytecodeUpdatable() {
-        return !getInstrumentations().isEmpty() || (enableTagInstrumentation && !getProvidedTags().isEmpty());
+        return hasInstrumentations() || (enableTagInstrumentation && !getProvidedTags().isEmpty());
     }
 
     public boolean hasYieldOperation() {
         return enableYield || !customYieldOperations.isEmpty();
     }
 
+    /**
+     * If boxing elimination and the uncached interpreter are used, we need to update local tags
+     * when transitioning from uncached to cached.
+     */
+    public boolean needsCachedTagsTransition() {
+        return enableUncachedInterpreter && usesBoxingElimination();
+    }
+
     public InstructionModel getInvalidateInstruction(int length) {
         if (invalidateInstructions == null) {
             return null;
-        } else if (length % 2 != 0) {
+        } else if (length % InstructionModel.INSTRUCTION_ALIGNMENT != 0) {
             throw new AssertionError("instructions must be short-aligned");
         }
         return invalidateInstructions[(length - OPCODE_WIDTH) / 2];
@@ -296,8 +413,17 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     }
 
     public OperationModel operation(OperationKind kind, String name, String javadoc, String builderName) {
+        return operation(kind, name, javadoc, builderName, false);
+    }
+
+    public OperationModel operation(OperationKind kind, String name, String javadoc, String builderName, boolean optionalBuiltin) {
         if (operations.containsKey(name)) {
-            addError("Multiple operations declared with name %s. Operation names must be distinct.", name);
+            if (optionalBuiltin) {
+                addSuppressableWarning(TruffleSuppressedWarnings.HIDE_BUILTIN, "Custom operation with name %s conflicts with a built-in operation with the same name. " +
+                                "The built-in operation will not be generated. ", name);
+            } else {
+                addError("Multiple operations declared with name %s. Operation names must be distinct.", name);
+            }
             return null;
         }
         OperationModel op = new OperationModel(this, operationId++, kind, name, builderName, javadoc);
@@ -305,8 +431,16 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         return op;
     }
 
+    public boolean hasInstrumentations() {
+        return !instrumentations.isEmpty() || enableInstructionTracing;
+    }
+
     public List<CustomOperationModel> getInstrumentations() {
         return instrumentations;
+    }
+
+    public int getInstrumentationsCount() {
+        return instrumentations.size() + (enableInstructionTracing ? 1 : 0);
     }
 
     public CustomOperationModel customRegularOperation(OperationKind kind, String name, String javadoc, TypeElement typeElement, AnnotationMirror mirror) {
@@ -323,11 +457,11 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         operationsToCustomOperations.put(op, customOp);
 
         if (kind == OperationKind.CUSTOM_INSTRUMENTATION) {
-            op.setInstrumentationIndex(instrumentations.size());
             instrumentations.add(customOp);
         } else if (kind == OperationKind.CUSTOM_YIELD) {
-            customOp.setCustomYield();
             customYieldOperations.add(customOp);
+        } else if (kind == OperationKind.CUSTOM_RETURN) {
+            customReturnOperations.add(customOp);
         } else if (ElementUtils.typeEquals(mirror.getAnnotationType(), types.Prolog)) {
             op.setInternal();
             if (prolog != null) {
@@ -339,7 +473,6 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
             prolog = customOp;
         } else if (ElementUtils.typeEquals(mirror.getAnnotationType(), types.EpilogReturn)) {
             op.setInternal();
-            op.setTransparent(true);
             op.setDynamicOperands(new DynamicOperandModel(List.of("value"), true, false));
             if (epilogReturn != null) {
                 addError(typeElement, "%s is already annotated with @%s. A Bytecode DSL class can only declare one return epilog.", getSimpleName(epilogReturn.getTemplateType()),
@@ -389,10 +522,11 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     }
 
     private InstructionModel instruction(InstructionModel instr) {
-        if (instructions.containsKey(instr.name)) {
-            throw new AssertionError(String.format("Multiple instructions declared with name %s. Instruction names must be distinct.", instr.name));
+        String instructionName = instr.getName();
+        if (instructions.containsKey(instructionName)) {
+            throw new AssertionError(String.format("Multiple instructions declared with name %s. Instruction names must be distinct.", instructionName));
         }
-        instructions.put(instr.name, instr);
+        instructions.put(instructionName, instr);
         return instr;
     }
 
@@ -400,15 +534,35 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         return instruction(new InstructionModel(kind, name, signature));
     }
 
-    public InstructionModel quickenInstruction(InstructionModel base, Signature signature, String specializationName) {
-        return instruction(new InstructionModel(base, specializationName, signature));
+    public InstructionModel quickenInstruction(InstructionModel base, Signature signature, String quickeningName, QuickeningKind quickeningKind, TypeMirror specializedType, boolean checked) {
+        return instruction(new InstructionModel(base, quickeningName, signature, quickeningKind, specializedType, checked));
     }
 
     public InstructionModel shortCircuitInstruction(String name, ShortCircuitInstructionModel shortCircuitModel) {
         if (instructions.containsKey(name)) {
             throw new AssertionError(String.format("Multiple instructions declared with name %s. Instruction names must be distinct.", name));
         }
-        Signature signature = signature(shortCircuitModel.producesBoolean() ? boolean.class : Object.class, boolean.class, boolean.class);
+
+        /*
+         * NB: This signature reflects the stack effect when the short circuit instruction continues
+         * to the next operand (and not when it skips to the end). The code we generate carefully
+         * ensures that each path branching to the "end" leaves a single value on the stack.
+         */
+        Class<?>[] argumentTypes;
+        List<String> names;
+        List<Class<?>> staticTypes;
+        if (shortCircuitModel.producesBoolean()) {
+            // Consume the boolean value.
+            argumentTypes = new Class<?>[]{Object.class};
+            names = List.of("condition");
+            staticTypes = List.of(boolean.class);
+        } else {
+            // Consume the boolean value and pop the DUP'd original value.
+            argumentTypes = new Class<?>[]{Object.class, Object.class};
+            names = List.of("value", "condition");
+            staticTypes = List.of(Object.class, boolean.class);
+        }
+        Signature signature = signature(void.class, names, staticTypes, argumentTypes);
         InstructionModel instr = instruction(InstructionKind.CUSTOM_SHORT_CIRCUIT, name, signature);
         instr.shortCircuitModel = shortCircuitModel;
 
@@ -430,11 +584,37 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         return getTemplateTypeAnnotation();
     }
 
+    public void configureEpilogReturnInstructions(List<Integer> returnResultStackOffsets) {
+        if (epilogReturn == null) {
+            return;
+        }
+
+        if (!returnResultStackOffsets.contains(1)) {
+            throw new AssertionError("Expected return epilog result stack offsets to include 1.");
+        }
+
+        InstructionModel instruction = epilogReturn.operation.instruction();
+        if (returnResultStackOffsets.size() == 1) {
+            instruction.addFixedImmediate(ImmediateKind.SHORT, "result_stack_offset", 1, CodeTreeBuilder.singleString(String.valueOf(1)));
+        } else {
+            // Remove the "base" instruction and add one variant per offset.
+            instructions.remove(instruction.getName());
+            epilogReturn.operation.instructions.clear();
+            for (int offset : returnResultStackOffsets) {
+                InstructionModel variant = instruction(new InstructionModel(instruction, "offset" + offset));
+                variant.addFixedImmediate(ImmediateKind.SHORT, "result_stack_offset", offset, CodeTreeBuilder.singleString(String.valueOf(offset)));
+                epilogReturn.operation.instructions.add(variant);
+            }
+        }
+    }
+
     public void finalizeInstructions() {
+        BytecodeDSLBuiltins.addBuiltinsOnFinalize(this, types);
         for (InstructionModel instr : getInstructions()) {
             if (instr.nodeData == null) {
                 continue;
             }
+
             /*
              * InstructionModel.canUseNodeSingleton() depends on NodeData.isForceSpecialize() which
              * is initialized in the parser when quickening is applied. By generating the node
@@ -446,29 +626,28 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
             if (instr.canInlineState()) {
                 NodeState state = NodeState.create(instr.nodeData, ImmediateKind.STATE_PROFILE.width.byteSize * 8);
                 for (BitSet s : state.activeState.getSets()) {
-                    instr.addImmediate(ImmediateKind.STATE_PROFILE, s.getName(), false);
+                    instr.addImmediate(ImmediateKind.STATE_PROFILE, s.getName(), true);
                 }
             }
         }
 
-        BytecodeDSLBuiltins.addBuiltinsOnFinalize(this);
-
         LinkedHashMap<String, InstructionModel> newInstructions = new LinkedHashMap<>();
-        for (var entry : instructions.entrySet()) {
-            String name = entry.getKey();
-            InstructionModel instruction = entry.getValue();
+        for (InstructionModel instruction : instructions.sequencedValues()) {
             if (instruction.isQuickening()) {
                 continue;
             }
-            newInstructions.put(name, instruction);
+            if (newInstructions.put(instruction.getName(), instruction) != null) {
+                throw new AssertionError(String.format("Multiple instructions declared with name %s. Instruction names must be distinct.", instruction.getName()));
+            }
             for (InstructionModel derivedInstruction : instruction.getFlattenedQuickenedInstructions()) {
-                newInstructions.put(derivedInstruction.name, derivedInstruction);
+                if (newInstructions.put(derivedInstruction.getName(), derivedInstruction) != null) {
+                    throw new AssertionError(String.format("Multiple instructions declared with name %s. Instruction names must be distinct.", derivedInstruction.getName()));
+                }
             }
         }
 
-        short currentId = 1;
         for (InstructionModel m : newInstructions.values()) {
-            m.setId(currentId++);
+            m.orderImmediates();
             m.validateAlignment();
             /*
              * Make sure the instruction format for quickening is valid.
@@ -479,12 +658,264 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
                     throw new AssertionError(String.format(
                                     "All quickenings must have the same instruction length as the root instruction. " +
                                                     "Invalid instruction length %s for instruction %s. Expected length %s from root %s.",
-                                    m.getInstructionLength(), m.name, root.getInstructionLength(), root.name));
+                                    m.getInstructionLength(), m.getName(), root.getInstructionLength(), root.getName()));
                 }
             }
         }
 
         this.instructions = newInstructions;
+        for (InstructionModel instr : getInstructions()) {
+            instr.finalizeModel();
+        }
+        if (enableInstructionRewriting) {
+            this.instructionRewriterModel = createRewriterModel();
+        }
+
+        BytecodeDSLBuiltins.addInvalidateBuiltinsOnFinalize(this);
+    }
+
+    private InstructionRewriterModel createRewriterModel() {
+        return InstructionRewriterModel.create("InstructionRewriter", instructions.sequencedValues(), computeRewriteRules());
+    }
+
+    private InstructionRewriteRuleModel[] computeRewriteRules() {
+        List<InstructionRewriteRuleModel> rules = new ArrayList<>();
+
+        // load.argument, pop -> _
+        rules.add(rule(delete(p(loadArgumentInstruction), p(popInstruction))));
+        // load.constant, pop -> _
+        rules.add(rule(delete(p(loadConstantInstruction), p(popInstruction))));
+        // load.null, pop -> _
+        rules.add(rule(delete(p(loadNullInstruction), p(popInstruction))));
+        // load.stackvalue, pop -> _
+        rules.add(rule(delete(p(loadStackValueInstruction), p(popInstruction))));
+        // dup, pop -> _
+        rules.add(rule(delete(p(dupInstruction), p(popInstruction))));
+        // Throwing an exception on illegal load makes load.local side-effecting.
+        if (loadIllegalLocalStrategy != LoadIllegalLocalStrategy.CUSTOM_EXCEPTION) {
+            // load.local x, pop -> _
+            rules.add(rule(delete(p(loadLocalOperation.instruction()), p(popInstruction))));
+        }
+        // clear.local x, clear.local x -> clear.local x
+        rules.add(rule(identity(p(clearLocalInstruction, "x")), delete(p(clearLocalInstruction, "x"))));
+        // load.constant _, store.local x, clear.local x -> clear.local x
+        rules.add(rule(delete(p(loadConstantInstruction), pStoreLocal("x")), identity(p(clearLocalInstruction, "x"))));
+
+        for (int stackValueCount = 1; stackValueCount <= MAX_STACK_VALUE_REWRITE_COUNT; stackValueCount++) {
+            // Elide cleanup instructions when returning from a block with stack values.
+            // store.stackvalue k, pop * (k - 1), return -> return
+            List<InstructionPatternModel> cleanup = new ArrayList<>(stackValueCount);
+            cleanup.add(new InstructionPatternModel(storeStackValueInstruction, new ImmediatePattern[]{lit(stackValueCount)}));
+            for (int i = 1; i < stackValueCount; i++) {
+                cleanup.add(p(popInstruction));
+            }
+            rules.add(rule(delete(cleanup.toArray(InstructionPatternModel[]::new)), identity(p(returnInstruction))));
+        }
+
+        rules.addAll(computeConsumeThenPopStackValueRewriteRules());
+
+        return rules.toArray(InstructionRewriteRuleModel[]::new);
+    }
+
+    /**
+     * If instruction X consumes a contiguous top-of-stack range of stack values and then all stack
+     * values are subsequently cleared, skip the loads and pops and have X consume the operands directly.
+     */
+    private List<InstructionRewriteRuleModel> computeConsumeThenPopStackValueRewriteRules() {
+        List<InstructionRewriteRuleModel> rules = new ArrayList<>();
+        for (InstructionModel instruction : getInstructions()) {
+            if (instruction.isQuickening() || instruction.isInstrumentation()) {
+                continue;
+            } else if (instruction.signature.isVariadic()) {
+                // Variadic operands cannot be bound with stack values.
+                continue;
+            }
+            switch (instruction.kind) {
+                case STORE_LOCAL, CUSTOM -> {
+                    int operandCount = instruction.signature.dynamicOperandCount();
+                    if (operandCount == 0 || MAX_STACK_VALUE_REWRITE_COUNT < operandCount) {
+                        // Instruction must take between 1 and MAX_STACK_VALUE_REWRITE_COUNT operands.
+                        continue;
+                    }
+                }
+                default -> {
+                    // The remaining instructions that consume values involve control flow or are otherwise
+                    // poor candidates for this rewrite rule.
+                    continue;
+                }
+            }
+
+            RewriteSection xSection;
+            if (instruction.hasChildBciImmediates()) {
+                // If X has child BCIs, they need to be remapped to -1.
+                List<InstructionImmediate> encodedImmediates = instruction.getEncodedImmediates();
+                ImmediatePattern[] lhsImmediates = new ImmediatePattern[encodedImmediates.size()];
+                ImmediatePattern[] rhsImmediates = new ImmediatePattern[encodedImmediates.size()];
+                for (int i = 0; i < lhsImmediates.length; i++) {
+                    if (instruction.isChildBciImmediate(encodedImmediates.get(i))) {
+                        lhsImmediates[i] = new Wildcard();
+                        rhsImmediates[i] = lit(-1);
+                    } else {
+                        lhsImmediates[i] = rhsImmediates[i] = new Binding("i" + i);
+                    }
+                }
+                xSection = replace(new InstructionPatternModel(instruction, lhsImmediates), new InstructionPatternModel(instruction, rhsImmediates));
+            } else {
+                xSection = identity(pBindAllImmediates(instruction, "i"));
+            }
+
+            int n = instruction.signature.dynamicOperandCount();
+            if (instruction.signature.isVoid()) {
+                // When X consumes the top n <= k stack values, the pattern is:
+                // load.stackvalue(n - 1) * n, X, pop * k -> X, pop * (k - n)
+                // Removing trailing pops on the LHS and RHS, this simplifies to one rule:
+                // load.stackvalue(n - 1) * n, X, pop * n -> X
+                rules.add(rule(delete(loadTopStackValues(n)), xSection, delete(pops(n))));
+            } else {
+                // When X consumes all n == k stack values, the pattern is:
+                // load.stackvalue(n - 1) * n, X, store.stackvalue(n), pop * (n - 1) -> X
+                rules.add(rule(delete(loadTopStackValues(n)), xSection, delete(storeStackValueAndPop(n))));
+
+                for (int k = n + 1; k <= MAX_STACK_VALUE_REWRITE_COUNT; k++) {
+                    // When X consumes n < k stack values, the pattern is:
+                    // load.stackvalue(n - 1) * n, X, store.stackvalue(k), pop * (k - 1)
+                    // -> X, store.stackvalue(k - n), pop * (k - n - 1)
+                    // Note: keep the trailing pops because removing them causes ambiguity with
+                    // the current DFA implementation.
+                    List<RewriteSection> sections = new ArrayList<>();
+                    sections.add(delete(loadTopStackValues(n)));
+                    sections.add(xSection);
+                    sections.add(replace(pStoreStackValue(k), pStoreStackValue(k - n)));
+                    sections.add(delete(pops(n)));
+                    if (k - n - 1 != 0) {
+                        sections.add(identity(pops(k - n - 1, "p")));
+                    }
+                    rules.add(rule(sections.toArray(RewriteSection[]::new)));
+                }
+            }
+        }
+        return rules;
+    }
+
+    /**
+     * Generates a pattern sequence that loads the top {@code n} stack values.
+     */
+    private InstructionPatternModel[] loadTopStackValues(int n) {
+        InstructionPatternModel[] result = new InstructionPatternModel[n];
+        for (int i = 0; i < result.length; i++) {
+            // Note: the same offset is used in each pattern because the stack grows from prior loads.
+            result[i] = pLoadStackValue(n - 1);
+        }
+        return result;
+    }
+
+    private InstructionPatternModel[] storeStackValueAndPop(int stackValueCount) {
+        InstructionPatternModel[] result = new InstructionPatternModel[stackValueCount];
+        result[0] = pStoreStackValue(stackValueCount);
+        for (int i = 1; i < result.length; i++) {
+            result[i] = p(popInstruction);
+        }
+        return result;
+    }
+
+    private InstructionPatternModel[] pops(int count) {
+        InstructionPatternModel[] result = new InstructionPatternModel[count];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = p(popInstruction);
+        }
+        return result;
+    }
+
+    private InstructionPatternModel[] pops(int count, String bindingPrefix) {
+        InstructionPatternModel[] result = new InstructionPatternModel[count];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = pBindAllImmediates(popInstruction, bindingPrefix + i + "_");
+        }
+        return result;
+    }
+
+    private static InstructionRewriteRuleModel rule(RewriteSection... sections) {
+        return new InstructionRewriteRuleModel(sections);
+    }
+
+    private static RewriteSection delete(InstructionPatternModel... patterns) {
+        return new RewriteSection(RewriteSectionKind.DELETE, patterns, null);
+    }
+
+    private static RewriteSection identity(InstructionPatternModel... patterns) {
+        return new RewriteSection(RewriteSectionKind.IDENTITY, patterns, null);
+    }
+
+    private static RewriteSection replace(InstructionPatternModel pattern, InstructionPatternModel replacementPattern) {
+        return new RewriteSection(RewriteSectionKind.REPLACE, new InstructionPatternModel[]{pattern}, new InstructionPatternModel[]{replacementPattern});
+    }
+
+    private static InstructionPatternModel p(InstructionModel instruction, String... immediates) {
+        ImmediatePattern[] finalImmediates;
+        if (immediates.length == 0 && !instruction.getEncodedImmediates().isEmpty()) {
+            // Provide an empty array of immediates if immediates weren't provided.
+            finalImmediates = createWildcards(instruction.getEncodedImmediates().size());
+        } else {
+            finalImmediates = parseImmediateBindings(immediates);
+        }
+        return new InstructionPatternModel(instruction, finalImmediates);
+    }
+
+    /**
+     * Create a pattern to match an instruction. Bind all of its immediates so this instruction can be written to the RHS.
+     */
+    private static InstructionPatternModel pBindAllImmediates(InstructionModel instruction, String bindingPrefix) {
+        ImmediatePattern[] immediates = new ImmediatePattern[instruction.getEncodedImmediates().size()];
+        for (int i = 0; i < immediates.length; i++) {
+            immediates[i] = new Binding(bindingPrefix + i);
+        }
+        return new InstructionPatternModel(instruction, immediates);
+    }
+
+    private static ImmediatePattern lit(long value) {
+        return new Literal(value);
+    }
+
+    private static ImmediatePattern[] parseImmediateBindings(String[] immediates) {
+        ImmediatePattern[] result = new ImmediatePattern[immediates.length];
+        for (int i = 0; i < immediates.length; i++) {
+            String immediate = immediates[i];
+            result[i] = immediate == null ? new Wildcard() : new Binding(immediate);
+        }
+        return result;
+    }
+
+    private static ImmediatePattern[] createWildcards(int count) {
+        ImmediatePattern[] result = new ImmediatePattern[count];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = new Wildcard();
+        }
+        return result;
+    }
+
+    /**
+     * Creates a {@code store.local} pattern binding local identity. This helper abstracts away
+     * immediate layout differences that can vary between configurations.
+     */
+    private InstructionPatternModel pStoreLocal(String localBinding) {
+        ImmediatePattern[] immediates = createWildcards(storeLocalOperation.instruction().getEncodedImmediates().size());
+        immediates[0] = new Binding(localBinding);
+        return new InstructionPatternModel(storeLocalOperation.instruction(), immediates);
+    }
+
+    private InstructionPatternModel pStoreStackValue(long offset) {
+        return new InstructionPatternModel(storeStackValueInstruction, new ImmediatePattern[]{lit(offset)});
+    }
+
+    private InstructionPatternModel pLoadStackValue(long offset) {
+        if (offset == 0) {
+            return p(dupInstruction);
+        }
+        return new InstructionPatternModel(loadStackValueInstruction, new ImmediatePattern[]{lit(offset)});
+    }
+
+    public short getInstructionStartIndex() {
+        return 1;
     }
 
     @Override
@@ -547,6 +978,48 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         return customYieldOperations.stream().map(customOperation -> customOperation.operation).toList();
     }
 
+    public Collection<OperationModel> getCustomReturnOperations() {
+        return customReturnOperations.stream().map(customOperation -> customOperation.operation).toList();
+    }
+
+    public int getReturnResultStackOffset(OperationModel operation) {
+        int dynamicOperandCount = operation.instruction().signature.dynamicOperandCount();
+        if (dynamicOperandCount == 0) {
+            throw new AssertionError("Return operation has no result operand: " + operation);
+        }
+        if (operation.kind == OperationKind.RETURN) {
+            return dynamicOperandCount;
+        } else if (operation.kind == OperationKind.CUSTOM_RETURN) {
+            return dynamicOperandCount - operation.customModel.getResultOperandIndex();
+        } else {
+            throw new AssertionError("Not a return operation: " + operation);
+        }
+    }
+
+    public int getYieldResultStackOffset(OperationModel yieldOperation) {
+        int dynamicOperandCount = yieldOperation.instruction().signature.dynamicOperandCount();
+        if (dynamicOperandCount == 0) {
+            throw new AssertionError("Yield operation has no result operand: " + yieldOperation);
+        }
+        if (yieldOperation.kind == OperationKind.YIELD) {
+            return dynamicOperandCount;
+        } else if (yieldOperation.kind == OperationKind.CUSTOM_YIELD) {
+            return dynamicOperandCount - yieldOperation.customModel.getResultOperandIndex();
+        } else {
+            throw new AssertionError("Not a yield operation: " + yieldOperation);
+        }
+    }
+
+    public Collection<OperationModel> getCustomVariadicOperations() {
+        List<OperationModel> result = new ArrayList<>();
+        for (OperationModel operation : operations.values()) {
+            if (operation.isCustomVariadic()) {
+                result.add(operation);
+            }
+        }
+        return result;
+    }
+
     public Collection<InstructionModel> getInstructions() {
         return instructions.values();
     }
@@ -560,6 +1033,7 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
     }
 
     public boolean needsBciSlot() {
+        // Uncached does not use nodes, so the bci is necessary for identifying locations.
         return enableUncachedInterpreter || storeBciInFrame;
     }
 
@@ -608,8 +1082,16 @@ public class BytecodeDSLModel extends Template implements PrettyPrintable {
         List<InstructionModel> sortedInstructions = this.instructions.values().stream().sorted((o1, o2) -> Integer.compare(o1.kind.ordinal(), o2.kind.ordinal())).toList();
         this.instructions.clear();
         for (InstructionModel instr : sortedInstructions) {
-            this.instructions.put(instr.name, instr);
+            this.instructions.put(instr.getName(), instr);
         }
 
+    }
+
+    public final TypeMirror type(Class<?> c) {
+        return context.getType(c);
+    }
+
+    public final DeclaredType declaredType(Class<?> t) {
+        return context.getDeclaredType(t);
     }
 }

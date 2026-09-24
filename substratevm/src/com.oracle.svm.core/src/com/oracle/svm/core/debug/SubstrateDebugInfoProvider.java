@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,11 +39,11 @@ import com.oracle.objectfile.debugentry.PointerToTypeEntry;
 import com.oracle.objectfile.debugentry.PrimitiveTypeEntry;
 import com.oracle.objectfile.debugentry.TypeEntry;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.shared.util.StringUtil;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.code.CompilationResult;
@@ -137,6 +137,14 @@ public class SubstrateDebugInfoProvider extends SharedDebugInfoProvider {
         return name + "@0x" + Long.toHexString(codeAddress);
     }
 
+    public String getCodeLoadSymbolName() {
+        String name = compilation == null ? null : compilation.getName();
+        if (name == null || name.isEmpty()) {
+            name = sharedMethod.format("%H.%n(%p)");
+        }
+        return name;
+    }
+
     @Override
     public String cachePath() {
         return Options.getRuntimeSourceDestDir().toString();
@@ -157,6 +165,11 @@ public class SubstrateDebugInfoProvider extends SharedDebugInfoProvider {
     protected Stream<SharedType> typeInfo() {
         // create type infos on demand for compilation
         return Stream.empty();
+    }
+
+    @Override
+    protected LoaderEntry lookupLoaderEntry(SharedType type) {
+        return NULL_LOADER_ENTRY;
     }
 
     /**
@@ -199,7 +212,8 @@ public class SubstrateDebugInfoProvider extends SharedDebugInfoProvider {
     @Override
     public FileEntry lookupFileEntry(ResolvedJavaType type) {
         if (type instanceof SharedType sharedType) {
-            String[] packageElements = SubstrateUtil.split(sharedType.getHub().getPackageName(), ".");
+            String value = sharedType.getHub().getPackageName();
+            String[] packageElements = StringUtil.split(value, ".");
             String fileName = sharedType.getSourceFileName();
             if (fileName != null && !fileName.isEmpty()) {
                 Path filePath = FileSystems.getDefault().getPath("", packageElements).resolve(fileName);
@@ -244,7 +258,7 @@ public class SubstrateDebugInfoProvider extends SharedDebugInfoProvider {
         long classOffset = -1;
         String loaderName = loaderEntry.loaderId();
         long typeSignature = getTypeSignature(typeName + loaderName);
-        long compressedTypeSignature = useHeapBase ? getTypeSignature(INDIRECT_PREFIX + typeName + loaderName) : typeSignature;
+        long compressedTypeSignature = getTypeSignature(INDIRECT_PREFIX + typeName + loaderName);
 
         if (type.isPrimitive()) {
             JavaKind kind = type.getStorageKind();

@@ -60,6 +60,7 @@ import com.oracle.truffle.api.instrumentation.Tag;
 public final class BytecodeConfig {
 
     private static final long SOURCE_ENCODING = 0b1L;
+    private static final long SOURCE_WITH_CONTENT_ENCODING = 0b11L;
 
     /**
      * Do not materialize any source or instrumentation information.
@@ -74,6 +75,16 @@ public final class BytecodeConfig {
      * @since 24.2
      */
     public static final BytecodeConfig WITH_SOURCE = new BytecodeConfig(null, SOURCE_ENCODING);
+
+    /**
+     * Materialize source information and load content.
+     * <p>
+     * If the interpreter does not declare a {@link GenerateBytecode#sourceContentSupplier() source
+     * content supplier}, this config is equivalent to {@link #WITH_SOURCE}.
+     *
+     * @since 25.1
+     */
+    public static final BytecodeConfig WITH_SOURCE_CONTENT = new BytecodeConfig(null, SOURCE_WITH_CONTENT_ENCODING);
 
     /**
      * Materialize all information.
@@ -108,7 +119,7 @@ public final class BytecodeConfig {
      *
      * @since 24.2
      */
-    public static class Builder {
+    public static final class Builder {
         private final BytecodeConfigEncoder encoder;
         private long encoding;
 
@@ -125,6 +136,20 @@ public final class BytecodeConfig {
         public Builder addSource() {
             CompilerAsserts.neverPartOfCompilation();
             this.encoding |= SOURCE_ENCODING;
+            return this;
+        }
+
+        /**
+         * Sets whether to {@link #addSource materialize sources} and their content.
+         * <p>
+         * This method has no effect unless a {@link GenerateBytecode#sourceContentSupplier() source
+         * content supplier} is provided.
+         *
+         * @since 25.1
+         */
+        public Builder addSourceContent() {
+            CompilerAsserts.neverPartOfCompilation();
+            this.encoding |= SOURCE_WITH_CONTENT_ENCODING;
             return this;
         }
 
@@ -150,8 +175,23 @@ public final class BytecodeConfig {
         public Builder addInstrumentation(Class<?> instrumentation) {
             CompilerAsserts.neverPartOfCompilation();
             Objects.requireNonNull(instrumentation);
+            if (instrumentation == InstructionTracer.class) {
+                throw new IllegalArgumentException(
+                                "Enabling the instruction tracer with addInstrumentation is not supported. Add an instruction tracer instead using BytecodeRootNodes.addInstructionTracer(...).");
+            }
             long encodedTag = encoder.encodeInstrumentation(instrumentation);
             assert encodedTag != SOURCE_ENCODING && Long.bitCount(encodedTag) == 1 : "generated code invariant violated";
+            this.encoding |= encodedTag;
+            return this;
+        }
+
+        /**
+         * Internal way to attach instruction tracer instrumentation. Encoding the instrumentation
+         * tag does nothing if tracing is enabled for this interpreter.
+         */
+        Builder addInstructionTracing() {
+            CompilerAsserts.neverPartOfCompilation();
+            long encodedTag = encoder.encodeInstrumentation(InstructionTracer.class);
             this.encoding |= encodedTag;
             return this;
         }

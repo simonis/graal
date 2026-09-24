@@ -28,10 +28,11 @@ package com.oracle.svm.core;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.impl.InternalPlatform.WINDOWS_BASE;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.code.RuntimeCodeInstallation;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.graal.RuntimeCompilation;
-import com.oracle.svm.core.jdk.RuntimeSupport;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 
 import jdk.internal.misc.Signal;
 
@@ -39,12 +40,12 @@ import jdk.internal.misc.Signal;
 public class DumpRuntimeCompilationOnSignalFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return VMInspectionOptions.DumpRuntimeCompilationOnSignal.getValue() && !Platform.includedIn(WINDOWS_BASE.class);
+        return VMInspectionOptions.DumpRuntimeCompilationOnSignal.getValue() && !Platform.includedIn(WINDOWS_BASE.class) && ImageLayerBuildingSupport.firstImageBuild();
     }
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
-        if (RuntimeCompilation.isEnabled()) {
+        if (RuntimeCodeInstallation.isEnabled()) {
             RuntimeSupport.getRuntimeSupport().addStartupHook(new DumpRuntimeCompilationStartupHook());
         }
     }

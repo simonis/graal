@@ -26,8 +26,8 @@ package com.oracle.svm.core.monitor;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.thread.ThreadStatus;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.core.thread.ThreadStatus;
 
 import jdk.graal.compiler.api.replacements.Fold;
 

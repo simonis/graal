@@ -50,7 +50,7 @@ import com.oracle.graal.pointsto.typestate.TypeState;
 import com.oracle.graal.pointsto.typestore.ArrayElementsTypeStore;
 import com.oracle.graal.pointsto.typestore.FieldTypeStore;
 import com.oracle.graal.pointsto.util.AnalysisError;
-import com.oracle.svm.common.meta.MultiMethod;
+import com.oracle.svm.common.meta.MethodVariant;
 
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.replacements.nodes.BasicArrayCopyNode;
@@ -69,6 +69,7 @@ public abstract class AnalysisPolicy {
     protected final int maxHeapContextDepth;
     protected final boolean limitObjectArrayLength;
     protected final int maxObjectSetSize;
+    protected final int maxTypeStateObjects;
     protected final boolean hybridStaticContext;
     protected final boolean useConservativeUnsafeAccess;
     private final int parsingContextMaxDepth;
@@ -87,6 +88,7 @@ public abstract class AnalysisPolicy {
         maxHeapContextDepth = PointstoOptions.MaxHeapContextDepth.getValue(options);
         limitObjectArrayLength = PointstoOptions.LimitObjectArrayLength.getValue(options);
         maxObjectSetSize = PointstoOptions.MaxObjectSetSize.getValue(options);
+        maxTypeStateObjects = PointstoOptions.MaxTypeStateObjects.getValue(options);
         hybridStaticContext = PointstoOptions.HybridStaticContext.getValue(options);
         useConservativeUnsafeAccess = PointstoOptions.UseConservativeUnsafeAccess.getValue(options);
         trackAccessChain = PointstoOptions.TrackAccessChain.getValue(options);
@@ -126,6 +128,10 @@ public abstract class AnalysisPolicy {
 
     public int maxObjectSetSize() {
         return maxObjectSetSize;
+    }
+
+    public int maxTypeStateObjects() {
+        return maxTypeStateObjects;
     }
 
     public boolean useHybridStaticContext() {
@@ -198,20 +204,21 @@ public abstract class AnalysisPolicy {
 
     /** Provides implementation for the virtual invoke type flow. */
     public abstract AbstractVirtualInvokeTypeFlow createVirtualInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey);
 
     /** Provides implementation for the special invoke type flow. */
     public abstract AbstractSpecialInvokeTypeFlow createSpecialInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey);
 
     /** Provides implementation for the static invoke type flow. */
     public abstract AbstractStaticInvokeTypeFlow createStaticInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey);
 
     public abstract InvokeTypeFlow createDeoptInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
-                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethod.MultiMethodKey callerMultiMethodKey);
+                    TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MethodVariant.MethodVariantKey callerMethodVariantKey);
 
-    public abstract MethodFlowsGraphInfo staticRootMethodGraph(PointsToAnalysis bb, PointsToAnalysisMethod method);
+    /** Get the method flows graph; trigger parsing and create the flows graph if necessary. */
+    public abstract MethodFlowsGraphInfo getOrCreateMethodGraph(PointsToAnalysis bb, PointsToAnalysisMethod method);
 
     public abstract AnalysisContext allocationContext(PointsToAnalysis bb, MethodFlowsGraph callerGraph);
 

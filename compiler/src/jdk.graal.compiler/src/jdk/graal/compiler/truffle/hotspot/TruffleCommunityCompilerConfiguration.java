@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,6 +23,8 @@
  * questions.
  */
 package jdk.graal.compiler.truffle.hotspot;
+
+import static jdk.graal.compiler.truffle.hotspot.HotSpotTruffleCompilerImpl.Options.OutlineTruffleInterpreterBytecodeHandler;
 
 import java.util.function.Supplier;
 
@@ -59,7 +61,10 @@ public final class TruffleCommunityCompilerConfiguration extends CommunityCompil
     }
 
     public static void installCommunityHighTier(OptionValues options, HighTier defaultHighTier) {
-        HostInliningPhase.install(defaultHighTier, options);
+        HotSpotHostInliningPhase.install(defaultHighTier, options);
+        if (OutlineTruffleInterpreterBytecodeHandler.getValue(options)) {
+            HotSpotOutlineBytecodeHandlerPhase.install(defaultHighTier);
+        }
     }
 
     @Override

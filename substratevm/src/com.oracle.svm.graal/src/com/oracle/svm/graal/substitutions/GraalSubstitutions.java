@@ -27,6 +27,8 @@ package com.oracle.svm.graal.substitutions;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.Custom;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.FromAlias;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.Reset;
+import static com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature.AnyRuntimeCompilationEnabled;
+import static com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature.OnlyTruffleRuntimeCompilationEnabled;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -43,25 +45,25 @@ import org.graalvm.nativeimage.VMRuntime;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
 import com.oracle.svm.core.Isolates;
-import com.oracle.svm.core.SubstrateTargetDescription;
+import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.annotate.Alias;
+import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.Inject;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.graal.GraalCompilerSupport;
-import com.oracle.svm.graal.TruffleRuntimeCompilationSupport;
-import com.oracle.svm.graal.hosted.FieldsOffsetsFeature;
+import com.oracle.svm.graal.RuntimeCompilationSupport;
 import com.oracle.svm.graal.hosted.GraalCompilerFeature;
-import com.oracle.svm.graal.hosted.runtimecompilation.RuntimeCompilationFeature;
 import com.oracle.svm.graal.meta.SubstrateMethod;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.CompilationIdentifier;
 import jdk.graal.compiler.core.gen.NodeLIRBuilder;
@@ -73,9 +75,9 @@ import jdk.graal.compiler.debug.KeyRegistry;
 import jdk.graal.compiler.debug.MetricKey;
 import jdk.graal.compiler.debug.TTY;
 import jdk.graal.compiler.debug.TimeSource;
-import jdk.graal.compiler.graph.Edges;
 import jdk.graal.compiler.graph.Node;
-import jdk.graal.compiler.lir.gen.ArithmeticLIRGeneratorTool;
+import jdk.graal.compiler.lir.amd64.AMD64MathIntrinsicBinaryOp;
+import jdk.graal.compiler.lir.amd64.AMD64MathIntrinsicUnaryOp;
 import jdk.graal.compiler.lir.phases.LIRPhase;
 import jdk.graal.compiler.nodes.Invoke;
 import jdk.graal.compiler.nodes.NamedLocationIdentity;
@@ -88,41 +90,60 @@ import jdk.graal.compiler.phases.common.CanonicalizerPhase;
 import jdk.graal.compiler.phases.common.inlining.info.elem.InlineableGraph;
 import jdk.graal.compiler.phases.common.inlining.walker.ComputeInliningRelevance;
 import jdk.graal.compiler.phases.tiers.HighTierContext;
-import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicNode;
-import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicNode;
+import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicGenerationNode;
+import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicGenerationNode;
 import jdk.vm.ci.code.TargetDescription;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
-@TargetClass(value = InvocationPlugins.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+@TargetClass(value = InvocationPlugins.class, onlyWith = AnyRuntimeCompilationEnabled.class)
 final class Target_jdk_graal_compiler_nodes_graphbuilderconf_InvocationPlugins {
 
     @Alias//
     private List<Runnable> deferredRegistrations = new ArrayList<>();
+    @Inject//
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = PluginTransformer.class)//
+    private boolean allocatedAtBuildTime;
 
     @Substitute
     private void flushDeferrables() {
         if (deferredRegistrations != null) {
-            throw VMError.shouldNotReachHere("not initialized during image generation");
+            if (allocatedAtBuildTime) {
+                throw VMError.shouldNotReachHere("not initialized during image generation");
+            } else {
+                /*
+                 * Ristretto allocates plugins at runtime.
+                 */
+                assert SubstrateOptions.useRistretto();
+            }
         }
+    }
+
+    private static final class PluginTransformer implements FieldValueTransformer {
+
+        @Override
+        public Object transform(Object receiver, Object originalValue) {
+            return SubstrateUtil.HOSTED;
+        }
+
     }
 }
 
-@TargetClass(value = InlineableGraph.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+@TargetClass(value = InlineableGraph.class, onlyWith = OnlyTruffleRuntimeCompilationEnabled.class)
 @SuppressWarnings({"unused"})
-final class Target_jdk_graal_compiler_phases_common_inlining_info_elem_InlineableGraph {
+final class Target_jdk_graal_compiler_phases_common_inlining_info_elem_InlineableGraph_TruffleRC {
 
     @Substitute
     private static StructuredGraph parseBytecodes(ResolvedJavaMethod method, Invoke invoke, HighTierContext context, CanonicalizerPhase canonicalizer, StructuredGraph caller,
                     boolean trackNodeSourcePosition) {
         DebugContext debug = caller.getDebug();
-        StructuredGraph result = TruffleRuntimeCompilationSupport.decodeGraph(debug, null, CompilationIdentifier.INVALID_COMPILATION_ID, (SubstrateMethod) method, caller);
+        StructuredGraph result = RuntimeCompilationSupport.decodeGraph(debug, null, CompilationIdentifier.INVALID_COMPILATION_ID, (SubstrateMethod) method, caller);
         assert result != null : "should not try to inline method when no graph is in the native image";
         assert !trackNodeSourcePosition || result.trackNodeSourcePosition();
         return result;
     }
 }
 
-@TargetClass(value = ComputeInliningRelevance.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+@TargetClass(value = ComputeInliningRelevance.class, onlyWith = AnyRuntimeCompilationEnabled.class)
 @SuppressWarnings({"static-method", "unused"})
 final class Target_jdk_graal_compiler_phases_common_inlining_walker_ComputeInliningRelevance {
 
@@ -201,7 +222,7 @@ final class Target_jdk_graal_compiler_debug_TimeSource {
     // Checkstyle: resume
 }
 
-@TargetClass(value = TTY.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+@TargetClass(value = TTY.class, onlyWith = AnyRuntimeCompilationEnabled.class)
 final class Target_jdk_graal_compiler_debug_TTY {
 
     @Alias//
@@ -237,6 +258,25 @@ final class Target_jdk_graal_compiler_serviceprovider_GraalServices {
         }
         VMRuntime.dumpHeap(outputFile, live);
     }
+}
+
+/**
+ * These field and methods make HotSpot types reachable when
+ * {@code jdk.graal.compiler.management.JMXServiceProvider} is registered for reflection.
+ */
+@TargetClass(className = "jdk.graal.compiler.management.JMXServiceProvider", onlyWith = GraalCompilerFeature.IsEnabled.class)
+final class Target_jdk_graal_compiler_management_JMXServiceProvider {
+    @Delete private Target_com_sun_management_HotSpotDiagnosticMXBean hotspotMXBean;
+
+    @Delete
+    private static native Target_com_sun_management_HotSpotDiagnosticMXBean getHotSpotMXBean();
+
+    @Delete
+    private native void initHotSpotMXBean();
+}
+
+@TargetClass(className = "com.sun.management.HotSpotDiagnosticMXBean", onlyWith = GraalCompilerFeature.IsEnabled.class)
+final class Target_com_sun_management_HotSpotDiagnosticMXBean {
 }
 
 @TargetClass(className = "jdk.graal.compiler.serviceprovider.GlobalAtomicLong", onlyWith = GraalCompilerFeature.IsEnabled.class)
@@ -283,30 +323,39 @@ final class Target_jdk_graal_compiler_core_match_MatchRuleRegistry {
     }
 }
 
-@TargetClass(value = BinaryMathIntrinsicNode.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+/*
+ * The node is only used for the compilation of the actual Math functions - which we have AOT
+ * compiled. Therefore, MathIntrinsicNodes that generate foreign calls to the AOT-compiled code will
+ * be used instead, but the static analysis cannot detect that, so we manually delete the class.
+ */
+@TargetClass(value = BinaryMathIntrinsicGenerationNode.class, onlyWith = AnyRuntimeCompilationEnabled.class)
 @SuppressWarnings({"unused", "static-method"})
-final class Target_jdk_graal_compiler_replacements_nodes_BinaryMathIntrinsicNode {
-
-    /*
-     * The node is lowered to a foreign call, the LIR generation is only used for the compilation of
-     * the actual Math functions - which we have AOT compiled. Therefore, the LIR generation is
-     * unreachable. But the static analysis cannot detect that, so we manually substitute the
-     * method.
-     */
+final class Target_jdk_graal_compiler_replacements_nodes_BinaryMathIntrinsicGenerationNode {
     @Substitute
-    void generate(NodeLIRBuilderTool nodeValueMap, ArithmeticLIRGeneratorTool gen) {
+    void generate(NodeLIRBuilderTool gen) {
         throw VMError.shouldNotReachHere("Node must have been lowered to a runtime call");
     }
 }
 
-@TargetClass(value = UnaryMathIntrinsicNode.class, onlyWith = RuntimeCompilationFeature.IsEnabled.class)
+@TargetClass(value = UnaryMathIntrinsicGenerationNode.class, onlyWith = AnyRuntimeCompilationEnabled.class)
 @SuppressWarnings({"unused", "static-method"})
-final class Target_jdk_graal_compiler_replacements_nodes_UnaryMathIntrinsicNode {
-
+final class Target_jdk_graal_compiler_replacements_nodes_UnaryMathIntrinsicGenerationNode {
     @Substitute
-    void generate(NodeLIRBuilderTool nodeValueMap, ArithmeticLIRGeneratorTool gen) {
+    void generate(NodeLIRBuilderTool gen) {
         throw VMError.shouldNotReachHere("Node must have been lowered to a runtime call");
     }
+}
+
+@Delete
+@TargetClass(value = AMD64MathIntrinsicBinaryOp.class, onlyWith = AnyRuntimeCompilationEnabled.class)
+@SuppressWarnings({"unused"})
+final class Target_jdk_graal_compiler_replacements_nodes_AMD64MathIntrinsicBinaryOp {
+}
+
+@Delete
+@TargetClass(value = AMD64MathIntrinsicUnaryOp.class, onlyWith = AnyRuntimeCompilationEnabled.class)
+@SuppressWarnings({"unused"})
+final class Target_jdk_graal_compiler_replacements_nodes_AMD64MathIntrinsicUnaryOp {
 }
 
 @TargetClass(value = BasePhase.class, onlyWith = GraalCompilerFeature.IsEnabled.class)
@@ -335,13 +384,6 @@ final class Target_jdk_graal_compiler_lir_phases_LIRPhase {
     }
 }
 
-@TargetClass(value = Edges.class, onlyWith = GraalCompilerFeature.IsEnabled.class)
-final class Target_jdk_graal_compiler_graph_Edges {
-    @Alias//
-    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = FieldsOffsetsFeature.IterationMaskRecomputation.class)//
-    private long iterationMask;
-}
-
 @TargetClass(value = NamedLocationIdentity.class, innerClass = "DB", onlyWith = GraalCompilerFeature.IsEnabled.class)
 final class Target_jdk_graal_compiler_nodes_NamedLocationIdentity_DB {
     @Alias//
@@ -352,8 +394,8 @@ final class Target_jdk_graal_compiler_nodes_NamedLocationIdentity_DB {
 /**
  * Workaround so that {@link TargetDescription} can distinguish between AOT compilation and runtime
  * compilation. Ideally, each case would have its own {@link TargetDescription}, but currently it is
- * created just once during the image build and accessed via {@link ConfigurationValues} and
- * {@link ImageSingletons} from many locations.
+ * created just once during the image build and accessed via {@link ImageSingletons} from many
+ * locations.
  */
 @TargetClass(value = TargetDescription.class, onlyWith = GraalCompilerFeature.IsEnabled.class)
 final class Target_jdk_vm_ci_code_TargetDescription {
@@ -369,7 +411,7 @@ final class Target_jdk_vm_ci_code_TargetDescription {
     static class InlineObjectsAccessor {
         static boolean get(Target_jdk_vm_ci_code_TargetDescription receiver) {
             if (receiver.inlineObjectsValue == null) {
-                receiver.inlineObjectsValue = SubstrateTargetDescription.shouldInlineObjectsInRuntimeCode();
+                receiver.inlineObjectsValue = SubstrateTarget.shouldInlineObjectsInRuntimeCode();
             }
             return receiver.inlineObjectsValue;
         }

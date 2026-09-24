@@ -32,13 +32,15 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.WordBase;
 
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.image.ImageHeapLayoutInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.FeatureSingleton;
 import com.oracle.svm.core.meta.MethodRef;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
@@ -46,13 +48,19 @@ import jdk.graal.compiler.api.replacements.Fold;
  * Class containing hooks which can only be registered and executed during layered image builds.
  */
 @AutomaticallyRegisteredFeature
-public class LayeredImageHooks implements InternalFeature, FeatureSingleton {
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+public class LayeredImageHooks implements InternalFeature {
     private final Set<DynamicHubWrittenCallback> hubWrittenCallbacks = ConcurrentHashMap.newKeySet();
     private final Set<PatchedWordWrittenCallback> patchedWordWrittenCallbacks = ConcurrentHashMap.newKeySet();
 
     @Override
     public boolean isInConfiguration(Feature.IsInConfigurationAccess access) {
         return ImageLayerBuildingSupport.buildingImageLayer();
+    }
+
+    @Override
+    public void onRegistration(OnRegistrationAccess access) {
+        ImageSingletons.add(LayeredImageHooks.class, this);
     }
 
     @Fold

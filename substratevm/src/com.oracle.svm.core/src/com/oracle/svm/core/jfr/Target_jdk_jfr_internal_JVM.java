@@ -24,13 +24,15 @@
  */
 package com.oracle.svm.core.jfr;
 
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.jfr.Target_jdk_jfr_internal_JVM_Util.jfrNotSupportedException;
 
 import java.util.List;
 
+import com.oracle.svm.core.thread.JavaThreads;
 import org.graalvm.nativeimage.ProcessProperties;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
@@ -39,6 +41,7 @@ import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.container.Container;
 import com.oracle.svm.core.container.OperatingSystem;
 import com.oracle.svm.core.jfr.traceid.JfrTraceId;
+import com.oracle.svm.core.snippets.ImplicitExceptions;
 import com.oracle.svm.core.util.PlatformTimeUtils;
 
 import jdk.jfr.internal.JVM;
@@ -190,11 +193,21 @@ public final class Target_jdk_jfr_internal_JVM {
 
     /** See {@link JVM#getThreadId}. */
     @Substitute
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public static long getThreadId(Thread t) {
         if (!HasJfrSupport.get()) {
             throw jfrNotSupportedException();
         }
-        return SubstrateJVM.getThreadId(t);
+
+        if (t == null) {
+            return 0L;
+        }
+
+        long threadId = JavaThreads.getThreadId(t);
+        if (JavaThreads.isVirtual(t)) {
+            SubstrateJVM.getThreadRepo().registerVThread(t);
+        }
+        return threadId;
     }
 
     /** See {@link JVM#getTicksFrequency}. */
@@ -681,7 +694,10 @@ public final class Target_jdk_jfr_internal_JVM {
 }
 
 class Target_jdk_jfr_internal_JVM_Util {
+    private static final UnsupportedOperationException CACHED_EXCEPTION = new UnsupportedOperationException(VMInspectionOptions.getJfrNotSupportedMessage() + ' ' + ImplicitExceptions.NO_STACK_MSG);
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     static UnsupportedOperationException jfrNotSupportedException() {
-        throw new UnsupportedOperationException(VMInspectionOptions.getJfrNotSupportedMessage());
+        throw CACHED_EXCEPTION;
     }
 }

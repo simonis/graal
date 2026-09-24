@@ -39,31 +39,36 @@ This can be avoided by eagerly checking for missing metadata.
 
 For diagnosing shared libraries built with Native Image, you can either:
 * specify `-R:MissingRegistrationReportingMode=Exit` when building a native shared library;
-* or specify `-XX:MissingRegistrationReportingMode=Exit` when the isolate is created. `graal_create_isolate_params_t` has `argc (_reserved_1)` and `argv (_reserved_2)` fields that can be used to pass C-style command-line options at run time. However, note that both fields are currently not public APIs.
+* or specify `-XX:MissingRegistrationReportingMode=Exit` when the isolate is created. `graal_create_isolate_params_t` has `argc` and `argv` fields that can be used to pass C-style command-line options at run time.
 
-### 2. Set java.home Explicitly
+### 2. Set java.home and Classpath Explicitly
 
 If your application code uses the `java.home` property, set it explicitly with `-Djava.home=<path>` when running a native executable.
-Otherwise, the `System.getProperty("java.home")` call will return a `null` value.
+Otherwise, the `System.getProperty("java.home")` call will return a `null` value. For instance, you can run your native executable like this:
 
-### 3. Enable URL Protocols
+```console
+./my-native-app -Djava.home=/path/to/jdk
+```
 
-Try enabling all URL protocols on-demand at build time: `--enable-url-protocols=<protocols>`.
-To enable the HTTPS support only, pass `--enable-https`. 
+Some applications also need access to the classpath and module path at run time. Those can be set with `-Djava.class.path=<class-path>` and `-Djdk.module.path=<module-path>` when running the executable. Here's how you would specify both properties:
 
-### 4. Include All Charsets and Locales
+```console
+./my-native-app -Djava.class.path=/path/to/classes:/path/to/lib.jar -Djdk.module.path=/path/to/modules
+```
+
+### 3. Include All Charsets and Locales
 
 Other handy options are `-H:+AddAllCharsets` to add charsets support, and `-H:+IncludeAllLocales` to pre-initialize support for locale-sensitive behavior in the `java.util` and `java.text` packages. 
 Pass those options at build time.
 This might increase the size of the resulting binary.
 
-### 5. Add Missing Security Providers
+### 4. Add Missing Security Providers
 
 If your application is using Security Providers, try to pre-initialize security providers by passing the option `-H:AdditionalSecurityProviders=<list-of-providers>` at build time. 
 Here is a list of all JDK security providers to choose from:
 `sun.security.provider.Sun,sun.security.rsa.SunRsaSign,sun.security.ec.SunEC,sun.security.ssl.SunJSSE,com.sun.crypto.provider.SunJCE,sun.security.jgss.SunProvider,com.sun.security.sasl.Provider,org.jcp.xml.dsig.internal.dom.XMLDSigRI,sun.security.smartcardio.SunPCSC,sun.security.provider.certpath.ldap.JdkLDAP,com.sun.security.sasl.gsskerb.JdkSASL`.
 
-### 6. File a Native Image Run-Time Issue
+### 5. File a Native Image Run-Time Issue
 
 Only if you tried all the above suggestions, file a [Native Image Run-Time Issue Report](https://github.com/oracle/graal/issues/new?assignees=&labels=native-image%2Cbug%2Crun-time&projects=&template=1_1_native_image_run_time_bug_report.yml&title=%5BNative+Image%5D+) at GitHub, filling out the necessary information. 
 

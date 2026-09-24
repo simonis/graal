@@ -4,7 +4,7 @@
 
 @0x9eb32e19f86ee174;
 using Java = import "/capnp/java.capnp";
-$Java.package("com.oracle.svm.hosted.imagelayer");
+$Java.package("com.oracle.svm.hosted.snapshot.capnproto.generated");
 $Java.outerClassname("SharedLayerSnapshotCapnProtoSchemaHolder");
 
 using TypeId = Int32;
@@ -55,11 +55,12 @@ struct PersistedAnalysisType {
   wrappedType :union {
     none @31 :Void; # default
     serializationGenerated :group {
-      rawDeclaringClass @32 :Text;
-      rawTargetConstructor @33 :Text;
+      rawDeclaringClassId @32 :TypeId;
+      rawTargetConstructorId @33 :TypeId;
     }
     lambda :group {
       capturingClass @34 :Text;
+      captureSite @37 :Text;
     }
     proxyType @35 :Void;
   }
@@ -176,12 +177,13 @@ struct ConstantReference {
     primitiveValue @3 :PrimitiveValue;
     methodPointer :group {
       methodId @4 :MethodId;
+      permitsRewriteToPLT @5 :Bool;
     }
     methodOffset :group {
-      methodId @5 :MethodId;
+      methodId @6 :MethodId;
     }
-    cEntryPointLiteralCodePointer @6 :CEntryPointLiteralReference;
-    cGlobalDataBasePointer @7 :Void;
+    cEntryPointLiteralCodePointer @7 :CEntryPointLiteralReference;
+    cGlobalDataBasePointer @8 :Void;
   }
 }
 
@@ -250,9 +252,7 @@ struct ImageSingletonObject {
   id @0 :SingletonObjId;
   className @1 :Text;
   keyStoreId @2 :KeyStoreId;
-  recreateClass @3 :Text;
-  # GR-66792 remove once no custom persist actions exist
-  recreateMethod @4 :Text;
+  singletonInstantiatorClass @3 :Text;
 }
 
 struct KeyStoreInstance {

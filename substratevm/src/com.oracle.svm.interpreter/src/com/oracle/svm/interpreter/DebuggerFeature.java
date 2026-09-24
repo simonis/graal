@@ -31,14 +31,13 @@ import static com.oracle.svm.interpreter.metadata.Bytecodes.INVOKESPECIAL;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.INVOKESTATIC;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.INVOKEVIRTUAL;
 import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.EST_NO_ENTRY;
-import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.VTBL_NO_ENTRY;
+import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.VTBL_ALWAYS_INLINED;
+import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.VTBL_INVALID;
 import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.VTBL_ONE_IMPL;
+import static com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod.VTBL_UNINITIALIZED;
 import static com.oracle.svm.interpreter.metadata.InterpreterUniverseImpl.toHexString;
 
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
@@ -67,21 +66,21 @@ import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.meta.AnalysisField;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.core.AssertionsSupport;
 import com.oracle.svm.core.BuildArtifacts;
-import com.oracle.svm.core.FunctionPointerHolder;
+import com.oracle.svm.core.MethodRefHolder;
 import com.oracle.svm.core.ParsingReason;
-import com.oracle.svm.core.RuntimeAssertionsSupport;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
+import com.oracle.svm.core.graal.code.SubstrateBackendWithAssembler;
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.option.HostedOptionValues;
+import com.oracle.svm.core.meta.MethodRef;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.graal.hosted.DeoptimizationFeature;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.NativeImageGenerator;
@@ -111,7 +110,11 @@ import com.oracle.svm.interpreter.metadata.MetadataUtil;
 import com.oracle.svm.interpreter.metadata.ReferenceConstant;
 import com.oracle.svm.interpreter.metadata.serialization.SerializationContext;
 import com.oracle.svm.interpreter.metadata.serialization.Serializers;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
@@ -130,6 +133,7 @@ import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.PrimitiveConstant;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.UnresolvedJavaMethod;
 
 /**
@@ -144,12 +148,11 @@ import jdk.vm.ci.meta.UnresolvedJavaMethod;
 @Platforms(Platform.HOSTED_ONLY.class)
 @AutomaticallyRegisteredFeature
 public class DebuggerFeature implements InternalFeature {
-    private Method enterInterpreterMethod;
+    private AnalysisMethod enterInterpreterMethod;
     private InterpreterStubTable enterStubTable = null;
-    private final List<Class<?>> classesUsedByInterpreter = new ArrayList<>();
+    private final List<ResolvedJavaType> classesUsedByInterpreter = new ArrayList<>();
     private Set<AnalysisMethod> methodsProcessedDuringAnalysis;
     private InvocationPlugins invocationPlugins;
-    private static final String SYNTHETIC_ASSERTIONS_DISABLED_FIELD_NAME = "$assertionsDisabled";
 
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -165,9 +168,9 @@ public class DebuggerFeature implements InternalFeature {
                         SymbolsFeature.class);
     }
 
-    private static Class<?> getArgumentClass(GraphBuilderContext b, ResolvedJavaMethod targetMethod, int parameterIndex, ValueNode arg) {
+    private static ResolvedJavaType getArgumentType(GraphBuilderContext b, ResolvedJavaMethod targetMethod, int parameterIndex, ValueNode arg) {
         SubstrateGraphBuilderPlugins.checkParameterUsage(arg.isConstant(), b, targetMethod, parameterIndex, "parameter is not a compile time constant");
-        return OriginalClassProvider.getJavaClass(b.getConstantReflection().asJavaType(arg.asJavaConstant()));
+        return b.getConstantReflection().asJavaType(arg.asJavaConstant());
     }
 
     @Override
@@ -178,9 +181,9 @@ public class DebuggerFeature implements InternalFeature {
         r.register(new InvocationPlugin.RequiredInvocationPlugin("markKlass", Class.class) {
             @Override
             public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg1) {
-                Class<?> targetKlass = getArgumentClass(b, targetMethod, 1, arg1);
-                InterpreterUtil.log("[invocation plugin] Adding %s", targetKlass);
-                classesUsedByInterpreter.add(targetKlass);
+                ResolvedJavaType targetType = getArgumentType(b, targetMethod, 1, arg1);
+                InterpreterUtil.log("[invocation plugin] Adding %s", targetType.getUnqualifiedName());
+                classesUsedByInterpreter.add(targetType);
 
                 /* no-op in compiled code */
                 return true;
@@ -198,33 +201,32 @@ public class DebuggerFeature implements InternalFeature {
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         FeatureImpl.BeforeAnalysisAccessImpl accessImpl = (FeatureImpl.BeforeAnalysisAccessImpl) access;
+        AnalysisMetaAccess metaAccess = accessImpl.getMetaAccess();
 
-        try {
-            enterInterpreterMethod = InterpreterStubSection.class.getMethod("enterMethodInterpreterStub", int.class, Pointer.class);
-            accessImpl.registerAsRoot(enterInterpreterMethod, true, "stub for interpreter");
+        AnalysisType aInterpreterStubSection = metaAccess.lookupJavaType(InterpreterStubSection.class);
+        enterInterpreterMethod = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, aInterpreterStubSection, "enterMethodInterpreterStub", int.class, Pointer.class);
+        accessImpl.registerAsRoot(enterInterpreterMethod, true, "stub for interpreter");
 
-            // Holds references that must be kept alive in the image heap.
-            access.registerAsAccessed(DebuggerSupport.class.getDeclaredField("referencesInImage"));
-            access.registerAsAccessed(DebuggerSupport.class.getDeclaredField("methodPointersInImage"));
+        // Holds references that must be kept alive in the image heap.
+        AnalysisType aDebuggerSupport = metaAccess.lookupJavaType(DebuggerSupport.class);
+        accessImpl.registerAsAccessed((AnalysisField) JVMCIReflectionUtil.getUniqueDeclaredField(aDebuggerSupport, "referencesInImage"),
+                        "Holds references that must be kept alive in the image heap.");
+        accessImpl.registerAsAccessed((AnalysisField) JVMCIReflectionUtil.getUniqueDeclaredField(aDebuggerSupport, "methodRefsInImage"),
+                        "Holds references that must be kept alive in the image heap.");
 
-            accessImpl.registerAsRoot(System.class.getDeclaredMethod("arraycopy", Object.class, int.class, Object.class, int.class, int.class), true,
-                            "Allow interpreting methods that call System.arraycopy");
-        } catch (NoSuchMethodException | NoSuchFieldException e) {
-            throw VMError.shouldNotReachHere(e);
-        }
+        AnalysisType aSystem = metaAccess.lookupJavaType(System.class);
+        accessImpl.registerAsRoot((AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, aSystem, "arraycopy", Object.class, int.class, Object.class, int.class, int.class),
+                        true, "Allow interpreting methods that call System.arraycopy");
 
         registerStringConcatenation(accessImpl);
 
         // GR-53734: Known issues around reachability
-        try {
-            // JDK code introduced a new optional intrinsic:
-            // https://github.com/openjdk/jdk22u/commit/a4e9168bab1c2872ce2dbc7971a45c259270271f
-            // consider DualPivotQuicksort.java:268, int.class is not needed if the sort helper
-            // is inlined, therefore it's not needed. Still needed for interpreter execution.
-            access.registerAsAccessed(Integer.class.getField("TYPE"));
-        } catch (NoSuchFieldException e) {
-            throw VMError.shouldNotReachHere(e);
-        }
+        // JDK code introduced a new optional intrinsic:
+        // https://github.com/openjdk/jdk22u/commit/a4e9168bab1c2872ce2dbc7971a45c259270271f
+        // consider DualPivotQuicksort.java:268, int.class is not needed if the sort helper
+        // is inlined, therefore it's not needed. Still needed for interpreter execution.
+        AnalysisType aInteger = metaAccess.lookupJavaType(Integer.class);
+        accessImpl.registerAsAccessed((AnalysisField) JVMCIReflectionUtil.getUniqueDeclaredField(aInteger, "TYPE"), "Read by the interpreter");
 
         methodsProcessedDuringAnalysis = new HashSet<>();
 
@@ -247,20 +249,18 @@ public class DebuggerFeature implements InternalFeature {
          * These registrations enable the interpreter to "interpret" StringBuilder-based String
          * concatenation optimized away by the compiler.
          */
-        try {
-            List<Method> appendMethods = Arrays.stream(StringBuilder.class.getDeclaredMethods())
-                            .filter(m -> "append".equals(m.getName()))
-                            .collect(Collectors.toList());
-            for (Method m : appendMethods) {
-                accessImpl.registerAsRoot(m, false, "string concat in interpreter");
-            }
-            for (Constructor<?> c : StringBuilder.class.getDeclaredConstructors()) {
-                accessImpl.registerAsRoot(c, true, "string concat in interpreter");
-            }
-            accessImpl.registerAsRoot(StringBuilder.class.getConstructor(), true, "string concat in interpreter");
-        } catch (NoSuchMethodException e) {
-            throw new RuntimeException(e);
+        AnalysisMetaAccess metaAccess = accessImpl.getMetaAccess();
+        AnalysisType aStringBuilder = metaAccess.lookupJavaType(StringBuilder.class);
+        List<AnalysisMethod> appendMethods = Arrays.stream(aStringBuilder.getDeclaredMethods(false))
+                        .filter(m -> "append".equals(m.getName())).toList();
+        for (AnalysisMethod m : appendMethods) {
+            accessImpl.registerAsRoot(m, false, "string concat in interpreter");
         }
+        for (AnalysisMethod c : aStringBuilder.getDeclaredConstructors(false)) {
+            accessImpl.registerAsRoot(c, true, "string concat in interpreter");
+        }
+        AnalysisMethod aMethod = (AnalysisMethod) JVMCIReflectionUtil.getDeclaredConstructor(metaAccess, aStringBuilder);
+        accessImpl.registerAsRoot(aMethod, true, "string concat in interpreter");
     }
 
     static boolean isReachable(AnalysisMethod m) {
@@ -299,13 +299,13 @@ public class DebuggerFeature implements InternalFeature {
 
         if (!classesUsedByInterpreter.isEmpty()) {
             access.requireAnalysisIteration();
-            for (Class<?> k : classesUsedByInterpreter) {
-                accessImpl.registerAsUsed(k);
-                Arrays.stream(k.getDeclaredMethods()).filter(m -> m.getName().startsWith("test")).forEach(m -> {
-                    AnalysisMethod aMethod = accessImpl.getMetaAccess().lookupJavaMethod(m);
+            for (ResolvedJavaType k : classesUsedByInterpreter) {
+                AnalysisType aType = k instanceof AnalysisType analysisType ? analysisType : accessImpl.getUniverse().lookup(k);
+                accessImpl.registerAsUsed(aType, "used by interpreter");
+                Arrays.stream(aType.getDeclaredMethods(false)).filter(m -> m.getName().startsWith("test")).forEach(aMethod -> {
                     VMError.guarantee(!aMethod.isConstructor());
                     accessImpl.registerAsRoot(aMethod, aMethod.isConstructor(), "reached due to interpreter directive");
-                    InterpreterUtil.log("[during analysis] Adding method %s", m);
+                    InterpreterUtil.log("[during analysis] Adding method %s", aMethod);
                 });
             }
             classesUsedByInterpreter.clear();
@@ -325,7 +325,7 @@ public class DebuggerFeature implements InternalFeature {
 
             if (method.isReachable() && !methodsProcessedDuringAnalysis.contains(method)) {
                 methodsProcessedDuringAnalysis.add(method);
-                if (method.wrapped instanceof SubstitutionMethod subMethod && subMethod.isUserSubstitution()) {
+                if (method.wrapped instanceof SubstitutionMethod subMethod) {
                     if (subMethod.getOriginal().isNative()) {
                         accessImpl.registerAsRoot(method, isInvokeSpecial(method), "compiled entry point of substitution needed for interpreter");
                         continue;
@@ -431,8 +431,8 @@ public class DebuggerFeature implements InternalFeature {
 
     @Override
     public void afterAnalysis(AfterAnalysisAccess access) {
-        VMError.guarantee(InterpreterToVM.wordJavaKind() == JavaKind.Long ||
-                        InterpreterToVM.wordJavaKind() == JavaKind.Int);
+        JavaKind wordKind = SubstrateTarget.getWordKind();
+        VMError.guarantee(wordKind == JavaKind.Long || wordKind == JavaKind.Int);
     }
 
     @Override
@@ -440,7 +440,7 @@ public class DebuggerFeature implements InternalFeature {
         FeatureImpl.BeforeCompilationAccessImpl accessImpl = (FeatureImpl.BeforeCompilationAccessImpl) access;
         HostedUniverse hUniverse = accessImpl.getUniverse();
         HostedMetaAccess hMetaAccess = accessImpl.getMetaAccess();
-        MetaAccessProvider aMetaAccess = hMetaAccess.getWrapped();
+        AnalysisMetaAccess aMetaAccess = (AnalysisMetaAccess) hMetaAccess.getWrapped();
         BuildTimeInterpreterUniverse iUniverse = BuildTimeInterpreterUniverse.singleton();
 
         for (HostedType hType : hUniverse.getTypes()) {
@@ -451,15 +451,15 @@ public class DebuggerFeature implements InternalFeature {
                     if (staticField instanceof AnalysisField analysisStaticField && !analysisStaticField.isWritten()) {
                         /*
                          * Assertions are implemented by generating a boolean $assertionsDisabled
-                         * static field, but native-image substitutes the field reads by a constant,
-                         * making the field unreachable sometimes. The interpreter must artificially
+                         * static field, but native-image can substitute the field reads by a constant,
+                         * making the field unreachable. The interpreter must artificially
                          * preserve the metadata without making it reachable to the analysis. In
-                         * some cases, $assertionsDisabled is written in not-yet-executed static
-                         * initializers, it can't be made read-only always.
+                         * some cases, $assertionsDisabled is written in a not-yet-executed static
+                         * initializer; it can't always be made read-only.
                          */
-                        if (staticField.isStatic() && staticField.isSynthetic() && staticField.getName().startsWith(SYNTHETIC_ASSERTIONS_DISABLED_FIELD_NAME)) {
+                        if (staticField.isStatic() && staticField.isSynthetic() && staticField.getName().startsWith(AssertionsSupport.SYNTHETIC_ASSERTIONS_DISABLED_FIELD_NAME)) {
                             Class<?> declaringClass = aType.getJavaClass();
-                            boolean value = !RuntimeAssertionsSupport.singleton().desiredAssertionStatus(declaringClass);
+                            boolean value = !AssertionsSupport.singleton().desiredAssertionStatus(declaringClass);
                             InterpreterResolvedJavaField field = iUniverse.getOrCreateField(analysisStaticField);
                             JavaConstant javaConstant = iUniverse.constant(JavaConstant.forBoolean(value));
                             BuildTimeInterpreterUniverse.setUnmaterializedConstantValue(field, javaConstant);
@@ -477,7 +477,7 @@ public class DebuggerFeature implements InternalFeature {
                 boolean needsMethodBody = InterpreterFeature.executableByInterpreter(aMethod) && InterpreterFeature.callableByInterpreter(hMethod, hMetaAccess);
                 // Test if the methods needs to be compiled for execution in the interpreter:
                 if (aMethod.getAnalyzedGraph() != null && //
-                                (aMethod.wrapped instanceof SubstitutionMethod subMethod && subMethod.isUserSubstitution() ||
+                                (aMethod.wrapped instanceof SubstitutionMethod ||
                                                 invocationPlugins.lookupInvocation(aMethod, invocationLookupOptions) != null)) {
                     // The method is substituted, or an invocation plugin is registered
                     SubstrateCompilationDirectives.singleton().registerForcedCompilation(hMethod);
@@ -487,7 +487,7 @@ public class DebuggerFeature implements InternalFeature {
                 if (needsMethodBody) {
                     BuildTimeInterpreterUniverse.singleton().getOrCreateMethodWithMethodBody(aMethod, aMetaAccess);
                 } else {
-                    BuildTimeInterpreterUniverse.singleton().getOrCreateMethod(aMethod);
+                    BuildTimeInterpreterUniverse.singleton().getOrCreateMethod(aMethod, false);
                 }
             }
         }
@@ -501,20 +501,20 @@ public class DebuggerFeature implements InternalFeature {
 
         iUniverse.purgeUnreachable(hMetaAccess);
 
-        Field vtableHolderField = ReflectionUtil.lookupField(InterpreterResolvedObjectType.class, "vtableHolder");
+        ResolvedJavaField vtableHolderField = JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(InterpreterResolvedObjectType.class), "vtableHolder");
         ScanReason reason = new OtherReason("Manual rescan triggered before compilation from " + DebuggerFeature.class);
         for (HostedType hostedType : hUniverse.getTypes()) {
             iUniverse.mirrorSVMVTable(hostedType, objectType -> accessImpl.getHeapScanner().rescanField(objectType, vtableHolderField, reason));
         }
 
         // Allow methods that call System.arraycopy to be interpreted.
-        try {
-            HostedMethod arraycopy = hMetaAccess.lookupJavaMethod(
-                            System.class.getDeclaredMethod("arraycopy", Object.class, int.class, Object.class, int.class, int.class));
-            SubstrateCompilationDirectives.singleton().registerForcedCompilation(arraycopy);
-        } catch (NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
+
+        HostedType systemClass = hMetaAccess.lookupJavaType(System.class);
+        AnalysisMethod arraycopy = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(aMetaAccess,
+                        systemClass.getWrapped(), "arraycopy", Object.class, int.class, Object.class, int.class, int.class);
+        SubstrateCompilationDirectives.singleton().registerForcedCompilation(arraycopy);
+
+        InterpreterFeature.prepareSignatures();
     }
 
     @Override
@@ -555,21 +555,22 @@ public class DebuggerFeature implements InternalFeature {
 
             if (!hostedMethod.isCompiled()) {
                 InterpreterUtil.log("[got] after compilation: %s is not compiled, nulling it out", hostedMethod);
-                interpreterMethod.setVTableIndex(VTBL_NO_ENTRY);
-                interpreterMethod.setNativeEntryPoint(null);
+                interpreterMethod.setVTableIndex(VTBL_UNINITIALIZED);
+                interpreterMethod.setNativeEntryPoint((MethodRef) null);
             } else {
                 if (interpreterMethod.hasBytecodes()) {
                     /* only allocate stub for methods that we can actually run in the interpreter */
                     interpreterMethod.setEnterStubOffset(estOffset++);
                 }
 
-                interpreterMethod.setNativeEntryPoint(new MethodPointer(interpreterMethod.getOriginalMethod()));
+                interpreterMethod.setNativeEntryPoint(InterpreterResolvedJavaMethod.createMethodRef(interpreterMethod.getOriginalMethod()));
             }
 
             if (!interpreterMethod.isStatic() && !interpreterMethod.isConstructor()) {
                 if (hostedMethod.getImplementations().length > 1) {
                     if (!hostedMethod.hasVTableIndex()) {
                         InterpreterUtil.log("[vtable assignment] %s has multiple implementations but no vtable slot. This is not supported.%n", hostedMethod);
+                        interpreterMethod.setVTableIndex(VTBL_INVALID);
                     } else {
                         InterpreterUtil.log("[vtable assignment] Setting to Index %s for methods %s <> %s%n", hostedMethod.getVTableIndex(), interpreterMethod, hostedMethod);
                         interpreterMethod.setVTableIndex(hostedMethod.getVTableIndex());
@@ -587,7 +588,7 @@ public class DebuggerFeature implements InternalFeature {
                     InterpreterUtil.log("[vtable assignment]  set oneImpl to -> %s%n", oneImpl);
                 } else {
                     InterpreterUtil.log("[vtable assignment] No implementation available: %s%n", hostedMethod);
-                    interpreterMethod.setVTableIndex(VTBL_NO_ENTRY);
+                    interpreterMethod.setVTableIndex(VTBL_ALWAYS_INLINED);
                 }
             }
         }
@@ -630,9 +631,9 @@ public class DebuggerFeature implements InternalFeature {
 
         DebuggerSupport supportImpl = DebuggerSupport.singleton();
         for (InterpreterResolvedJavaMethod method : BuildTimeInterpreterUniverse.singleton().getMethods()) {
-            ReferenceConstant<FunctionPointerHolder> nativeEntryPointHolderConstant = method.getNativeEntryPointHolderConstant();
+            ReferenceConstant<MethodRefHolder> nativeEntryPointHolderConstant = method.getNativeEntryPointHolderConstant();
             if (nativeEntryPointHolderConstant != null) {
-                supportImpl.ensureMethodPointerIsInImage(nativeEntryPointHolderConstant.getReferent());
+                supportImpl.ensureMethodRefIsInImage(nativeEntryPointHolderConstant.getReferent());
             }
         }
     }
@@ -646,7 +647,7 @@ public class DebuggerFeature implements InternalFeature {
             if (field.isArtificiallyReachable()) {
                 // Value should be already computed.
                 JavaConstant value = field.getUnmaterializedConstant();
-                VMError.guarantee(value != null && value != JavaConstant.ILLEGAL);
+                VMError.guarantee(value != null && !value.equals(JavaConstant.ILLEGAL));
                 continue;
             }
             HostedField hostedField = accessImpl.getMetaAccess().getUniverse().optionalLookup(field.getOriginalField());
@@ -668,7 +669,7 @@ public class DebuggerFeature implements InternalFeature {
             int gotOffset = GOT_NO_ENTRY;
 
             if (interpreterMethod.isInterpreterExecutable()) {
-                gotOffset = gotEntryAllocator.queryGotEntry(hostedMethod);
+                gotOffset = gotEntryAllocator.queryGOTEntry(hostedMethod);
             }
 
             if (gotOffset == GOT_NO_ENTRY) {
@@ -691,7 +692,12 @@ public class DebuggerFeature implements InternalFeature {
 
         /* create enter stubs */
         InterpreterStubSection stubSection = ImageSingletons.lookup(InterpreterStubSection.class);
-        stubSection.createInterpreterEnterStubSection(accessImpl.getImage(), includedMethods);
+        SubstrateBackend b = accessImpl.getRuntimeConfiguration().getBackendForNormalMethod();
+        if (b instanceof SubstrateBackendWithAssembler<?> bAsm) {
+            stubSection.createInterpreterEnterStubSection(accessImpl.getImage(), includedMethods, bAsm);
+        } else {
+            throw VMError.shouldNotReachHere("Needs a backend with an assembler, it is not available with backend %s", b.getClass());
+        }
 
         /* populate EST */
         enterStubTable.installAdditionalInfoIntoImageObjectFile(accessImpl.getImage(), includedMethods);
@@ -736,7 +742,7 @@ public class DebuggerFeature implements InternalFeature {
                             }
                         }));
 
-        Path destDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
+        Path destDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton().get());
 
         // Be explicit here: .metadata file is derived from <final binary name (including
         // extension)>
@@ -768,7 +774,7 @@ public class DebuggerFeature implements InternalFeature {
 
         InterpreterStubSection stubSection = ImageSingletons.lookup(InterpreterStubSection.class);
 
-        stubSection.markEnterStubPatch(accessImpl.getHostedMetaAccess().lookupJavaMethod(enterInterpreterMethod));
+        stubSection.markEnterStubPatch(accessImpl.getHostedUniverse().lookup(enterInterpreterMethod));
         enterStubTable.writeMetadataHashString(hashString.getBytes(StandardCharsets.UTF_8));
     }
 

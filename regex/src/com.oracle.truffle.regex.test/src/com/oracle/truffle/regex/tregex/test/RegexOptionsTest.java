@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -61,7 +61,7 @@ import com.oracle.truffle.regex.flavor.python.PythonFlavor;
 import com.oracle.truffle.regex.flavor.ruby.RubyFlavor;
 import com.oracle.truffle.regex.test.dummylang.TRegexTestDummyLanguage;
 import com.oracle.truffle.regex.tregex.parser.MatchingMode;
-import com.oracle.truffle.regex.tregex.string.Encodings;
+import com.oracle.truffle.regex.tregex.string.Encoding;
 
 public class RegexOptionsTest extends RegexTestBase {
 
@@ -96,8 +96,8 @@ public class RegexOptionsTest extends RegexTestBase {
     }
 
     @Override
-    Encodings.Encoding getTRegexEncoding() {
-        return Encodings.UTF_16_RAW;
+    Encoding getTRegexEncoding() {
+        return Encoding.UTF_16_RAW;
     }
 
     private static String setBool(String... name) {
@@ -163,6 +163,7 @@ public class RegexOptionsTest extends RegexTestBase {
         assertEquals("abc", parse(Map.of("PythonLocale", "abc")).getPythonLocale());
         assertEquals(123, parse(Map.of("MaxDFASize", "123")).getMaxDFASize());
         assertEquals(123, parse(Map.of("MaxBackTrackerJITSize", "123")).getMaxBackTrackerCompileSize());
+        assertEquals(123, parse(Map.of("MaxParserTreeSize", "123")).getMaxParserTreeSize());
         assertEquals(123, parse(Map.of("QuantifierUnrollLimitSingleCC", "123")).quantifierUnrollLimitSingleCC);
         assertEquals(123, parse(Map.of("QuantifierUnrollLimitGroup", "123")).quantifierUnrollLimitGroup);
     }

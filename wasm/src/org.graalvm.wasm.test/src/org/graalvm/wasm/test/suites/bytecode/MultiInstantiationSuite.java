@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -58,18 +58,22 @@ import org.graalvm.wasm.WasmLanguage;
 import org.graalvm.wasm.WasmModule;
 import org.graalvm.wasm.WasmTable;
 import org.graalvm.wasm.WasmTag;
+import org.graalvm.wasm.WasmType;
 import org.graalvm.wasm.api.Dictionary;
 import org.graalvm.wasm.api.Executable;
-import org.graalvm.wasm.api.FuncType;
 import org.graalvm.wasm.api.Sequence;
-import org.graalvm.wasm.api.TableKind;
-import org.graalvm.wasm.api.ValueType;
 import org.graalvm.wasm.api.WebAssembly;
 import org.graalvm.wasm.exception.WasmJsApiException;
 import org.graalvm.wasm.globals.WasmGlobal;
 import org.graalvm.wasm.memory.WasmMemory;
 import org.graalvm.wasm.memory.WasmMemoryLibrary;
+import org.graalvm.wasm.parser.bytecode.BytecodeParser;
+import org.graalvm.wasm.parser.ir.CodeEntry;
 import org.graalvm.wasm.test.WasmTestUtils;
+import org.graalvm.wasm.types.FunctionType;
+import org.graalvm.wasm.types.NumberType;
+import org.graalvm.wasm.types.ReferenceType;
+import org.graalvm.wasm.types.ValueType;
 import org.graalvm.wasm.utils.WasmBinaryTools;
 import org.junit.Assert;
 import org.junit.Test;
@@ -192,7 +196,7 @@ public class MultiInstantiationSuite {
 
             a.addMember("f", new Executable(args -> 42));
 
-            final WasmTable t = wasm.tableAlloc(2, 2, TableKind.anyfunc, tableFun);
+            final WasmTable t = wasm.tableAlloc(2, 2, ReferenceType.FUNCREF, tableFun);
             a.addMember("t", t);
 
             final WasmMemory m = WebAssembly.memAlloc(1, 1, false);
@@ -200,10 +204,10 @@ public class MultiInstantiationSuite {
             memoryLib.store_i32_8(m, null, 0, (byte) 5);
             a.addMember("m", m);
 
-            final WasmGlobal g = wasm.globalAlloc(ValueType.i32, false, 4);
+            final WasmGlobal g = wasm.globalAlloc(NumberType.I32, false, 4);
             a.addMember("g", g);
 
-            final WasmTag e = WebAssembly.tagAlloc(FuncType.fromString("()"));
+            final WasmTag e = wasm.tagAlloc(new FunctionType(ValueType.EMPTY, ValueType.EMPTY));
             a.addMember("e", e);
 
             imports.addMember("a", a);
@@ -237,10 +241,8 @@ public class MultiInstantiationSuite {
                 final Object eInstanceTag = lib.execute(exnTag, eInstance);
                 Assert.assertSame("Exception tag does not match", e, eInstanceTag);
 
-                final Object exnRead = wasm.readMember("exn_read");
-                final Object eInstanceFields = lib.execute(exnRead, eInstance);
-                Assert.assertTrue("Exception fields is not an array", lib.hasArrayElements(eInstanceFields));
-                Assert.assertEquals("Exception fields array size", 0, lib.getArraySize(eInstanceFields));
+                Assert.assertTrue("Exception does not have fields", lib.hasArrayElements(eInstance));
+                Assert.assertEquals("Exception fields count", 0, lib.getArraySize(eInstance));
 
                 final Object test = WebAssembly.instanceExport(i, "test");
                 final int result = lib.asInt(lib.execute(test));
@@ -266,7 +268,7 @@ public class MultiInstantiationSuite {
                         )
                         """);
         test(source, wasm -> {
-            WasmGlobal g = wasm.globalAlloc(ValueType.i32, false, 16);
+            WasmGlobal g = wasm.globalAlloc(NumberType.I32, false, 16);
             return Dictionary.create(new Object[]{"a", Dictionary.create(new Object[]{"g", g})});
         }, (wasm, i) -> {
             InteropLibrary lib = InteropLibrary.getUncached();
@@ -572,5 +574,50 @@ public class MultiInstantiationSuite {
                 Assert.assertEquals("Return value of main", List.of(42L, 6, 8, 2.72), List.copyOf(result2.as(List.class)));
             });
         }
+    }
+
+    // Tests that exercise the BytecodeParser#readCodeEntries code path that is used when
+    // instantiating a module multiple times.
+    @Test
+    public void testRereadCodeEntryWithDefinedTypeZeroParam() throws IOException, InterruptedException {
+        CodeEntry[] codeEntries = readCodeEntries(WasmBinaryTools.compileWat("main", """
+                        (module
+                          (type (;0;) (func))
+                          (type (;1;) (func (param (ref 0))))
+                          (func (type 0))
+                          (func (type 1) (param (ref 0))
+                            local.get 0
+                            drop)
+                        )
+                        """, EnumSet.of(WasmBinaryTools.WabtOption.FUNCTION_REFERENCES)));
+
+        Assert.assertArrayEquals(new int[]{WasmType.withNullable(false, 0)}, codeEntries[1].localTypes());
+    }
+
+    @Test
+    public void testRereadCodeEntryWithDefinedTypeZeroResult() throws IOException, InterruptedException {
+        CodeEntry[] codeEntries = readCodeEntries(WasmBinaryTools.compileWat("main", """
+                        (module
+                          (type (;0;) (func))
+                          (type (;1;) (func (result (ref 0))))
+                          (func (type 0))
+                          (func (type 1) (result (ref 0))
+                            unreachable)
+                        )
+                        """, EnumSet.of(WasmBinaryTools.WabtOption.FUNCTION_REFERENCES)));
+
+        Assert.assertArrayEquals(new int[]{WasmType.withNullable(false, 0)}, codeEntries[1].resultTypes());
+    }
+
+    private static CodeEntry[] readCodeEntries(byte[] binary) {
+        CodeEntry[][] codeEntries = new CodeEntry[1][];
+        try (Context context = Context.newBuilder(WasmLanguage.ID).build()) {
+            WasmTestUtils.runInWasmContext(context, c -> {
+                WebAssembly wasm = new WebAssembly(c);
+                WasmModule module = wasm.moduleDecode(binary);
+                codeEntries[0] = BytecodeParser.readCodeEntries(module);
+            });
+        }
+        return codeEntries[0];
     }
 }

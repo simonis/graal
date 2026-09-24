@@ -31,9 +31,11 @@ The source code for this phase can be found in [HostInliningPhase](../../compile
 
 Truffle host inlining is applied when compiling a method annotated with `@HostCompilerDirectives.BytecodeInterpreterSwitch`.
 The maximum node cost for such methods can be configured using `-H:TruffleHostInliningByteCodeInterpreterBudget=100000` for native images and `-Djdk.graal.TruffleHostInliningByteCodeInterpreterBudget=100000` on HotSpot. 
-If a method that is annotated with  `@BytecodeInterpreterSwitch` calls a method with the same annotation then the method is directly inlined as long as the cost of both methods do not exceed the budget.
-In other words, any such method will be treated by the inlining phase just as if they would be part of the root bytecode switch method.
+If a method that is annotated with `@BytecodeInterpreterSwitch` calls a method with the same annotation then the method is directly inlined as long as the cost of both methods do not exceed the budget.
+In other words, any such method will be treated by the inlining phase just as if it were part of the root bytecode switch method.
 This allows bytecode interpreter switches to be composed of multiple methods if needed.
+Helper methods in a split interpreter can also inline back into the root when they carry the same `@BytecodeInterpreterHandlerConfig`.
+By contrast, methods annotated with `@BytecodeInterpreterHandler` are intentionally not host-inlined directly into `@BytecodeInterpreterSwitch` methods, so that bytecode-handler outlining remains intact.
 
 Native image, during closed world analysis, computes all methods that are reachable for runtime compilation.
 Any potentially reachable method from `RootNode.execute(...)` is determined as runtime compilable.
@@ -108,7 +110,7 @@ class BytecodeNode extends Node {
                     }
                     break;
                 default:
-                    // propagates transferToInterpeter from within the call
+                    // propagates transferToInterpreter from within the call
                     throw CompilerDirectives.shouldNotReachHere();
             }
         }
@@ -337,7 +339,7 @@ Consider the following example:
 ```
 int execute(int argument) {
 	if (argument == 0) {
-	   CompilerDirectives.transferToInterpeterAndInvalidate();
+	   CompilerDirectives.transferToInterpreterAndInvalidate();
 	   throw new RuntimeException("Invalid zero argument " + argument);
 	}
 	return argument;
@@ -349,7 +351,7 @@ The Java compiler generates bytecode equivalent to the following code:
 ```
 int execute(int argument) {
 	if (argument == 0) {
-	   CompilerDirectives.transferToInterpeterAndInvalidate();
+	   CompilerDirectives.transferToInterpreterAndInvalidate();
 	   throw new RuntimeException(new StringBuilder("Invalid zero argument ").append(argument).build());
 	}
 	return argument;
@@ -363,7 +365,7 @@ It is therefore recommended to extract a single method for the slow-path part of
 ```
 int execute(int argument) {
 	if (argument == 0) {
-	   CompilerDirectives.transferToInterpeterAndInvalidate();
+	   CompilerDirectives.transferToInterpreterAndInvalidate();
 	   throw invalidZeroArgument(argument);
 	}
 	return argument;

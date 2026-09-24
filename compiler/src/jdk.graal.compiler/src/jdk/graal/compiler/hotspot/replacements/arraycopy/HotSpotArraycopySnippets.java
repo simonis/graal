@@ -26,6 +26,8 @@
 package jdk.graal.compiler.hotspot.replacements.arraycopy;
 
 import static jdk.graal.compiler.hotspot.GraalHotSpotVMConfig.INJECTED_VMCONFIG;
+import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.HotSpotFieldLocationIdentity.KLASS_SUPER_CHECK_OFFSET_LOCATION;
+import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.HotSpotOptimizingFieldLocationIdentity.OBJ_ARRAY_KLASS_ELEMENT_KLASS_LOCATION;
 import static jdk.graal.compiler.nodeinfo.NodeCycles.CYCLES_UNKNOWN;
 import static jdk.graal.compiler.nodeinfo.NodeSize.SIZE_UNKNOWN;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.FREQUENT_PROBABILITY;
@@ -35,6 +37,7 @@ import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probabilit
 import static jdk.graal.compiler.replacements.SnippetTemplate.AbstractTemplates.findMethod;
 
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.core.common.type.StampFactory;
 import jdk.graal.compiler.core.common.type.StampPair;
@@ -55,7 +58,6 @@ import jdk.graal.compiler.nodes.spi.LoweringTool;
 import jdk.graal.compiler.replacements.arraycopy.ArrayCopyCallNode;
 import jdk.graal.compiler.replacements.arraycopy.ArrayCopySnippets;
 import jdk.graal.compiler.replacements.nodes.BasicArrayCopyNode;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.hotspot.HotSpotCallingConventionType;
 import jdk.vm.ci.meta.JavaKind;
 
@@ -68,20 +70,11 @@ public class HotSpotArraycopySnippets extends ArrayCopySnippets {
         return srcHub.equal(destHub);
     }
 
-    Word getSuperCheckOffset(KlassPointer destElemKlass) {
-        return Word.signed(destElemKlass.readInt(HotSpotReplacementsUtil.superCheckOffsetOffset(INJECTED_VMCONFIG), HotSpotReplacementsUtil.KLASS_SUPER_CHECK_OFFSET_LOCATION));
-    }
-
     @Override
     public boolean layoutHelpersEqual(Object nonNullSrc, Object nonNullDest) {
         KlassPointer srcHub = HotSpotReplacementsUtil.loadHub(nonNullSrc);
         KlassPointer destHub = HotSpotReplacementsUtil.loadHub(nonNullDest);
         return HotSpotReplacementsUtil.readLayoutHelper(srcHub) == HotSpotReplacementsUtil.readLayoutHelper(destHub);
-    }
-
-    KlassPointer getDestElemClass(KlassPointer destKlass) {
-        return destKlass.readKlassPointer(HotSpotReplacementsUtil.arrayClassElementOffset(INJECTED_VMCONFIG),
-                        HotSpotReplacementsUtil.OBJ_ARRAY_KLASS_ELEMENT_KLASS_LOCATION);
     }
 
     @Override
@@ -103,8 +96,8 @@ public class HotSpotArraycopySnippets extends ArrayCopySnippets {
                 counters.objectCheckcastSameTypeCopiedCounter.add(length);
                 ArrayCopyCallNode.arraycopyObjectKillsAny(nonNullSrc, srcPos, nonNullDest, destPos, length, heapWordSize());
             } else {
-                KlassPointer destElemKlass = getDestElemClass(destKlass);
-                Word superCheckOffset = getSuperCheckOffset(destElemKlass);
+                KlassPointer destElemKlass = OBJ_ARRAY_KLASS_ELEMENT_KLASS_LOCATION.readKlassPointer(destKlass);
+                Word superCheckOffset = Word.signed(KLASS_SUPER_CHECK_OFFSET_LOCATION.readInt(destElemKlass));
 
                 counters.objectCheckcastDifferentTypeCounter.inc();
                 counters.objectCheckcastDifferentTypeCopiedCounter.add(length);

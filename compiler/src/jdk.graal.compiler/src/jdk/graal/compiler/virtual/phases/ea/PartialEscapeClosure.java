@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.IntUnaryOperator;
 
 import org.graalvm.collections.EconomicMap;
@@ -178,8 +179,8 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
      */
     public static final class Final extends PartialEscapeClosure<PartialEscapeBlockState.Final> {
 
-        public Final(ScheduleResult schedule, CoreProviders providers) {
-            super(schedule, providers);
+        public Final(ScheduleResult schedule, CoreProviders providers, Function<VirtualObjectNode, FixedWithNextNode> anchorSupplier) {
+            super(schedule, providers, anchorSupplier);
         }
 
         @Override
@@ -195,10 +196,15 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
 
     @SuppressWarnings("this-escape")
     public PartialEscapeClosure(ScheduleResult schedule, CoreProviders providers) {
+        this(schedule, providers, null);
+    }
+
+    @SuppressWarnings("this-escape")
+    public PartialEscapeClosure(ScheduleResult schedule, CoreProviders providers, Function<VirtualObjectNode, FixedWithNextNode> anchorSupplier) {
         super(schedule, schedule.getCFG());
         StructuredGraph graph = schedule.getCFG().graph;
         this.hasVirtualInputs = graph.createNodeBitMap();
-        this.tool = new VirtualizerToolImpl(providers, this, graph.getAssumptions(), graph.getOptions(), debug);
+        this.tool = new VirtualizerToolImpl(providers, this, graph.getAssumptions(), graph.getOptions(), debug, anchorSupplier);
         this.requiresStrictLockOrder = providers.getPlatformConfigurationProvider().requiresStrictLockOrder();
     }
 
@@ -1086,7 +1092,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
          * entries where needed. If they are incompatible, then all incoming virtual objects will be
          * materialized, and a PhiNode for the materialized values will be created. Object states
          * can be incompatible if they contain {@code long} or {@code double} values occupying two
-         * {@code int} slots in such a way that that their values cannot be merged using PhiNodes.
+         * {@code int} slots in such a way that their values cannot be merged using PhiNodes.
          * The states may also be incompatible if they contain escaped large writes to byte arrays
          * in such a way that they cannot be merged using PhiNodes.
          *

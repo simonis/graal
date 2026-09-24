@@ -32,13 +32,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
 
-import com.oracle.svm.core.util.UserError;
-import com.oracle.graal.pointsto.meta.AnalysisUniverse;
-import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
+import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.impl.TypeReachabilityCondition;
 
-import com.oracle.svm.core.util.VMError;
+import com.oracle.graal.pointsto.meta.AnalysisUniverse;
+import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 
 public abstract class ConditionalConfigurationRegistry {
@@ -112,6 +112,10 @@ public abstract class ConditionalConfigurationRegistry {
         pendingReachabilityHandlers.clear();
     }
 
+    protected void clearAnalysisAccess() {
+        beforeAnalysisAccess = null;
+    }
+
     protected void requireNonNull(Object[] values, String kind, String accessKind) {
         for (Object value : values) {
             Objects.requireNonNull(value, () -> nullErrorMessage(kind, accessKind));
@@ -122,7 +126,7 @@ public abstract class ConditionalConfigurationRegistry {
         return "Cannot register null value as " + elementKind + " for " + accessKind + ". Please ensure that all values you register are not null.";
     }
 
-    public void sealed() {
+    public void seal() {
         sealed = true;
     }
 

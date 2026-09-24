@@ -26,9 +26,8 @@ package jdk.graal.compiler.hotspot.replacements;
 
 import static jdk.graal.compiler.hotspot.GraalHotSpotVMConfig.INJECTED_VMCONFIG;
 import static jdk.graal.compiler.hotspot.meta.HotSpotForeignCallsProviderImpl.IDENTITY_HASHCODE;
+import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.HotSpotFieldLocationIdentity.MARK_WORD_LOCATION;
 import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.identityHashCode;
-import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.loadWordFromObject;
-import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.markOffset;
 import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.markWordHashCodeShift;
 import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.markWordHashMark;
 import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.markWordLockMaskInPlace;
@@ -40,19 +39,20 @@ import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.us
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.FAST_PATH_PROBABILITY;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
+import org.graalvm.word.impl.Word;
+
 import jdk.graal.compiler.lir.SyncPort;
 import jdk.graal.compiler.replacements.IdentityHashCodeSnippets;
-import jdk.graal.compiler.word.Word;
 
 // @formatter:off
-@SyncPort(from = "https://github.com/openjdk/jdk/blob/8e4485699235caff0074c4d25ee78539e57da63a/src/hotspot/share/opto/library_call.cpp#L4723-L4857",
+@SyncPort(from = "https://github.com/openjdk/jdk25u/blob/b8aa130bab715f187476181acc5021b27958833f/src/hotspot/share/opto/library_call.cpp#L4689-L4823",
           sha1 = "c212d1dbff26d02d4d749e085263d4104895f1ba")
 // @formatter:on
 public class HotSpotHashCodeSnippets extends IdentityHashCodeSnippets {
 
     @Override
     protected int computeIdentityHashCode(final Object x) {
-        Word mark = loadWordFromObject(x, markOffset(INJECTED_VMCONFIG));
+        Word mark = MARK_WORD_LOCATION.readWord(x);
 
         // In HotSpot, the upper bits (i.e., [63:2] in 64-bits VM) of the mark word in object header
         // are

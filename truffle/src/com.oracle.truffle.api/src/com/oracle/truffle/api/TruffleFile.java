@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -76,6 +76,7 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -89,7 +90,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
-import java.util.Random;
 import java.util.Set;
 
 import org.graalvm.polyglot.io.FileSystem;
@@ -1128,7 +1128,7 @@ public final class TruffleFile {
      * Returns the file's Posix permissions.
      *
      * @param linkOptions the options determining how the symbolic links should be handled
-     * @return the the file's Posix permissions
+     * @return the file's Posix permissions
      * @throws IOException in case of IO error
      * @throws UnsupportedOperationException when the Posix permissions are not supported by
      *             filesystem
@@ -1617,22 +1617,6 @@ public final class TruffleFile {
     }
 
     /**
-     * Returns the {@link TruffleFile file} MIME type.
-     *
-     * @return the MIME type or {@code null} if the MIME type is not recognized
-     * @throws IOException in case of IO error
-     * @throws SecurityException if the {@link FileSystem} denied the operation
-     * @since 19.0
-     * @deprecated use {@link #detectMimeType()}
-     */
-    @TruffleBoundary
-    @Deprecated(since = "20.2")
-    @SuppressWarnings("unused")
-    public String getMimeType() throws IOException {
-        return detectMimeType(null);
-    }
-
-    /**
      * Detects the {@link TruffleFile file} MIME type.
      *
      * @return the MIME type or {@code null} if the MIME type is not recognized
@@ -1780,7 +1764,7 @@ public final class TruffleFile {
     private static TruffleFile createUniquePath(TruffleFile targetDirectory, String prefix, String suffix) {
         long n = TempFileRandomHolder.getRandom().nextLong();
         n = n == Long.MIN_VALUE ? Long.MAX_VALUE : Math.abs(n);
-        String name = prefix + Long.toString(n) + suffix;
+        String name = prefix + n + suffix;
         TruffleFile result = targetDirectory.resolve(name);
         if (!targetDirectory.equals(result.getParent())) {
             throw new InvalidPathException(name, "Must be a simple name");
@@ -1806,12 +1790,12 @@ public final class TruffleFile {
     }
 
     private static final class TempFileRandomHolder {
-        private static Random RANDOM;
+        private static volatile SecureRandom RANDOM;
 
-        static Random getRandom() {
+        static SecureRandom getRandom() {
             if (RANDOM == null) {
                 /* We don't want RANDOM seeds in the image heap. */
-                RANDOM = new Random();
+                RANDOM = new SecureRandom();
             }
             return RANDOM;
         }
@@ -2332,7 +2316,7 @@ public final class TruffleFile {
     }
 
     static <T extends Throwable> RuntimeException wrapHostException(T t, FileSystemContext fsContext) {
-        if (LanguageAccessor.engineAccess().isInternal(fsContext.engineObject, fsContext.fileSystem)) {
+        if (LanguageAccessor.engineAccess().isInternal(fsContext.fileSystem)) {
             throw Env.engineToLanguageException(t);
         }
         throw LanguageAccessor.engineAccess().wrapHostException(null, LanguageAccessor.engineAccess().getCurrentHostContext(), t);

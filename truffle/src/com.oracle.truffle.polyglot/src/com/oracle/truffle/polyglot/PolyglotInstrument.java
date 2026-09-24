@@ -46,6 +46,7 @@ import static com.oracle.truffle.polyglot.EngineAccessor.LANGUAGE;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import com.oracle.truffle.api.impl.TruffleVersions;
 import org.graalvm.options.OptionDescriptor;
 import org.graalvm.options.OptionDescriptors;
 import org.graalvm.polyglot.SandboxPolicy;
@@ -131,7 +132,7 @@ class PolyglotInstrument implements com.oracle.truffle.polyglot.PolyglotImpl.VMO
         if (optionValues == null) {
             synchronized (instrumentLock) {
                 if (optionValues == null) {
-                    optionValues = new OptionValuesImpl(getAllOptionsInternal(), engine.sandboxPolicy, false, false);
+                    optionValues = new OptionValuesImpl(getAllOptionsInternal(), engine.sandboxPolicy, false);
                 }
             }
         }
@@ -176,7 +177,7 @@ class PolyglotInstrument implements com.oracle.truffle.polyglot.PolyglotImpl.VMO
                         this.engineOptions = engineOptions;
                         this.contextOptions = contextOptions;
                         this.sourceOptions = sourceOptions;
-                        this.emptySourceOptionValues = new OptionValuesImpl(sourceOptions, SandboxPolicy.TRUSTED, false, false);
+                        this.emptySourceOptionValues = new OptionValuesImpl(sourceOptions, SandboxPolicy.TRUSTED, false);
                         this.allOptions = LANGUAGE.createOptionDescriptorsUnion(engineOptions, contextOptions);
                     } catch (Exception e) {
                         throw new IllegalStateException(String.format("Error initializing instrument '%s' using class '%s'. Message: %s.", cache.getId(), cache.getClassName(), e.getMessage()), e);
@@ -312,7 +313,11 @@ class PolyglotInstrument implements com.oracle.truffle.polyglot.PolyglotImpl.VMO
     public String getVersion() {
         final String version = cache.getVersion();
         if (version.equals("inherit")) {
-            return engine.getVersion();
+            try {
+                return TruffleVersions.readTruffleAPIVersion().toString();
+            } catch (Throwable t) {
+                throw PolyglotImpl.guestToHostException(engine, t);
+            }
         } else {
             return version;
         }

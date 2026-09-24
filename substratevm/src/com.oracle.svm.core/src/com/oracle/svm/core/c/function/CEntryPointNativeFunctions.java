@@ -33,14 +33,16 @@ import org.graalvm.nativeimage.c.CHeader;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.struct.CPointerTo;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoEpilogue;
-import com.oracle.svm.core.c.function.CEntryPointOptions.NoPrologue;
 import com.oracle.svm.core.thread.VMThreads;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.guest.staging.SubstrateGuestOptions;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.c.function.CEntryPointActions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointCreateIsolateParameters;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoEpilogue;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions.NoPrologue;
 
 @CHeader(value = GraalIsolateHeader.class)
 public final class CEntryPointNativeFunctions {
@@ -64,7 +66,7 @@ public final class CEntryPointNativeFunctions {
     public static class NameTransformation implements Function<String, String> {
         @Override
         public String apply(String s) {
-            return SubstrateOptions.APIFunctionPrefix.getValue() + s;
+            return SubstrateGuestOptions.APIFunctionPrefix.getValue() + s;
         }
     }
 
@@ -100,7 +102,7 @@ public final class CEntryPointNativeFunctions {
                     "the thread's isolate thread structure."})
     @CEntryPointOptions(prologue = NoPrologue.class, epilogue = NoEpilogue.class, nameTransformation = NameTransformation.class)
     public static int attachThread(Isolate isolate, IsolateThreadPointer thread) {
-        int result = CEntryPointActions.enterAttachThread(isolate, false, true);
+        int result = CEntryPointActions.enterAttachThread(isolate, true);
         if (result != 0) {
             return result;
         }
@@ -179,8 +181,8 @@ public final class CEntryPointNativeFunctions {
                     THREAD_TERMINATION_NOTE,
     })
     @CEntryPointOptions(prologue = NoPrologue.class, epilogue = NoEpilogue.class, nameTransformation = NameTransformation.class)
-    public static int tearDownIsolate(IsolateThread isolateThread) {
-        int result = CEntryPointActions.enter(isolateThread);
+    public static int tearDownIsolate(IsolateThread thread) {
+        int result = CEntryPointActions.enter(thread);
         if (result != 0) {
             return result;
         }
@@ -203,8 +205,8 @@ public final class CEntryPointNativeFunctions {
                     THREAD_TERMINATION_NOTE,
     })
     @CEntryPointOptions(prologue = NoPrologue.class, epilogue = NoEpilogue.class, nameTransformation = NameTransformation.class)
-    public static int detachAllThreadsAndTearDownIsolate(IsolateThread isolateThread) {
-        int result = CEntryPointActions.enter(isolateThread);
+    public static int detachAllThreadsAndTearDownIsolate(IsolateThread thread) {
+        int result = CEntryPointActions.enter(thread);
         if (result != 0) {
             return result;
         }

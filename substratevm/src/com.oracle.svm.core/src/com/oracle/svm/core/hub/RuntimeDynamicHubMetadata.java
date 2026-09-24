@@ -24,15 +24,16 @@
  */
 package com.oracle.svm.core.hub;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import com.oracle.svm.core.hub.crema.CremaResolvedJavaType;
 import com.oracle.svm.core.hub.crema.CremaSupport;
+import com.oracle.svm.core.interpreter.InterpreterSupport;
 
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.UnresolvedJavaType;
-
-import java.util.ArrayList;
-import java.util.List;
 
 public final class RuntimeDynamicHubMetadata implements DynamicHubMetadata {
 
@@ -46,8 +47,7 @@ public final class RuntimeDynamicHubMetadata implements DynamicHubMetadata {
 
     @Override
     public Object[] getEnclosingMethod(DynamicHub declaringClass) {
-        // (GR-69095) getEnclosingMethod is not implemented yet for Crema
-        return null;
+        return CremaSupport.singleton().computeEnclosingMethod(declaringClass);
     }
 
     @Override
@@ -101,7 +101,8 @@ public final class RuntimeDynamicHubMetadata implements DynamicHubMetadata {
     @Override
     public Class<?>[] getPermittedSubClasses(DynamicHub declaringClass) {
         List<Class<?>> permittedSubClasses = new ArrayList<>();
-        for (JavaType permittedSubType : type.getPermittedSubClasses()) {
+        List<? extends JavaType> permittedSubTypes = type.getPermittedSubclasses();
+        for (JavaType permittedSubType : permittedSubTypes) {
             Class<?> permittedSubClass = toClassOrNull(permittedSubType, type);
             if (permittedSubClass != null) {
                 permittedSubClasses.add(permittedSubClass);
@@ -114,12 +115,11 @@ public final class RuntimeDynamicHubMetadata implements DynamicHubMetadata {
         if (javaType instanceof UnresolvedJavaType unresolvedJavaType) {
             return CremaSupport.singleton().resolveOrNull(unresolvedJavaType, accessingType);
         } else /* resolved type */ {
-            return CremaSupport.singleton().toClass((ResolvedJavaType) javaType);
+            return InterpreterSupport.singleton().toClass((ResolvedJavaType) javaType);
         }
     }
 
-    public static Class<?> getNestHost(DynamicHub declaringClass) {
-        /* (GR-69095) type.getNestHost() */
-        return DynamicHub.toClass(declaringClass);
+    public Class<?> getNestHost() {
+        return InterpreterSupport.singleton().toClass(type.getNestHost());
     }
 }

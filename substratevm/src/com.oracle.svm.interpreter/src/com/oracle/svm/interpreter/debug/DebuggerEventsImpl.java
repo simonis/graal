@@ -24,24 +24,29 @@
  */
 package com.oracle.svm.interpreter.debug;
 
-import com.oracle.svm.interpreter.DebuggerSupport;
-import com.oracle.svm.interpreter.InterpreterUtil;
-import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import org.graalvm.nativeimage.IsolateThread;
 
-import com.oracle.svm.interpreter.InterpreterDirectives;
-import com.oracle.svm.interpreter.metadata.InterpreterUniverse;
 import com.oracle.svm.core.thread.PlatformThreads;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalInt;
-import com.oracle.svm.core.threadlocal.FastThreadLocalObject;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalObject;
+import com.oracle.svm.interpreter.DebuggerSupport;
+import com.oracle.svm.interpreter.InterpreterDirectives;
+import com.oracle.svm.interpreter.InterpreterUtil;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
+import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaType;
+import com.oracle.svm.interpreter.metadata.InterpreterUniverse;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
+import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public final class DebuggerEventsImpl implements DebuggerEvents {
 
     private static int globalEnabledEventsMask;
@@ -86,6 +91,11 @@ public final class DebuggerEventsImpl implements DebuggerEvents {
     }
 
     @Override
+    public boolean supportsEvents() {
+        return true;
+    }
+
+    @Override
     @SuppressFBWarnings(value = "ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD", justification = "Intentional.")
     public void setEventHandler(EventHandler eventHandler) {
         DebuggerEventsImpl.eventHandler = eventHandler;
@@ -101,7 +111,8 @@ public final class DebuggerEventsImpl implements DebuggerEvents {
         InterpreterResolvedJavaMethod interpreterMethod = (InterpreterResolvedJavaMethod) method;
         interpreterMethod.ensureCanSetBreakpointAt(bci);
         interpreterMethod.toggleBreakpoint(bci, enable);
-        InterpreterUtil.traceInterpreter(enable ? "Setting" : "Unsetting")
+        InterpreterUtil.traceInterpreter()
+                        .string(enable ? "Setting" : "Unsetting")
                         .string(" breakpoint for method=")
                         .string(interpreterMethod.toString())
                         .string(" at bci=").signed(bci)

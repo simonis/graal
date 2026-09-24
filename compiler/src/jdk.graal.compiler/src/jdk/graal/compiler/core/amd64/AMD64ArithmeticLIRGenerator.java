@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -55,10 +55,10 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.SSEOp.MOVSD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.SSEOp.MOVSS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VADDSD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VADDSS;
-import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VDIVSD;
-import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VDIVSS;
-import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VFMADD231SD;
-import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VFMADD231SS;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMRoundingOp.VDIVSD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMRoundingOp.VDIVSS;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMRoundingOp.VFMADD231SD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMRoundingOp.VFMADD231SS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VMULSD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VMULSS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.VORPD;
@@ -644,12 +644,12 @@ public class AMD64ArithmeticLIRGenerator extends ArithmeticLIRGenerator implemen
                 return getLIRGen().emitMove(lop.getRemainder());
             case SINGLE: {
                 Variable result = getLIRGen().newVariable(LIRKind.combine(a, b));
-                getLIRGen().append(new FPDivRemOp(FREM, result, getLIRGen().asAllocatable(a), getLIRGen().asAllocatable(b)));
+                getLIRGen().append(new FPDivRemOp(getLIRGen(), FREM, result, getLIRGen().asAllocatable(a), getLIRGen().asAllocatable(b)));
                 return result;
             }
             case DOUBLE: {
                 Variable result = getLIRGen().newVariable(LIRKind.combine(a, b));
-                getLIRGen().append(new FPDivRemOp(DREM, result, getLIRGen().asAllocatable(a), getLIRGen().asAllocatable(b)));
+                getLIRGen().append(new FPDivRemOp(getLIRGen(), DREM, result, getLIRGen().asAllocatable(a), getLIRGen().asAllocatable(b)));
                 return result;
             }
             default:
@@ -1493,6 +1493,9 @@ public class AMD64ArithmeticLIRGenerator extends ArithmeticLIRGenerator implemen
                 break;
             case DOUBLE:
                 getLIRGen().append(new AMD64BinaryConsumer.MemoryMROp(SSEMROp.MOVSD, SD, address, value, state));
+                break;
+            case V128_DOUBLE:
+                getLIRGen().append(new AMD64BinaryConsumer.MemoryMROp(SSEMROp.MOVUPD, PD, address, value, state));
                 break;
             default:
                 throw GraalError.shouldNotReachHereUnexpectedValue(kind); // ExcludeFromJacocoGeneratedReport

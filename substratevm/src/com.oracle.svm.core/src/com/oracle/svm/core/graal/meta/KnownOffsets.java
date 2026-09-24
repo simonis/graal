@@ -26,25 +26,33 @@ package com.oracle.svm.core.graal.meta;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.function.Predicate;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
+import com.oracle.svm.shared.BuildPhaseProvider.ReadyForCompilation;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.heap.UnknownPrimitiveField;
+import com.oracle.svm.guest.staging.core.heap.UnknownPrimitiveField;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = PartiallyLayerAware.class)
 public final class KnownOffsets {
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
     private int vtableBaseOffset;
@@ -157,28 +165,38 @@ public final class KnownOffsets {
         return imageCodeInfoCodeStartOffset;
     }
 
-    static class PriorKnownOffsets implements LayeredImageSingleton {
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = PriorKnownOffsets.LayeredCallbacks.class)
+    static class PriorKnownOffsets {
         final int[] priorValues;
 
         PriorKnownOffsets(int[] priorValues) {
             this.priorValues = priorValues;
         }
 
-        @Override
-        public EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
-            return LayeredImageSingletonBuilderFlags.BUILDTIME_ACCESS_ONLY;
+        static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+            @Override
+            public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+                return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<PriorKnownOffsets>() {
+                    @Override
+                    public LayeredPersistFlags doPersist(ImageSingletonWriter writer, PriorKnownOffsets singleton) {
+                        writer.writeIntList("priorValues", Arrays.stream(singleton.priorValues).boxed().toList());
+                        return LayeredPersistFlags.CREATE;
+                    }
+
+                    @Override
+                    public Class<? extends SingletonLayeredCallbacks.LayeredSingletonInstantiator<?>> getSingletonInstantiator() {
+                        return SingletonInstantiator.class;
+                    }
+                });
+            }
         }
 
-        @Override
-        public PersistFlags preparePersist(ImageSingletonWriter writer) {
-            writer.writeIntList("priorValues", Arrays.stream(priorValues).boxed().toList());
-            return PersistFlags.CREATE;
-        }
-
-        @SuppressWarnings("unused")
-        public static Object createFromLoader(ImageSingletonLoader loader) {
-            int[] priorValues = loader.readIntList("priorValues").stream().mapToInt(e -> e).toArray();
-            return new PriorKnownOffsets(priorValues);
+        static class SingletonInstantiator implements SingletonLayeredCallbacks.LayeredSingletonInstantiator<PriorKnownOffsets> {
+            @Override
+            public PriorKnownOffsets createFromLoader(ImageSingletonLoader loader) {
+                int[] priorValues = loader.readIntList("priorValues").stream().mapToInt(e -> e).toArray();
+                return new PriorKnownOffsets(priorValues);
+            }
         }
     }
 }

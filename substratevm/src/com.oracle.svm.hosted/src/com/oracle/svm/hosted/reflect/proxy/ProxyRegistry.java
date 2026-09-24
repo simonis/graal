@@ -33,8 +33,12 @@ import org.graalvm.nativeimage.impl.RuntimeProxyRegistrySupport;
 import com.oracle.svm.core.jdk.proxy.DynamicProxyRegistry;
 import com.oracle.svm.hosted.ConditionalConfigurationRegistry;
 import com.oracle.svm.hosted.ImageClassLoader;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class ProxyRegistry extends ConditionalConfigurationRegistry implements RuntimeProxyRegistrySupport, BiConsumer<AccessCondition, List<String>> {
     private final DynamicProxyRegistry dynamicProxySupport;
     private final ImageClassLoader imageClassLoader;
@@ -48,15 +52,15 @@ public class ProxyRegistry extends ConditionalConfigurationRegistry implements R
     public void accept(AccessCondition condition, List<String> proxies) {
         Class<?>[] interfaces = checkIfInterfacesAreValid(proxies);
         if (interfaces != null) {
-            registerProxy(condition, interfaces);
+            registerProxy(condition, false, interfaces);
         }
     }
 
     @Override
-    public Class<?> registerProxy(AccessCondition condition, Class<?>... interfaces) {
+    public Class<?> registerProxy(AccessCondition condition, boolean preserved, Class<?>... interfaces) {
         abortIfSealed();
         requireNonNull(interfaces, "interface", "proxy class creation");
-        registerConditionalConfiguration(condition, (cnd) -> dynamicProxySupport.addProxyClass(cnd, interfaces));
+        registerConditionalConfiguration(condition, (cnd) -> dynamicProxySupport.addProxyClass(cnd, preserved, interfaces));
         try {
             return dynamicProxySupport.getProxyClassHosted(interfaces);
         } catch (Throwable t) {

@@ -24,9 +24,9 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.genscavenge.AlignedHeapChunk.AlignedHeader;
 import static com.oracle.svm.core.genscavenge.HeapChunk.CHUNK_HEADER_TOP_IDENTITY;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.nodes.extended.MembarNode.FenceKind;
 
 import org.graalvm.nativeimage.Platform;
@@ -35,18 +35,17 @@ import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.config.ObjectLayout;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.thread.JavaSpinLockUtils;
 import com.oracle.svm.core.thread.VMOperation;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 import jdk.graal.compiler.nodes.extended.MembarNode;
-import jdk.graal.compiler.word.Word;
 import jdk.internal.misc.Unsafe;
 
 /**
@@ -80,14 +79,14 @@ public final class HeapAllocation {
     public HeapAllocation() {
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L383-L390")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25.0.3+2/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L385-L397")
     @Uninterruptible(reason = "Returns uninitialized memory.", callerMustBe = true)
     public Pointer allocateNewTlab(UnsignedWord minSize, UnsignedWord requestedSize, WordPointer actualSize) {
         assert fitsInAlignedChunk(requestedSize) : "We do not allow TLABs larger than an aligned chunk.";
         return attemptAllocation(minSize, requestedSize, actualSize);
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L392-L402")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25.0.3+2/src/hotspot/share/gc/g1/g1CollectedHeap.cpp#L399-L408")
     @Uninterruptible(reason = "Returns uninitialized memory.", callerMustBe = true)
     public Pointer allocateOutsideTlab(UnsignedWord size) {
         assert fitsInAlignedChunk(size) : "Must not be called for allocation requests that require an unaligned chunk.";
@@ -97,8 +96,8 @@ public final class HeapAllocation {
         return result;
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+15/src/hotspot/share/gc/g1/g1Allocator.inline.hpp#L52-L62")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L89-L95")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+15/src/hotspot/share/gc/g1/g1Allocator.inline.hpp#L52-L62")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L89-L95")
     @Uninterruptible(reason = "Returns uninitialized memory and acquires a lock without a thread state transition.", callerMustBe = true)
     private Pointer attemptAllocation(UnsignedWord minSize, UnsignedWord requestedSize, WordPointer actualSize) {
         Pointer result = attemptAllocationParallel(retainedChunk, minSize, requestedSize, actualSize);
@@ -128,7 +127,7 @@ public final class HeapAllocation {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L51-L65")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L51-L65")
     @Uninterruptible(reason = "Returns uninitialized memory.", callerMustBe = true)
     private static Pointer attemptAllocationParallel(AlignedHeader chunk, UnsignedWord minSize, UnsignedWord requestedSize, WordPointer actualSize) {
         if (chunk.isNonNull()) {
@@ -137,18 +136,20 @@ public final class HeapAllocation {
         return Word.nullPointer();
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L97-L109")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.inline.hpp#L97-L109")
     @Uninterruptible(reason = "Returns uninitialized memory.", callerMustBe = true)
     private Pointer attemptAllocationInNewChunk(UnsignedWord requestedSize, WordPointer actualSize) {
         assert JavaSpinLockUtils.isLocked(this, LOCK_OFFSET);
 
         retainAllocChunk();
         Pointer result = newAllocChunkAndAllocate(requestedSize);
-        actualSize.write(requestedSize);
+        if (result.isNonNull()) {
+            actualSize.write(requestedSize);
+        }
         return result;
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L289-L311")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L289-L311")
     @Uninterruptible(reason = "Modifies allocation chunks.")
     private void retainAllocChunk() {
         assert JavaSpinLockUtils.isLocked(this, LOCK_OFFSET);
@@ -164,13 +165,13 @@ public final class HeapAllocation {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L275-L287")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L275-L287")
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private boolean shouldRetain() {
         assert JavaSpinLockUtils.isLocked(this, LOCK_OFFSET);
 
         UnsignedWord freeBytes = HeapChunk.availableObjectMemory(currentChunk);
-        UnsignedWord minTlabSize = Word.unsigned(TlabOptionCache.singleton().getMinTlabSize());
+        UnsignedWord minTlabSize = Word.unsigned(TlabOptionCache.getMinTlabSize());
         if (freeBytes.belowThan(minTlabSize)) {
             return false;
         }
@@ -178,7 +179,7 @@ public final class HeapAllocation {
         return retainedChunk.isNull() || freeBytes.aboveOrEqual(HeapChunk.availableObjectMemory(retainedChunk));
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L130-L154")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1AllocRegion.cpp#L130-L154")
     @Uninterruptible(reason = "Returns uninitialized memory.", callerMustBe = true)
     private Pointer newAllocChunkAndAllocate(UnsignedWord requestedSize) {
         assert JavaSpinLockUtils.isLocked(this, LOCK_OFFSET);
@@ -199,10 +200,9 @@ public final class HeapAllocation {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1HeapRegion.inline.hpp#L186-L208")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+4/src/hotspot/share/gc/g1/g1HeapRegion.inline.hpp#L186-L208")
     @Uninterruptible(reason = "Returns uninitialized memory, modifies alloc chunk.", callerMustBe = true)
     private static Pointer allocateParallel(AlignedHeader chunk, UnsignedWord minSize, UnsignedWord requestedSize, WordPointer actualSize) {
-
         do {
             Pointer top = (Pointer) chunk.getTopOffset(CHUNK_HEADER_TOP_IDENTITY);
 
@@ -213,17 +213,16 @@ public final class HeapAllocation {
             }
 
             UnsignedWord newTop = top.add(wantToAllocate);
-            ObjectLayout ol = ConfigurationValues.getObjectLayout();
-            assert ol.isAligned(top.rawValue()) && ol.isAligned(newTop.rawValue());
+            ObjectLayout ol = ObjectLayout.singleton();
+            assert ol.isAligned(top) && ol.isAligned(newTop);
             if (((Pointer) chunk).logicCompareAndSwapWord(HeapChunk.Header.offsetOfTopOffset(), top, newTop, CHUNK_HEADER_TOP_IDENTITY)) {
                 actualSize.write(wantToAllocate);
                 return HeapChunk.asPointer(chunk).add(top);
             }
         } while (true);
-
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = "Allocation internals must never end up in interruptible code.")
     private static AlignedHeader requestNewAlignedChunk() {
         AlignedHeader newChunk = HeapImpl.getChunkProvider().produceAlignedChunk();
         HeapImpl.getAccounting().increaseEdenUsedBytes(HeapParameters.getAlignedHeapChunkSize());
@@ -244,25 +243,20 @@ public final class HeapAllocation {
             eden.appendAlignedHeapChunk(chunk);
             chunk = next;
         }
-
     }
 
     /**
-     * Return the remaining space in the current alloc chunk, but not less than the min. TLAB size.
-     *
-     * Also, this value can be at most the size available for objects within an aligned chunk, as
-     * bigger TLABs are not possible.
+     * Return the remaining space in the current allocation chunk. Multiple threads may execute the
+     * TLAB logic concurrently, so there is no guarantee that the returned size is really available
+     * in the current allocation chunk once a thread requests the new TLAB.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1Allocator.cpp#L184-L203")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/g1/g1Allocator.cpp#L184-L203")
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public UnsignedWord unsafeMaxTlabAllocSize() {
+    public UnsignedWord availableSizeForNewTlab() {
         UnsignedWord maxTlabSize = AlignedHeapChunk.getUsableSizeForObjects();
-        UnsignedWord minTlabSize = Word.unsigned(TlabOptionCache.singleton().getMinTlabSize());
+        UnsignedWord minTlabSize = Word.unsigned(TlabOptionCache.getMinTlabSize());
         if (currentChunk.isNull() || HeapChunk.availableObjectMemory(currentChunk).belowThan(minTlabSize)) {
-            /*
-             * The next TLAB allocation will most probably happen in a new chunk, therefore we can
-             * attempt to allocate the maximum allowed TLAB size.
-             */
+            /* The next TLAB allocation will most likely happen in a new chunk. */
             return maxTlabSize;
         }
 
@@ -274,7 +268,7 @@ public final class HeapAllocation {
         return size.belowOrEqual(AlignedHeapChunk.getUsableSizeForObjects());
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = "Tear-down in progress.")
     public void tearDown() {
         // This implicitly frees retainedChunk as well.
         HeapChunkProvider.freeAlignedChunkList(currentChunk);

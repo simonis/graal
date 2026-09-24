@@ -26,21 +26,12 @@ package com.oracle.svm.core.meta;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.util.VMError;
-
-final class SubstrateObjectConstantEquality implements ObjectConstantEquality {
-    @Override
-    public boolean test(SubstrateObjectConstant x, SubstrateObjectConstant y) {
-        if (x == y) {
-            return true;
-        } else if (x instanceof DirectSubstrateObjectConstant && y instanceof DirectSubstrateObjectConstant) {
-            return ((DirectSubstrateObjectConstant) x).getObject() == ((DirectSubstrateObjectConstant) y).getObject();
-        }
-        throw VMError.shouldNotReachHere("Unknown object constants: " + x + " and " + y);
-    }
-}
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 @AutomaticallyRegisteredFeature
 final class SubstrateObjectConstantEqualityFeature implements InternalFeature {
@@ -49,5 +40,19 @@ final class SubstrateObjectConstantEqualityFeature implements InternalFeature {
         if (!ImageSingletons.contains(ObjectConstantEquality.class)) {
             ImageSingletons.add(ObjectConstantEquality.class, new SubstrateObjectConstantEquality());
         }
+    }
+}
+
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+final class SubstrateObjectConstantEquality implements ObjectConstantEquality {
+
+    @Override
+    public boolean test(SubstrateObjectConstant x, SubstrateObjectConstant y) {
+        if (x.identicalTo(y)) {
+            return true;
+        } else if (x instanceof DirectSubstrateObjectConstant && y instanceof DirectSubstrateObjectConstant) {
+            return ((DirectSubstrateObjectConstant) x).getObject() == ((DirectSubstrateObjectConstant) y).getObject();
+        }
+        throw VMError.shouldNotReachHere("Unknown object constants: " + x + " and " + y);
     }
 }

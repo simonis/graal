@@ -24,10 +24,10 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.graal.snippets.SubstrateAllocationSnippets.TLAB_END_IDENTITY;
 import static com.oracle.svm.core.graal.snippets.SubstrateAllocationSnippets.TLAB_START_IDENTITY;
 import static com.oracle.svm.core.graal.snippets.SubstrateAllocationSnippets.TLAB_TOP_IDENTITY;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
@@ -42,11 +42,12 @@ import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.SubstrateGCOptions;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.BooleanPointer;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.genscavenge.UnalignedHeapChunk.UnalignedHeader;
 import com.oracle.svm.core.genscavenge.graal.GenScavengeAllocationSupport;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatArrayNode;
@@ -55,7 +56,7 @@ import com.oracle.svm.core.genscavenge.graal.nodes.FormatPodNode;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatStoredContinuationNode;
 import com.oracle.svm.core.heap.OutOfMemoryUtil;
 import com.oracle.svm.core.heap.Pod;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
@@ -63,25 +64,54 @@ import com.oracle.svm.core.jfr.HasJfrSupport;
 import com.oracle.svm.core.jfr.JfrTicks;
 import com.oracle.svm.core.jfr.SubstrateJVM;
 import com.oracle.svm.core.jfr.events.JfrAllocationEvents;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.thread.ContinuationSupport;
-import com.oracle.svm.core.threadlocal.FastThreadLocal;
-import com.oracle.svm.core.threadlocal.FastThreadLocalBytes;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalWord;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalBytes;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalWord;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.replacements.AllocationSnippets.FillContent;
-import jdk.graal.compiler.word.Word;
 
 /**
- * Bump-pointer allocation from thread-local top and end Pointers. Many of these methods are called
- * from allocation snippets, so they can not do anything fancy. It happens that prefetch
- * instructions access memory outside the TLAB. At the moment, this is not an issue as we only
- * support architectures where the prefetch instructions never cause a segfault, even if they try to
- * access memory that is not accessible.
+ * Implements the thread-local allocation logic for serial and epsilon GC.
+ * <p>
+ * Multiple threads may execute the methods in this class concurrently. All code transitively
+ * reachable from these methods can be executed as a side effect of any Java heap allocation. To
+ * prevent hard to debug transient issues, we execute as little code as possible in these methods.
+ * <p>
+ * Executing complex logic in the allocation slow path can modify shared global state, causing
+ * issues that look similar to race conditions but that can even happen in single-threaded
+ * environments. For example:
+ *
+ * <pre>
+ * {@code
+ * private static Object singleton;
+ *
+ * private static synchronized Object createSingleton() {
+ *     if (singleton == null) {
+ *         Object o = new Object();
+ *         // If the allocation above enters the slow path, and if that slow
+ *         // path executes code that calls createSingleton() as well, then
+ *         // the assertion below will fail because the singleton already
+ *         // got initialized by the same thread in the meanwhile.
+ *         assert singleton == null;
+ *         singleton = o;
+ *     }
+ *     return singleton;
+ * }
+ * }
+ * </pre>
+ *
+ * The allocation fast-path emits prefetch instructions. Those instructions may try to access memory
+ * that is outside the TLAB and therefore not necessarily accessible. At the moment, this is not an
+ * issue as we only support architectures where prefetch instructions never cause segfaults, even if
+ * they access memory that is not accessible.
  */
 public final class ThreadLocalAllocation {
     @RawStructure
@@ -159,7 +189,8 @@ public final class ThreadLocalAllocation {
     }
 
     public static Word getTlabAddress() {
-        return (Word) regularTLAB.getAddress();
+        Pointer tlabAddress = (Pointer) regularTLAB.getAddress();
+        return (Word) tlabAddress;
     }
 
     @Uninterruptible(reason = "Accesses TLAB", callerMustBe = true)
@@ -182,46 +213,14 @@ public final class ThreadLocalAllocation {
         return allocatedAlignedBytes.getVolatile(thread);
     }
 
-    /**
-     * NOTE: Multiple threads may execute this method concurrently. All code that is transitively
-     * reachable from this method may get executed as a side effect of an allocation slow path. To
-     * prevent hard to debug transient issues, we execute as little code as possible in this method.
-     *
-     * If the executed code is too complex, then it can happen that we unexpectedly change some
-     * shared global state as a side effect of an allocation. This may result in issues that look
-     * similar to races but that can even happen in single-threaded environments, e.g.:
-     *
-     * <pre>
-     * {@code
-     * private static Object singleton;
-     *
-     * private static synchronized Object createSingleton() {
-     *     if (singleton == null) {
-     *         Object o = new Object();
-     *         // If the allocation above enters the allocation slow path code, and executes a
-     *         // complex slow path hook, then it is possible that createSingleton() gets
-     *         // recursively execute by the current thread. So, the assertion below may fail
-     *         // because the singleton got already initialized by the same thread in the meanwhile.
-     *         assert singleton == null;
-     *         singleton = o;
-     *     }
-     *     return result;
-     * }
-     * }
-     * </pre>
-     */
-    private static void runSlowPathHooks() {
-        GCImpl.getPolicy().updateSizeParameters();
-    }
-
     public static Object slowPathNewInstance(Word objectHeader) {
         DynamicHub hub = ObjectHeaderImpl.getObjectHeaderImpl().dynamicHubFromObjectHeader(objectHeader);
 
         UnsignedWord size = LayoutEncoding.getPureInstanceAllocationSize(hub.getLayoutEncoding());
         Object result = allocateInstanceInCurrentTlab(hub, size);
         if (result == null) {
+            GCImpl.getPolicy().ensureSizeParametersInitialized();
             result = slowPathNewInstanceWithoutAllocating(hub, size);
-            runSlowPathHooks();
             sampleSlowPathAllocation(result, size, Integer.MIN_VALUE);
         }
         return result;
@@ -268,10 +267,7 @@ public final class ThreadLocalAllocation {
         }
 
         Object result = slowPathNewArrayLikeObjectWithoutAllocating(hub, length, size, podReferenceMap);
-
-        runSlowPathHooks();
         sampleSlowPathAllocation(result, size, length);
-
         return result;
     }
 
@@ -285,6 +281,7 @@ public final class ThreadLocalAllocation {
 
     @Uninterruptible(reason = "Possible use of StackValue in virtual thread.")
     private static Object slowPathNewArrayLikeObjectWithoutAllocation0(DynamicHub hub, int length, UnsignedWord size, byte[] podReferenceMap) {
+        SubstrateUtil.guaranteeRuntimeOnly();
         long startTicks = JfrTicks.elapsedTicks();
         UnsignedWord tlabSize = Word.zero();
 
@@ -302,7 +299,7 @@ public final class ThreadLocalAllocation {
 
                 boolean needsZeroing = !HeapChunkProvider.areUnalignedChunksZeroed();
                 UnalignedHeapChunk.UnalignedHeader newTlabChunk = HeapImpl.getChunkProvider().produceUnalignedChunk(size);
-                tlabSize = UnalignedHeapChunk.getChunkSizeForObject(size);
+                tlabSize = HeapChunk.getSize(newTlabChunk);
                 return allocateLargeArrayLikeObjectInNewTlab(hub, length, size, newTlabChunk, needsZeroing, podReferenceMap);
             }
 
@@ -354,7 +351,7 @@ public final class ThreadLocalAllocation {
         return formatArrayLikeObject(memory, hub, length, false, FillContent.WITH_ZEROES, podReferenceMap);
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23-ga/src/hotspot/share/gc/shared/memAllocator.cpp#L333-L341")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-23-ga/src/hotspot/share/gc/shared/memAllocator.cpp#L333-L341")
     @Uninterruptible(reason = "Holds uninitialized memory.")
     private static Pointer allocateRawMemory(UnsignedWord size, BooleanPointer allocatedOutsideTlab) {
         Pointer memory = TlabSupport.allocateRawMemoryInTlabSlow(size);
@@ -364,7 +361,7 @@ public final class ThreadLocalAllocation {
         return allocateRawMemoryOutsideTlab(size, allocatedOutsideTlab);
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+25/src/hotspot/share/gc/shared/memAllocator.cpp#L239-L251")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+25/src/hotspot/share/gc/shared/memAllocator.cpp#L239-L251")
     @Uninterruptible(reason = "Holds uninitialized memory.")
     private static Pointer allocateRawMemoryOutsideTlab(UnsignedWord size, BooleanPointer allocatedOutsideTlab) {
         allocatedOutsideTlab.write(true);
@@ -381,10 +378,9 @@ public final class ThreadLocalAllocation {
         tlab.setUnalignedChunk(newTlabChunk);
 
         allocatedUnalignedBytes.set(allocatedUnalignedBytes.get().add(size));
-        HeapImpl.getAccounting().increaseEdenUsedBytes(size);
+        HeapImpl.getAccounting().increaseEdenUsedBytes(HeapChunk.getSize(newTlabChunk));
 
-        Pointer memory = UnalignedHeapChunk.allocateMemory(newTlabChunk, size);
-        assert memory.isNonNull();
+        Pointer memory = UnalignedHeapChunk.getObjectStart(newTlabChunk);
 
         if (!needsZeroing && SubstrateGCOptions.VerifyHeap.getValue()) {
             guaranteeZeroed(memory, size);
@@ -432,7 +428,7 @@ public final class ThreadLocalAllocation {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static void guaranteeZeroed(Pointer memory, UnsignedWord size) {
-        int wordSize = ConfigurationValues.getTarget().wordSize;
+        int wordSize = SubstrateTarget.getWordSize();
         VMError.guarantee(UnsignedUtils.isAMultiple(size, Word.unsigned(wordSize)));
 
         Pointer pos = memory;
@@ -459,7 +455,7 @@ public final class ThreadLocalAllocation {
         assert allocationStart.belowThan(allocationEnd) || (allocationStart.equal(0) && allocationEnd.equal(0));
         UnsignedWord tlabSize = allocationEnd.subtract(allocationStart);
 
-        assert UnsignedUtils.isAMultiple(tlabSize, Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment()));
+        assert UnsignedUtils.isAMultiple(tlabSize, Word.unsigned(ObjectLayout.singleton().getAlignment()));
         return tlabSize;
     }
 }

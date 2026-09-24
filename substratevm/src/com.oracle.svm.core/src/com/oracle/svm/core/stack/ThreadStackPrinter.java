@@ -28,24 +28,43 @@ import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoDecoder;
 import com.oracle.svm.core.code.CodeInfoTable;
+import com.oracle.svm.core.code.FrameInfoDecoder;
 import com.oracle.svm.core.code.FrameInfoQueryResult;
 import com.oracle.svm.core.code.ImageCodeInfo;
 import com.oracle.svm.core.code.UntetheredCodeInfo;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.core.deopt.VirtualFrame;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.core.interpreter.InterpreterSupport;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.shared.Uninterruptible;
 
-import jdk.graal.compiler.word.Word;
+import jdk.vm.ci.code.BytecodeFrame;
 
 public class ThreadStackPrinter {
+    /**
+     * Number of pre-allocated ValueInfos used to provide the data necessary to print extra
+     * information about interpreter frames.
+     * <p>
+     * This is pre-allocated to avoid any allocation during crash handling and improve robustness if
+     * the VM crashed in a state where allocation might not be reliable.
+     * <p>
+     * See {@code InterpreterFeature.checkPreAllocatedValueInfos} for code that checks that this
+     * number is sufficiently large. Note that different optimization level might have different
+     * requirements. At the time of writing, preserving the threaded interpreter handler arguments
+     * requires 31 value infos. If {@code InterpreterFeature.checkPreAllocatedValueInfos} fails
+     * again, this number needs to be updated accordingly.
+     */
+    public static final int NUM_INTERPRETER_PREALLOCATED_VALUE_INFO = 31;
+
     @Uninterruptible(reason = "Prevent deoptimization of stack frames while in this method.")
     public static boolean printStacktrace(IsolateThread thread, Pointer initialSP, CodePointer initialIP, StackFramePrintVisitor printVisitor, Log log) {
         Pointer sp = initialSP;
@@ -67,7 +86,7 @@ public class ThreadStackPrinter {
 
         JavaStackWalk walk = StackValue.get(JavaStackWalker.sizeOfJavaStackWalk());
         JavaStackWalker.initialize(walk, thread, sp, ip);
-        return JavaStackWalker.doWalk(walk, thread, printVisitor, log);
+        return JavaStackWalker.doWalkThread(walk, thread, printVisitor, log);
     }
 
     @Uninterruptible(reason = "IP is not within Java code, so there is no risk that it gets invalidated.", calleeMustBe = false)
@@ -77,7 +96,12 @@ public class ThreadStackPrinter {
     }
 
     /**
-     * With every retry, the output is reduced a bit.
+     * Infrastructure for printing stack traces. This code is primarily used when printing stack
+     * traces for crash logs, but it is also used by other VM-internal code such as monitoring
+     * features.
+     * <p>
+     * Specifically for printing crash logs, the output is reduced a bit with every retry (see
+     * {@link #invocationCount}):
      * <ul>
      * <li>1st invocation: maximum details for AOT and JIT compiled code</li>
      * <li>2nd invocation: reduced details for JIT compiled code</li>
@@ -87,12 +111,15 @@ public class ThreadStackPrinter {
     public static class StackFramePrintVisitor extends ParameterizedStackFrameVisitor {
         private static final int MAX_STACK_FRAMES_PER_THREAD_TO_PRINT = 100_000;
 
-        private final CodeInfoDecoder.FrameInfoCursor frameInfoCursor = new CodeInfoDecoder.FrameInfoCursor();
+        private final CodeInfoDecoder.FrameInfoCursor frameInfoCursor;
+        /** BCI carried from a threaded handler frame to its corresponding interpreter root. */
+        private int threadedHandlerBCI;
         private int invocationCount;
         private int printedFrames;
         private Pointer expectedSP;
 
         public StackFramePrintVisitor() {
+            frameInfoCursor = new CodeInfoDecoder.FrameInfoCursor(newValueInfoAllocator());
         }
 
         @SuppressWarnings("hiding")
@@ -101,6 +128,7 @@ public class ThreadStackPrinter {
             this.invocationCount = invocationCount;
             this.printedFrames = 0;
             this.expectedSP = Word.nullPointer();
+            this.threadedHandlerBCI = BytecodeFrame.UNKNOWN_BCI;
             return this;
         }
 
@@ -151,7 +179,7 @@ public class ThreadStackPrinter {
         }
 
         private void logDeoptimizedJavaFrame(Log log, Pointer sp, CodePointer ip, DeoptimizedFrame deoptFrame) {
-            for (DeoptimizedFrame.VirtualFrame frame = deoptFrame.getTopFrame(); frame != null; frame = frame.getCaller()) {
+            for (VirtualFrame frame = deoptFrame.getTopFrame(); frame != null; frame = frame.getCaller()) {
                 if (printedFrames >= MAX_STACK_FRAMES_PER_THREAD_TO_PRINT) {
                     log.string("... (truncated)").newline();
                     break;
@@ -160,7 +188,7 @@ public class ThreadStackPrinter {
                 boolean isCompilationRoot = frame.getCaller() == null;
                 printFrameIdentifier(log, Word.nullPointer(), deoptFrame, isCompilationRoot, false);
                 logFrameRaw(log, sp, ip, deoptFrame.getSourceTotalFrameSize());
-                logFrameInfo(log, frame.getFrameInfo(), ImageCodeInfo.CODE_INFO_NAME + ", deopt");
+                logFrameInfo(log, frame.getFrameInfo(), ImageCodeInfo.CODE_INFO_NAME + ", deopt", sp);
                 if (!isCompilationRoot) {
                     log.newline();
                 }
@@ -202,7 +230,7 @@ public class ThreadStackPrinter {
             logJavaFrameMinimalInfo(log, sp, ip, codeInfo, null, isCompilationRoot);
 
             String codeInfoName = DeoptimizationSupport.enabled() ? CodeInfoAccess.getName(codeInfo) : null;
-            logFrameInfo(log, frameInfo, codeInfoName);
+            logFrameInfo(log, frameInfo, codeInfoName, sp);
         }
 
         private void logJavaFrameMinimalInfo(Log log, Pointer sp, CodePointer ip, CodeInfo codeInfo, DeoptimizedFrame deoptFrame, boolean isCompilationRoot) {
@@ -261,11 +289,22 @@ public class ThreadStackPrinter {
             log.string("IP ").zhex(ip);
         }
 
-        private static void logFrameInfo(Log log, FrameInfoQueryResult frameInfo, String runtimeMethodInfoName) {
+        private void logFrameInfo(Log log, FrameInfoQueryResult frameInfo, String runtimeMethodInfoName, Pointer sp) {
             if (runtimeMethodInfoName != null) {
                 log.string("[").string(runtimeMethodInfoName).string("] ");
             }
             frameInfo.log(log);
+            if (InterpreterSupport.isEnabled() && invocationCount == 1) {
+                InterpreterSupport interpreterSupport = InterpreterSupport.singleton();
+                int currentThreadedHandlerBCI = interpreterSupport.getThreadedHandlerBCIForCrashLog(frameInfo, sp);
+                if (currentThreadedHandlerBCI != BytecodeFrame.UNKNOWN_BCI) {
+                    threadedHandlerBCI = currentThreadedHandlerBCI;
+                }
+                if (interpreterSupport.isInterpreterRoot(frameInfo)) {
+                    interpreterSupport.logInterpreterFrame(log, frameInfo, sp, threadedHandlerBCI);
+                    threadedHandlerBCI = BytecodeFrame.UNKNOWN_BCI;
+                }
+            }
         }
 
         private static void printFrameIdentifier(Log log, CodeInfo codeInfo, DeoptimizedFrame deoptFrame, boolean isCompilationRoot, boolean isNative) {
@@ -285,6 +324,14 @@ public class ThreadStackPrinter {
             } else {
                 return 'J';
             }
+        }
+
+        private static FrameInfoDecoder.ValueInfoAllocator newValueInfoAllocator() {
+            if (InterpreterSupport.isEnabled()) {
+                /* InterpreterSupportImpl needs ValueInfo objects for the method and bci. */
+                return new CodeInfoDecoder.SingleShotValueInfoAllocator(NUM_INTERPRETER_PREALLOCATED_VALUE_INFO);
+            }
+            return CodeInfoDecoder.DummyValueInfoAllocator.SINGLETON;
         }
     }
 }

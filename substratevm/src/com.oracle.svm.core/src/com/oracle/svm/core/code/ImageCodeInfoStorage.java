@@ -24,25 +24,23 @@
  */
 package com.oracle.svm.core.code;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.c.CIsolateData;
-import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.layeredimagesingleton.FeatureSingleton;
-import com.oracle.svm.core.layeredimagesingleton.UnsavedSingleton;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.BuiltinTraits.RuntimeAccessOnly;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.MultiLayer;
-import com.oracle.svm.core.traits.SingletonTraits;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.RuntimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.MultiLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.JavaKind;
 
 /**
@@ -61,7 +59,7 @@ public class ImageCodeInfoStorage {
 
     protected ImageCodeInfoStorage() {
         long size = SizeOf.get(CodeInfoImpl.class);
-        int arrayBaseOffset = ConfigurationValues.getObjectLayout().getArrayBaseOffset(JavaKind.Byte);
+        int arrayBaseOffset = ObjectLayout.singleton().getArrayBaseOffset(JavaKind.Byte);
         int alignedOffset = getAlignedOffsetInArray();
         int addend = alignedOffset - arrayBaseOffset;
         int dataSize = NumUtil.safeToInt(size + addend);
@@ -70,7 +68,7 @@ public class ImageCodeInfoStorage {
 
     @Fold
     static int getAlignedOffsetInArray() {
-        return NumUtil.roundUp(ConfigurationValues.getObjectLayout().getArrayBaseOffset(JavaKind.Byte), ALIGNMENT);
+        return NumUtil.roundUp(ObjectLayout.singleton().getArrayBaseOffset(JavaKind.Byte), ALIGNMENT);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -81,7 +79,7 @@ public class ImageCodeInfoStorage {
 }
 
 @AutomaticallyRegisteredFeature
-class ImageCodeInfoStorageFeature implements InternalFeature, UnsavedSingleton, FeatureSingleton {
+class ImageCodeInfoStorageFeature implements InternalFeature {
     @Override
     public void duringSetup(DuringSetupAccess access) {
         ImageSingletons.add(ImageCodeInfoStorage.class, new ImageCodeInfoStorage());

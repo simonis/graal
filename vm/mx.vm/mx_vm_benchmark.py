@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018, 2021, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -39,10 +39,9 @@ from mx_sdk_benchmark import GraalVm
 
 _suite = mx.suite('vm')
 
-
 class AgentScriptJsBenchmarkSuite(mx_benchmark.VmBenchmarkSuite, mx_benchmark.AveragingBenchmarkMixin):
     def __init__(self):
-        super(AgentScriptJsBenchmarkSuite, self).__init__()
+        super().__init__()
         self._benchmarks = {
             'plain' : [],
             'triple' : ['--insight=sieve-filter1.js'],
@@ -80,7 +79,7 @@ class AgentScriptJsBenchmarkSuite(mx_benchmark.VmBenchmarkSuite, mx_benchmark.Av
             re.compile(r'Hundred thousand prime numbers in [0-9]+ ms', re.MULTILINE),
         ]
 
-    def rules(self, out, benchmarks, bmSuiteArgs):
+    def rules(self, output, benchmarks, bmSuiteArgs):
         assert len(benchmarks) == 1
         return [
             mx_benchmark.StdOutRule(r'^Hundred thousand prime numbers in (?P<time>[0-9]+) ms$', {
@@ -97,23 +96,23 @@ class AgentScriptJsBenchmarkSuite(mx_benchmark.VmBenchmarkSuite, mx_benchmark.Av
         ]
 
     def createCommandLineArgs(self, benchmarks, bmSuiteArgs):
-        return self.vmArgs(bmSuiteArgs) + super(AgentScriptJsBenchmarkSuite, self).createCommandLineArgs(benchmarks, bmSuiteArgs)
+        return self.vmArgs(bmSuiteArgs) + super().createCommandLineArgs(benchmarks, bmSuiteArgs)
 
     def workingDirectory(self, benchmarks, bmSuiteArgs):
         return os.path.join(_suite.dir, 'benchmarks', 'agentscript')
 
     def createVmCommandLineArgs(self, benchmarks, runArgs):
         if not benchmarks:
-            raise mx.abort(f"Benchmark suite '{self.name()}' cannot run multiple benchmarks in the same VM process")
+            mx.abort(f"Benchmark suite '{self.name()}' cannot run multiple benchmarks in the same VM process")
         if len(benchmarks) != 1:
-            raise mx.abort(f"Benchmark suite '{self.name()}' can run only one benchmark at a time")
+            mx.abort(f"Benchmark suite '{self.name()}' can run only one benchmark at a time")
         return self._benchmarks[benchmarks[0]] + ['-e', 'count=50'] + runArgs + ['sieve.js']
 
     def get_vm_registry(self):
         return mx_benchmark.js_vm_registry
 
     def run(self, benchmarks, bmSuiteArgs) -> DataPoints:
-        results = super(AgentScriptJsBenchmarkSuite, self).run(benchmarks, bmSuiteArgs)
+        results = super().run(benchmarks, bmSuiteArgs)
         self.addAverageAcrossLatestResults(results)
         return results
 
@@ -141,6 +140,34 @@ class FileSizeBenchmarkSuite(mx_benchmark.VmBenchmarkSuite):
     def get_vm_registry(self):
         return mx_benchmark.java_vm_registry
 
+    def _add_vm_info_dimensions(self, bmSuiteArgs, vm, dims):
+        try:
+            prebuilt_args, _ = mx_benchmark.get_parser("prebuilt_vm_parser").parse_known_args(bmSuiteArgs)
+            if hasattr(vm, 'set_run_on_java_home'):
+                vm.set_run_on_java_home(prebuilt_args.prebuilt_vm)
+            vm_args = self.vmArgs(bmSuiteArgs)
+            vm.extract_vm_info(vm_args)
+            dimension_args = vm.post_process_command_line_args(vm_args) if hasattr(vm, 'post_process_command_line_args') else vm_args
+            vm_dims = vm.dimensions('.', dimension_args, 0, '') if hasattr(vm, 'dimensions') else {}
+        except SystemExit as e:
+            mx.warn(f"Could not extract VM info for file-size benchmark: {e}")
+            vm_dims = {}
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
+            mx.warn(f"Could not extract VM info for file-size benchmark: {e}")
+            vm_dims = {}
+
+        for key, value in vm_dims.items():
+            dims.setdefault(key, value)
+
+        if "platform.jdk-major-version" not in dims:
+            mx.warn("Could not determine JDK version for file-size benchmark; reporting fallback JDK dimensions")
+            for key, value in {
+                "platform.jdk-version-number": "",
+                "platform.jdk-major-version": 0,
+                "platform.jdk-version-string": "",
+            }.items():
+                dims.setdefault(key, value)
+
     def runAndReturnStdOut(self, benchmarks, bmSuiteArgs):
         vm = self.get_vm_registry().get_vm_from_suite_args(bmSuiteArgs)
         host_vm = None
@@ -156,6 +183,7 @@ class FileSizeBenchmarkSuite(mx_benchmark.VmBenchmarkSuite):
             "guest-vm": name if host_vm else "none",
             "guest-vm-config": self.guest_vm_config_name(host_vm, vm),
         }
+        self._add_vm_info_dimensions(bmSuiteArgs, vm, dims)
 
         def get_size_message(image_name, image_location):
             return FileSizeBenchmarkSuite.SZ_MSG_PATTERN.format(image_name, getsize(image_location), image_location)
@@ -238,3 +266,31 @@ def register_graalvm_vms():
                 mx_sdk_benchmark.build_jvmci_vm_variants('server', 'graal-core-libgraal',
                                                          ['-server', '-XX:+EnableJVMCI', '-Djdk.graal.CompilerConfiguration=community', '-Djvmci.Compiler=graal', '-XX:+UseJVMCINativeLibrary', '-XX:JVMCILibPath=' + dirname(libgraal_location)],
                                                          mx_graal_benchmark._graal_variants, suite=_suite, priority=15, hosted=False)
+
+    register_crema_java_vm()
+
+
+def register_crema_java_vm():
+    components = {component.short_name for component in mx_sdk_vm_impl.registered_graalvm_components(stage1=False)}
+    if 'svmjava' not in components and 'svmjavad' not in components:
+        return
+
+    if 'cmpee' in components:
+        edition = 'ee'
+    elif 'cmp' in components:
+        edition = 'ce'
+    else:
+        return
+
+    crema_configs = [
+        ('default-' + edition, ['-svm']),
+        ('no-profiling-' + edition, ['-svm']),
+        ('xint-' + edition, ['-svm', '-XX:-JITEnableCompilation']),
+    ]
+    if edition == 'ee':
+        crema_configs += [
+            ('pgo-' + edition, ['-svm']),
+            ('xint-pgo-' + edition, ['-svm', '-XX:-JITEnableCompilation']),
+        ]
+    for config_name, java_args in crema_configs:
+        mx_benchmark.java_vm_registry.add_vm(GraalVm('crema', config_name, java_args, []), _suite, 2)

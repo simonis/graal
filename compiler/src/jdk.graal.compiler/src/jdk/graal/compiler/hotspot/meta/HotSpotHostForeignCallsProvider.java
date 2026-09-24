@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,52 +31,19 @@ import static jdk.graal.compiler.core.target.Backend.ARITHMETIC_FREM;
 import static jdk.graal.compiler.hotspot.EncodedSnippets.isAfterSnippetEncoding;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.ARRAY_PARTITION;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.ARRAY_SORT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BASE64_DECODE_BLOCK;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BASE64_ENCODE_BLOCK;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BIGINTEGER_LEFT_SHIFT_WORKER;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.BIGINTEGER_RIGHT_SHIFT_WORKER;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.CHACHA20Block;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_ALMOST_INVERSE_NTT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_ALMOST_NTT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_DECOMPOSE_POLY;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_MONT_MUL_BY_CONSTANT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DILITHIUM_NTT_MULT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.DOUBLE_KECCAK;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.DYNAMIC_NEW_INSTANCE_OR_NULL;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.ELECTRONIC_CODEBOOK_DECRYPT_AESCRYPT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.ELECTRONIC_CODEBOOK_ENCRYPT_AESCRYPT;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.EXCEPTION_HANDLER;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.GALOIS_COUNTER_MODE_CRYPT;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.IC_MISS_HANDLER;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.INTPOLY_ASSIGN;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.INTPOLY_MONTGOMERYMULT_P256;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_12_TO_16;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_ADD_POLY_2;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_ADD_POLY_3;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_BARRETT_REDUCE;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_INVERSE_NTT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_NTT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.KYBER_NTT_MULT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.MD5_IMPL_COMPRESS_MB;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.MONTGOMERY_MULTIPLY;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.MONTGOMERY_SQUARE;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.NEW_ARRAY_OR_NULL;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.NEW_INSTANCE_OR_NULL;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.NEW_MULTI_ARRAY_OR_NULL;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.POLY1305_PROCESSBLOCKS;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.SHA2_IMPL_COMPRESS_MB;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.SHA3_IMPL_COMPRESS_MB;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.SHA5_IMPL_COMPRESS_MB;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.SHAREDRUNTIME_NOTIFY_JVMTI_VTHREAD_END;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.SHAREDRUNTIME_NOTIFY_JVMTI_VTHREAD_MOUNT;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.SHAREDRUNTIME_NOTIFY_JVMTI_VTHREAD_START;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.SHAREDRUNTIME_NOTIFY_JVMTI_VTHREAD_UNMOUNT;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.SHA_IMPL_COMPRESS_MB;
+import static jdk.graal.compiler.hotspot.HotSpotBackend.UNSAFE_ARRAYCOPY;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.UNSAFE_SETMEMORY;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.UNWIND_EXCEPTION_TO_CALLER;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.UPDATE_BYTES_ADLER32;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.UPDATE_BYTES_CRC32;
-import static jdk.graal.compiler.hotspot.HotSpotBackend.UPDATE_BYTES_CRC32C;
 import static jdk.graal.compiler.hotspot.HotSpotBackend.VM_ERROR;
 import static jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage.RegisterEffect.COMPUTES_REGISTERS_KILLED;
 import static jdk.graal.compiler.hotspot.HotSpotForeignCallLinkage.RegisterEffect.DESTROYS_ALL_CALLER_SAVE_REGISTERS;
@@ -120,6 +87,7 @@ import java.util.EnumMap;
 
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
 import jdk.graal.compiler.core.common.spi.ForeignCallSignature;
@@ -160,19 +128,43 @@ import jdk.graal.compiler.replacements.nodes.ArrayEqualsWithMaskForeignCalls;
 import jdk.graal.compiler.replacements.nodes.ArrayFillNode;
 import jdk.graal.compiler.replacements.nodes.ArrayIndexOfForeignCalls;
 import jdk.graal.compiler.replacements.nodes.ArrayRegionCompareToForeignCalls;
+import jdk.graal.compiler.replacements.nodes.Base64DecodeBlockNode;
+import jdk.graal.compiler.replacements.nodes.Base64EncodeBlockNode;
 import jdk.graal.compiler.replacements.nodes.BigIntegerMulAddNode;
+import jdk.graal.compiler.replacements.nodes.BigIntegerLeftShiftWorkerNode;
+import jdk.graal.compiler.replacements.nodes.BigIntegerMontgomeryMultiplyNode;
+import jdk.graal.compiler.replacements.nodes.BigIntegerMontgomerySquareNode;
 import jdk.graal.compiler.replacements.nodes.BigIntegerMultiplyToLenNode;
+import jdk.graal.compiler.replacements.nodes.BigIntegerRightShiftWorkerNode;
 import jdk.graal.compiler.replacements.nodes.BigIntegerSquareToLenNode;
 import jdk.graal.compiler.replacements.nodes.CalcStringAttributesForeignCalls;
+import jdk.graal.compiler.replacements.nodes.Adler32UpdateBytesNode;
+import jdk.graal.compiler.replacements.nodes.ChaCha20Node;
 import jdk.graal.compiler.replacements.nodes.CipherBlockChainingAESNode;
 import jdk.graal.compiler.replacements.nodes.CountPositivesNode;
+import jdk.graal.compiler.replacements.nodes.CRC32CUpdateBytesNode;
+import jdk.graal.compiler.replacements.nodes.CRC32UpdateBytesNode;
 import jdk.graal.compiler.replacements.nodes.CounterModeAESNode;
+import jdk.graal.compiler.replacements.nodes.DilithiumNode;
+import jdk.graal.compiler.replacements.nodes.DoubleKeccakNode;
+import jdk.graal.compiler.replacements.nodes.ElectronicCodeBookAESNode;
 import jdk.graal.compiler.replacements.nodes.EncodeArrayNode;
+import jdk.graal.compiler.replacements.nodes.GaloisCounterModeAESNode;
 import jdk.graal.compiler.replacements.nodes.GHASHProcessBlocksNode;
+import jdk.graal.compiler.replacements.nodes.IndexOfZeroForeignCalls;
+import jdk.graal.compiler.replacements.nodes.IntegerPolynomialAssignNode;
+import jdk.graal.compiler.replacements.nodes.IntegerPolynomialP256MontgomeryMultNode;
+import jdk.graal.compiler.replacements.nodes.KyberNode.Kyber12To16Node;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberAddPoly2Node;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberAddPoly3Node;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberBarrettReduceNode;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberInverseNttNode;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberNttMultNode;
+import jdk.graal.compiler.replacements.nodes.KyberNode.KyberNttNode;
 import jdk.graal.compiler.replacements.nodes.MessageDigestNode;
+import jdk.graal.compiler.replacements.nodes.Poly1305ProcessBlocksNode;
 import jdk.graal.compiler.replacements.nodes.VectorizedHashCodeNode;
 import jdk.graal.compiler.replacements.nodes.VectorizedMismatchNode;
-import jdk.graal.compiler.word.Word;
 import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
@@ -269,17 +261,6 @@ public abstract class HotSpotHostForeignCallsProvider extends HotSpotForeignCall
                     "ShenandoahRuntime::write_barrier_pre_stack_only", void.class, Object.class);
 
     /**
-     * Signature of an unsafe {@link System#arraycopy} stub.
-     *
-     * The signature is equivalent to {@link jdk.internal.misc.Unsafe#copyMemory(long, long, long)}.
-     * For the semantics refer to
-     * {@link jdk.internal.misc.Unsafe#copyMemory(Object, long, Object, long, long)}.
-     *
-     * @see jdk.internal.misc.Unsafe#copyMemory
-     */
-    public static final ForeignCallSignature UNSAFE_ARRAYCOPY = new ForeignCallSignature("unsafe_arraycopy", void.class, Word.class, Word.class, Word.class);
-
-    /**
      * Signature of a generic {@link System#arraycopy} stub.
      *
      * Instead of throwing an {@link ArrayStoreException}, the stub is expected to return the number
@@ -315,7 +296,7 @@ public abstract class HotSpotHostForeignCallsProvider extends HotSpotForeignCall
         super(jvmciRuntime, runtime, metaAccess, codeCache, wordTypes);
     }
 
-    protected static void link(Stub stub) {
+    public static void link(Stub stub) {
         stub.getLinkage().setCompiledStub(stub);
     }
 
@@ -613,114 +594,13 @@ public abstract class HotSpotHostForeignCallsProvider extends HotSpotForeignCall
         registerCheckcastArraycopyDescriptor(false, c.checkcastArraycopy);
 
         registerForeignCall(createDescriptor(GENERIC_ARRAYCOPY, LEAF_NO_VZERO, HAS_SIDE_EFFECT, NamedLocationIdentity.any()), c.genericArraycopy, NativeCall);
-        registerForeignCall(createDescriptor(UNSAFE_ARRAYCOPY, LEAF_NO_VZERO, HAS_SIDE_EFFECT, NamedLocationIdentity.any()), c.unsafeArraycopy, NativeCall);
+        if (c.unsafeArraycopy != 0L) {
+            registerForeignCall(UNSAFE_ARRAYCOPY, c.unsafeArraycopy, NativeCall);
+        }
         if (c.unsafeSetMemory != 0L) {
             registerForeignCall(UNSAFE_SETMEMORY, c.unsafeSetMemory, NativeCall);
         }
 
-        if (c.md5ImplCompressMultiBlock != 0L) {
-            registerForeignCall(MD5_IMPL_COMPRESS_MB, c.md5ImplCompressMultiBlock, NativeCall);
-        }
-        if (c.sha1ImplCompressMultiBlock != 0L) {
-            registerForeignCall(SHA_IMPL_COMPRESS_MB, c.sha1ImplCompressMultiBlock, NativeCall);
-        }
-        if (c.sha256ImplCompressMultiBlock != 0L) {
-            registerForeignCall(SHA2_IMPL_COMPRESS_MB, c.sha256ImplCompressMultiBlock, NativeCall);
-        }
-        if (c.sha512ImplCompressMultiBlock != 0L) {
-            registerForeignCall(SHA5_IMPL_COMPRESS_MB, c.sha512ImplCompressMultiBlock, NativeCall);
-        }
-        if (c.sha3ImplCompressMultiBlock != 0L) {
-            registerForeignCall(SHA3_IMPL_COMPRESS_MB, c.sha3ImplCompressMultiBlock, NativeCall);
-        }
-        if (c.base64EncodeBlock != 0L) {
-            registerForeignCall(BASE64_ENCODE_BLOCK, c.base64EncodeBlock, NativeCall);
-        }
-        if (c.base64DecodeBlock != 0L) {
-            registerForeignCall(BASE64_DECODE_BLOCK, c.base64DecodeBlock, NativeCall);
-        }
-        if (c.montgomeryMultiply != 0L) {
-            registerForeignCall(MONTGOMERY_MULTIPLY, c.montgomeryMultiply, NativeCall);
-        }
-        if (c.montgomerySquare != 0L) {
-            registerForeignCall(MONTGOMERY_SQUARE, c.montgomerySquare, NativeCall);
-        }
-        if (c.updateBytesCRC32Stub != 0L) {
-            // This stub does callee saving
-            registerForeignCall(UPDATE_BYTES_CRC32, c.updateBytesCRC32Stub, NativeCall);
-        }
-        if (c.updateBytesCRC32C != 0L) {
-            registerForeignCall(UPDATE_BYTES_CRC32C, c.updateBytesCRC32C, NativeCall);
-        }
-        if (c.updateBytesAdler32 != 0L) {
-            registerForeignCall(UPDATE_BYTES_ADLER32, c.updateBytesAdler32, NativeCall);
-        }
-        if (c.bigIntegerLeftShiftWorker != 0L) {
-            registerForeignCall(BIGINTEGER_LEFT_SHIFT_WORKER, c.bigIntegerLeftShiftWorker, NativeCall);
-        }
-        if (c.bigIntegerRightShiftWorker != 0L) {
-            registerForeignCall(BIGINTEGER_RIGHT_SHIFT_WORKER, c.bigIntegerRightShiftWorker, NativeCall);
-        }
-        if (c.electronicCodeBookEncrypt != 0L) {
-            registerForeignCall(ELECTRONIC_CODEBOOK_ENCRYPT_AESCRYPT, c.electronicCodeBookEncrypt, NativeCall);
-        }
-        if (c.electronicCodeBookDecrypt != 0L) {
-            registerForeignCall(ELECTRONIC_CODEBOOK_DECRYPT_AESCRYPT, c.electronicCodeBookDecrypt, NativeCall);
-        }
-        if (c.galoisCounterModeCrypt != 0L) {
-            registerForeignCall(GALOIS_COUNTER_MODE_CRYPT, c.galoisCounterModeCrypt, NativeCall);
-        }
-        if (c.poly1305ProcessBlocks != 0L) {
-            registerForeignCall(POLY1305_PROCESSBLOCKS, c.poly1305ProcessBlocks, NativeCall);
-        }
-        if (c.chacha20Block != 0L) {
-            registerForeignCall(CHACHA20Block, c.chacha20Block, NativeCall);
-        }
-        if (c.intpolyMontgomeryMultP256 != 0L) {
-            registerForeignCall(INTPOLY_MONTGOMERYMULT_P256, c.intpolyMontgomeryMultP256, NativeCall);
-        }
-        if (c.intpolyAssign != 0L) {
-            registerForeignCall(INTPOLY_ASSIGN, c.intpolyAssign, NativeCall);
-        }
-        if (c.stubDoubleKeccak != 0L) {
-            registerForeignCall(DOUBLE_KECCAK, c.stubDoubleKeccak, NativeCall);
-        }
-        if (c.stubDilithiumAlmostNtt != 0L) {
-            registerForeignCall(DILITHIUM_ALMOST_NTT, c.stubDilithiumAlmostNtt, NativeCall);
-        }
-        if (c.stubDilithiumAlmostInverseNtt != 0L) {
-            registerForeignCall(DILITHIUM_ALMOST_INVERSE_NTT, c.stubDilithiumAlmostInverseNtt, NativeCall);
-        }
-        if (c.stubDilithiumNttMult != 0L) {
-            registerForeignCall(DILITHIUM_NTT_MULT, c.stubDilithiumNttMult, NativeCall);
-        }
-        if (c.stubDilithiumMontMulByConstant != 0L) {
-            registerForeignCall(DILITHIUM_MONT_MUL_BY_CONSTANT, c.stubDilithiumMontMulByConstant, NativeCall);
-        }
-        if (c.stubDilithiumDecomposePoly != 0L) {
-            registerForeignCall(DILITHIUM_DECOMPOSE_POLY, c.stubDilithiumDecomposePoly, NativeCall);
-        }
-        if (c.stubKyberNtt != 0L) {
-            registerForeignCall(KYBER_NTT, c.stubKyberNtt, NativeCall);
-        }
-        if (c.stubKyberInverseNtt != 0L) {
-            registerForeignCall(KYBER_INVERSE_NTT, c.stubKyberInverseNtt, NativeCall);
-        }
-        if (c.stubKyberNttMult != 0L) {
-            registerForeignCall(KYBER_NTT_MULT, c.stubKyberNttMult, NativeCall);
-        }
-        if (c.stubKyberAddPoly2 != 0L) {
-            registerForeignCall(KYBER_ADD_POLY_2, c.stubKyberAddPoly2, NativeCall);
-        }
-        if (c.stubKyberAddPoly3 != 0L) {
-            registerForeignCall(KYBER_ADD_POLY_3, c.stubKyberAddPoly3, NativeCall);
-        }
-        if (c.stubKyber12To16 != 0L) {
-            registerForeignCall(KYBER_12_TO_16, c.stubKyber12To16, NativeCall);
-        }
-        if (c.stubKyberBarrettReduce != 0L) {
-            registerForeignCall(KYBER_BARRETT_REDUCE, c.stubKyberBarrettReduce, NativeCall);
-        }
         if (c.stubArrayPartition != 0L) {
             registerForeignCall(ARRAY_PARTITION, c.stubArrayPartition, NativeCall);
         }
@@ -751,6 +631,7 @@ public abstract class HotSpotHostForeignCallsProvider extends HotSpotForeignCall
 
     private void registerSnippetStubs(HotSpotProviders providers, OptionValues options) {
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ArrayIndexOfForeignCalls.STUBS);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, IndexOfZeroForeignCalls.STUBS);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ArrayFillNode.STUBS);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ArrayEqualsForeignCalls.STUBS);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ArrayEqualsWithMaskForeignCalls.STUBS);
@@ -762,20 +643,53 @@ public abstract class HotSpotHostForeignCallsProvider extends HotSpotForeignCall
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, StringUTF16CompressNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, EncodeArrayNode.STUBS);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CountPositivesNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, Base64EncodeBlockNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, Base64DecodeBlockNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, VectorizedMismatchNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, VectorizedHashCodeNode.STUBS);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerMultiplyToLenNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerMulAddNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerSquareToLenNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerLeftShiftWorkerNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerRightShiftWorkerNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerMontgomeryMultiplyNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, BigIntegerMontgomerySquareNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, AESNode.STUBS);
-        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CounterModeAESNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ChaCha20Node.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CipherBlockChainingAESNode.STUBS);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CounterModeAESNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DoubleKeccakNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, ElectronicCodeBookAESNode.STUBS);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, GaloisCounterModeAESNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, GHASHProcessBlocksNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, IntegerPolynomialAssignNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, IntegerPolynomialP256MontgomeryMultNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, Poly1305ProcessBlocksNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA1Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA1MultiBlockNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA256Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA256MultiBlockNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA3Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA3MultiBlockNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA512Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.SHA512MultiBlockNode.STUB);
         linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.MD5Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, MessageDigestNode.MD5MultiBlockNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberNttNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberInverseNttNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberNttMultNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberAddPoly2Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberAddPoly3Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, Kyber12To16Node.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, KyberBarrettReduceNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, Adler32UpdateBytesNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CRC32UpdateBytesNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, CRC32CUpdateBytesNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DilithiumNode.DilithiumAlmostInverseNttNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DilithiumNode.DilithiumAlmostNttNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DilithiumNode.DilithiumDecomposePolyNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DilithiumNode.DilithiumMontMulByConstantNode.STUB);
+        linkSnippetStubs(providers, options, IntrinsicStubsGen::new, DilithiumNode.DilithiumNttMultNode.STUB);
     }
 
     @FunctionalInterface

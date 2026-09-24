@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.gc.shenandoah;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.gc.shenandoah.ShenandoahOptions.ShenandoahRegionSize;
 
 import org.graalvm.nativeimage.ImageSingletons;
@@ -38,11 +38,17 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.IsolateArguments;
-import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
 import com.oracle.svm.core.container.Container;
 import com.oracle.svm.core.container.ContainerLibrary;
 import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahLibrary;
@@ -55,12 +61,11 @@ import com.oracle.svm.core.os.AbstractImageHeapProvider;
 import com.oracle.svm.core.os.CommittedMemoryProvider;
 import com.oracle.svm.core.os.ImageHeapProvider;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.util.UnsignedUtils;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.CompressEncoding;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * Reserves one contiguous block of memory in which the image heap and the collected Java heap are
@@ -85,6 +90,7 @@ import jdk.graal.compiler.word.Word;
  * address space, which can reduce the maximum size of the Java heap.</li>
  * </ul>
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class, other = DisallowLayered.class)
 public class ShenandoahCommittedMemoryProvider extends AbstractCommittedMemoryProvider {
     private Pointer reservedBegin;
     private UnsignedWord reservedSize;

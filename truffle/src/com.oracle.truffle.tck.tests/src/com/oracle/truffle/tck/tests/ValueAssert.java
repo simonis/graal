@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -82,6 +82,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -210,7 +212,7 @@ public class ValueAssert {
                         assertFails(() -> value.asDouble(), NullPointerException.class);
 
                     } else {
-                        if (value.isHostObject() && value.asHostObject() instanceof Number) {
+                        if (isReachableHostObject(value) && value.asHostObject() instanceof Number) {
                             assertSame(value.asHostObject(), value.as(Number.class));
                         } else {
                             assertFails(() -> value.as(Number.class), ClassCastException.class);
@@ -282,7 +284,7 @@ public class ValueAssert {
                     if (value.isNull()) {
                         assertNull(value.as(Map.class));
                     } else {
-                        if ((!value.isHostObject() || (!(value.asHostObject() instanceof Map))) && !value.hasHashEntries()) {
+                        if ((!isReachableHostObject(value) || (!(value.asHostObject() instanceof Map))) && !value.hasHashEntries()) {
                             assertFails(() -> value.as(Map.class), ClassCastException.class);
                         }
                     }
@@ -301,7 +303,7 @@ public class ValueAssert {
                         if (value.hasMembers()) {
                             assertFails(() -> value.as(FUNCTION).apply(null), UnsupportedOperationException.class);
                             assertFails(() -> value.as(IsFunctionalInterfaceVarArgs.class).foobarbaz(123), UnsupportedOperationException.class);
-                        } else if (!value.isHostObject() || (!(value.asHostObject() instanceof Function))) {
+                        } else if (!isReachableHostObject(value) || (!(value.asHostObject() instanceof Function))) {
                             assertFails(() -> value.as(FUNCTION), ClassCastException.class);
                             assertFails(() -> value.as(IsFunctionalInterfaceVarArgs.class), ClassCastException.class);
                         }
@@ -320,7 +322,7 @@ public class ValueAssert {
                         if (value.hasMembers()) {
                             assertFails(() -> value.as(FUNCTION).apply(null), UnsupportedOperationException.class);
                             assertFails(() -> value.as(IsFunctionalInterfaceVarArgs.class).foobarbaz(123), UnsupportedOperationException.class);
-                        } else if (!value.isHostObject() || (!(value.asHostObject() instanceof Function))) {
+                        } else if (!isReachableHostObject(value) || (!(value.asHostObject() instanceof Function))) {
                             assertFails(() -> value.as(FUNCTION), ClassCastException.class);
                             assertFails(() -> value.as(IsFunctionalInterfaceVarArgs.class), ClassCastException.class);
                         }
@@ -335,7 +337,7 @@ public class ValueAssert {
                     assertFails(() -> value.setArrayElement(0, null), UnsupportedOperationException.class);
                     assertFails(() -> value.getArraySize(), UnsupportedOperationException.class);
                     if (!value.isNull()) {
-                        if ((!value.isHostObject() || (!(value.asHostObject() instanceof List) && !(value.asHostObject() instanceof Object[])))) {
+                        if ((!isReachableHostObject(value) || (!(value.asHostObject() instanceof List) && !(value.asHostObject() instanceof Object[])))) {
                             assertFails(() -> value.as(List.class), ClassCastException.class);
                             assertFails(() -> value.as(Object[].class), ClassCastException.class);
                         }
@@ -362,7 +364,7 @@ public class ValueAssert {
                     assertFails(() -> value.writeBufferDouble(ByteOrder.LITTLE_ENDIAN, 0, 0.0), UnsupportedOperationException.class);
 
                     if (!value.isNull()) {
-                        if ((!value.isHostObject() || (!(value.asHostObject() instanceof ByteBuffer)))) {
+                        if ((!isReachableHostObject(value) || (!(value.asHostObject() instanceof ByteBuffer)))) {
                             assertFails(() -> value.as(ByteBuffer.class), ClassCastException.class);
                         }
                     } else {
@@ -371,7 +373,7 @@ public class ValueAssert {
                     break;
                 case HOST_OBJECT:
                     assertFalse(value.isHostObject());
-                    assertFails(() -> value.asHostObject(), ClassCastException.class);
+                    assertFails(() -> value.asHostObject(), ClassCastException.class, UnsupportedOperationException.class);
                     break;
                 case PROXY_OBJECT:
                     assertFalse(value.isProxyObject());
@@ -390,6 +392,7 @@ public class ValueAssert {
                         assertNull(value.as(LocalDateTime.class));
                         assertNull(value.as(LocalDate.class));
                         assertNull(value.as(ZonedDateTime.class));
+                        assertNull(value.as(OffsetDateTime.class));
                         assertNull(value.as(Date.class));
                     } else {
                         assertFails(() -> value.asDate(), ClassCastException.class);
@@ -397,6 +400,7 @@ public class ValueAssert {
                         assertFails(() -> value.as(LocalDateTime.class), ClassCastException.class);
                         assertFails(() -> value.as(LocalDate.class), ClassCastException.class);
                         assertFails(() -> value.as(ZonedDateTime.class), ClassCastException.class);
+                        assertFails(() -> value.as(OffsetDateTime.class), ClassCastException.class);
                         assertFails(() -> value.as(Date.class), ClassCastException.class);
                     }
                     break;
@@ -409,6 +413,8 @@ public class ValueAssert {
                         assertNull(value.as(LocalDateTime.class));
                         assertNull(value.as(LocalTime.class));
                         assertNull(value.as(ZonedDateTime.class));
+                        assertNull(value.as(OffsetDateTime.class));
+                        assertNull(value.as(OffsetTime.class));
                         assertNull(value.as(Date.class));
                     } else {
                         assertFails(() -> value.asTime(), ClassCastException.class);
@@ -416,6 +422,8 @@ public class ValueAssert {
                         assertFails(() -> value.as(LocalDateTime.class), ClassCastException.class);
                         assertFails(() -> value.as(LocalTime.class), ClassCastException.class);
                         assertFails(() -> value.as(ZonedDateTime.class), ClassCastException.class);
+                        assertFails(() -> value.as(OffsetDateTime.class), ClassCastException.class);
+                        assertFails(() -> value.as(OffsetTime.class), ClassCastException.class);
                         assertFails(() -> value.as(Date.class), ClassCastException.class);
                     }
                     break;
@@ -428,6 +436,8 @@ public class ValueAssert {
                         assertNull(value.as(ZoneId.class));
                         assertNull(value.as(ZoneOffset.class));
                         assertNull(value.as(ZonedDateTime.class));
+                        assertNull(value.as(OffsetDateTime.class));
+                        assertNull(value.as(OffsetTime.class));
                         assertNull(value.as(Date.class));
                     } else {
                         assertFails(() -> value.asTimeZone(), ClassCastException.class);
@@ -435,6 +445,8 @@ public class ValueAssert {
                         assertFails(() -> value.as(ZoneId.class), ClassCastException.class);
                         assertFails(() -> value.as(ZoneOffset.class), ClassCastException.class);
                         assertFails(() -> value.as(ZonedDateTime.class), ClassCastException.class);
+                        assertFails(() -> value.as(OffsetDateTime.class), ClassCastException.class);
+                        assertFails(() -> value.as(OffsetTime.class), ClassCastException.class);
                         assertFails(() -> value.as(Date.class), ClassCastException.class);
                     }
                     break;
@@ -459,6 +471,8 @@ public class ValueAssert {
                     assertFails(() -> value.isMetaInstance(""), UnsupportedOperationException.class);
                     assertFalse(value.hasMetaParents());
                     assertFails(() -> value.getMetaParents(), UnsupportedOperationException.class);
+                    assertFalse(value.hasStaticScope());
+                    assertFails(() -> value.getStaticScope(), UnsupportedOperationException.class);
                     break;
                 case ITERABLE:
                     assertFalse(value.hasIterator());
@@ -479,7 +493,7 @@ public class ValueAssert {
                     if (value.isNull()) {
                         assertNull(value.as(Map.class));
                     } else {
-                        if ((!value.isHostObject() || (!(value.asHostObject() instanceof Map))) && !value.hasMembers()) {
+                        if ((!isReachableHostObject(value) || (!(value.asHostObject() instanceof Map))) && !value.hasMembers()) {
                             assertFails(() -> value.as(Map.class), ClassCastException.class);
                         }
                     }
@@ -487,6 +501,19 @@ public class ValueAssert {
                 default:
                     throw new AssertionError();
             }
+        }
+    }
+
+    private static boolean isReachableHostObject(Value value) {
+        if (!value.isHostObject()) {
+            return false;
+        }
+        try {
+            value.asHostObject();
+            return true;
+        } catch (UnsupportedOperationException unsupported) {
+            // HeapIsolationException - unboxing is not supported.
+            return false;
         }
     }
 
@@ -567,36 +594,37 @@ public class ValueAssert {
                     break;
                 case HOST_OBJECT:
                     assertTrue(msg, value.isHostObject());
-                    Object hostObject = value.asHostObject();
-                    assertFalse(hostObject instanceof Proxy);
-                    boolean isStaticClass = false;
-                    if (hasHostAccess && hostObject != null && value.hasMembers() && !java.lang.reflect.Proxy.isProxyClass(hostObject.getClass())) {
-                        if (hostObject instanceof Class) {
-                            isStaticClass = value.hasMember("class");
-                            if (isStaticClass) {
-                                assertClassMembers(value, (Class<?>) hostObject, true);
+                    if (isReachableHostObject(value)) {
+                        Object hostObject = value.asHostObject();
+                        assertFalse(hostObject instanceof Proxy);
+                        boolean isStaticClass = false;
+                        if (hasHostAccess && hostObject != null && value.hasMembers() && !java.lang.reflect.Proxy.isProxyClass(hostObject.getClass())) {
+                            if (hostObject instanceof Class) {
+                                isStaticClass = value.hasMember("class");
+                                if (isStaticClass) {
+                                    assertClassMembers(value, (Class<?>) hostObject, true);
+                                } else {
+                                    assertClassMembers(value, Class.class, false);
+                                    assertTrue(value.hasMember("static"));
+                                }
                             } else {
-                                assertClassMembers(value, Class.class, false);
-                                assertTrue(value.hasMember("static"));
-                            }
-                        } else {
-                            // Asserts that value exposes the same members as the host object's
-                            // class first public inclusive ancestor.
-                            for (Class<?> clazz = hostObject.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
-                                if (Modifier.isPublic(clazz.getModifiers())) {
-                                    assertClassMembers(value, clazz, false);
-                                    break;
+                                // Asserts that value exposes the same members as the host object's
+                                // class first public inclusive ancestor.
+                                for (Class<?> clazz = hostObject.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
+                                    if (Modifier.isPublic(clazz.getModifiers())) {
+                                        assertClassMembers(value, clazz, false);
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        if (isStaticClass) {
+                            assertNotEquals(Value.asValue(hostObject), value);
+                        } else {
+                            assertEquals(Value.asValue(hostObject), value);
+                        }
+                        assertEquals(Value.asValue(hostObject).hashCode(), value.hashCode());
                     }
-                    if (isStaticClass) {
-                        assertNotEquals(Value.asValue(hostObject), value);
-                    } else {
-                        assertEquals(Value.asValue(hostObject), value);
-                    }
-                    assertEquals(Value.asValue(hostObject).hashCode(), value.hashCode());
-
                     break;
                 case PROXY_OBJECT:
                     assertTrue(msg, value.isProxyObject());
@@ -621,7 +649,7 @@ public class ValueAssert {
 
                     if (value.isNull()) {
                         assertNull(value.as(STRING_OBJECT_MAP));
-                    } else if (value.isHostObject() && value.asHostObject() instanceof Map) {
+                    } else if (isReachableHostObject(value) && value.asHostObject() instanceof Map) {
                         Map<Object, Object> expectedValues = value.asHostObject();
                         assertEquals(value.as(OBJECT_OBJECT_MAP), expectedValues);
                     } else if (value.hasHashEntries()) {
@@ -664,6 +692,8 @@ public class ValueAssert {
                         if (value.isTimeZone()) {
                             assertNotNull(value.asInstant());
                             assertEquals(value.as(ZonedDateTime.class).toLocalDate(), value.as(LocalDate.class));
+                            assertEquals(value.as(OffsetDateTime.class).toLocalDate(), value.as(LocalDate.class));
+                            assertNotNull(value.as(OffsetTime.class));
                             assertNotNull(value.as(Instant.class));
                             assertNotNull(value.as(Date.class));
                         }
@@ -676,12 +706,9 @@ public class ValueAssert {
 
                     if (value.isDate()) {
                         // asserted by DATE trait
-                    } else {
-                        if (value.isTimeZone()) {
-                            // invalid combination
-                            assertFails(() -> value.asTime(), AssertionError.class);
-                            assertFails(() -> value.asTimeZone(), AssertionError.class);
-                        }
+                    } else if (value.isTimeZone()) {
+                        assertTrue(value.asTimeZone().getRules().isFixedOffset());
+                        assertEquals(value.asTime(), value.as(OffsetTime.class).toLocalTime());
                     }
                     break;
                 case TIMEZONE:
@@ -734,6 +761,23 @@ public class ValueAssert {
                             // caught expected exception
                         }
                     }
+                    if (value.hasStaticScope()) {
+                        Value staticScope = value.getStaticScope();
+                        assertTrue(staticScope.hasMembers());
+                        for (String key : staticScope.getMemberKeys()) {
+                            Value staticMember = staticScope.getMember(key);
+                            assertValueImpl(staticMember, depth + 1, hasHostAccess, detectSupportedTypes(staticMember));
+                        }
+                    } else {
+                        try {
+                            value.getStaticScope();
+                            fail("should have thrown");
+                        } catch (PolyglotException expected) {
+                            throw new AssertionError(expected);
+                        } catch (UnsupportedOperationException expected) {
+                            // caught expected exception
+                        }
+                    }
                     break;
                 case ITERABLE:
                     assertTrue(msg, value.hasIterator());
@@ -756,7 +800,7 @@ public class ValueAssert {
     }
 
     private static boolean isSameHostObject(Value a, Value b) {
-        return a.isHostObject() && b.isHostObject() && a.asHostObject() == b.asHostObject();
+        return isReachableHostObject(a) && isReachableHostObject(b) && a.asHostObject() == b.asHostObject();
     }
 
     @SuppressWarnings("unchecked")
@@ -777,7 +821,7 @@ public class ValueAssert {
         List<Object> objectList1 = value.as(OBJECT_LIST);
         List<Object> objectList2 = Arrays.asList(value.as(Object[].class));
 
-        if (!value.isHostObject() || !(value.asHostObject() instanceof List<?>)) {
+        if (!isReachableHostObject(value) || !(value.asHostObject() instanceof List<?>)) {
             assertFalse(objectList1.equals(objectList2));
         }
         assertTrue(objectList1.equals(objectList1));

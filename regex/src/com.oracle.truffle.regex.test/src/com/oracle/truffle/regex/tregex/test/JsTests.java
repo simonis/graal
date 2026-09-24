@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -43,13 +43,14 @@ package com.oracle.truffle.regex.tregex.test;
 import java.util.Collections;
 import java.util.Map;
 
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.junit.Assert;
 import org.junit.Test;
 
 import com.oracle.truffle.regex.errors.JsErrorMessages;
 import com.oracle.truffle.regex.tregex.TRegexOptions;
-import com.oracle.truffle.regex.tregex.string.Encodings;
+import com.oracle.truffle.regex.tregex.string.Encoding;
 import com.oracle.truffle.regex.tregex.test.generated.JsGeneratedTests;
 
 public class JsTests extends RegexTestBase {
@@ -63,8 +64,8 @@ public class JsTests extends RegexTestBase {
     }
 
     @Override
-    Encodings.Encoding getTRegexEncoding() {
-        return Encodings.UTF_16_RAW;
+    Encoding getTRegexEncoding() {
+        return Encoding.UTF_16_RAW;
     }
 
     @Test
@@ -72,6 +73,19 @@ public class JsTests extends RegexTestBase {
         test("\\s*(?=(?<=\\W))", "", "paragraph block*", 1, true, 9, 10);
         test("\\s*(?=\\b)", "", "paragraph block*", 1, true, 9, 10);
         test("\\s*(?=\\b|\\W|$)", "", "paragraph block*", 1, true, 9, 10);
+    }
+
+    @Test
+    public void wordListCommonPrefixes() {
+        test("abc|abde|abfgh", "", "xxabdeyy", 0, true, 2, 6);
+        test("abc|abde|abfgh", "", "xxabzyy", 0, false);
+        test("uvwxyz|abc|abde|abfgh", "", "xxuvwxyzyy", 0, true, 2, 8);
+        test("abc|abde|uvwxyz|abfgh", "", "xxuvwxyzyy", 0, true, 2, 8);
+        test("abc|abde|abfgh|uvwxyz", "", "xxuvwxyzyy", 0, true, 2, 8);
+        test("a|ab", "", "ab", 0, true, 0, 1);
+        test("ab|a", "", "ab", 0, true, 0, 2);
+        test("foobar|quuxx|foobazzz|fooquxq", "", "xxquuxxyy", 0, true, 2, 7);
+        test("foobar|quuxx|foobazzz|fooquxq", "", "xxfoobazzz", 0, true, 2, 10);
     }
 
     @Test
@@ -240,6 +254,26 @@ public class JsTests extends RegexTestBase {
     }
 
     @Test
+    public void classSetExpressionNestingLimit() {
+        int depth = 10_000;
+        String pattern = "[".repeat(depth) + "a" + "]".repeat(depth);
+        expectUnsupported(pattern, "v");
+    }
+
+    @Test
+    public void backtrackingStackLimit() {
+        Value compiledRegex = compileRegex("^(?:(a?)\\1)*$", "");
+        Assert.assertTrue(compiledRegex.getMember("isBacktracking").asBoolean());
+        try {
+            execRegex(compiledRegex, getTRegexEncoding(), "a".repeat(50_000_000), 0);
+            Assert.fail("expected backtracking stack limit");
+        } catch (PolyglotException e) {
+            Assert.assertFalse(e.isInternalError());
+            Assert.assertTrue(e.getMessage().contains("backtracking stack limit exceeded"));
+        }
+    }
+
+    @Test
     public void gr45479() {
         // minimized test case
         test("\\s*(p$)?", "", "px", 0, true, 0, 0, -1, -1);
@@ -288,6 +322,14 @@ public class JsTests extends RegexTestBase {
     @Test
     public void mergedLookAheadLiteral() {
         test("(?:(?=(abc)))a", "", "abc", 0, true, 0, 1, 0, 3);
+    }
+
+    @Test
+    public void lookAheadMergeExplosionLimit() {
+        String pattern = "(?=([ab])|([ab]))".repeat(26) + "[ab]";
+        Value compiledRegex = compileRegex(pattern, "");
+        Assert.assertTrue(compiledRegex.getMember("isBacktracking").asBoolean());
+        Assert.assertTrue(execRegex(compiledRegex, getTRegexEncoding(), "a", 0).getMember("isMatch").asBoolean());
     }
 
     @Test
@@ -443,8 +485,8 @@ public class JsTests extends RegexTestBase {
 
     @Test
     public void simpleCGUtf8() {
-        test("^block($|(?=__|_))", "", Encodings.UTF_8, "block_baz", 0, true, 0, 5, 5, 5);
-        test("^foo($|(?=__|_))", "", Encodings.UTF_8, "foo", 0, true, 0, 3, 3, 3);
+        test("^block($|(?=__|_))", "", Encoding.UTF_8, "block_baz", 0, true, 0, 5, 5, 5);
+        test("^foo($|(?=__|_))", "", Encoding.UTF_8, "foo", 0, true, 0, 3, 3, 3);
     }
 
     @Test
@@ -455,5 +497,10 @@ public class JsTests extends RegexTestBase {
         expectUnsupported(".*a{1,200000}.*", "", OPT_FORCE_LINEAR_EXECUTION);
         test(".*b(?!a_)", "", "_aabaaa_", 0, true, 0, 4);
         expectUnsupported(".*b(?!a_)", "", OPT_FORCE_LINEAR_EXECUTION);
+    }
+
+    @Test
+    public void gr73305() {
+        expectUnsupported(String.format("(?<=(?:%s)*)b", "a".repeat(32768)));
     }
 }

@@ -32,6 +32,9 @@ import static jdk.vm.ci.code.ValueUtil.isRegister;
 import java.util.ArrayList;
 import java.util.Arrays;
 
+import org.graalvm.collections.EconomicMap;
+import org.graalvm.collections.Equivalence;
+
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig.AllocatableRegisters;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.CounterKey;
@@ -58,6 +61,7 @@ class LinearScanWalker extends IntervalWalker {
     private static final CountingTimerKey spillCollectInactiveAny = countingTimer("spillCollectInactiveAny");
     private static final CountingTimerKey spillCollectActiveAny = countingTimer("spillCollectActiveAny");
     private static final CountingTimerKey spillExcludeActiveFixed = countingTimer("spillExcludeActiveFixed");
+    private static final CountingTimerKey spillExcludeFastPathBlock = countingTimer("spillExcludeFastPathBlock");
     private static final CountingTimerKey spillBlockInactiveFixed = countingTimer("spillBlockInactiveFixed");
     private static final CountingTimerKey freeCollectInactiveAny = countingTimer("freeCollectInactiveAny");
     private static final CountingTimerKey freeCollectInactiveFixed = countingTimer("freeCollectInactiveFixed");
@@ -74,6 +78,10 @@ class LinearScanWalker extends IntervalWalker {
      * can introduce moves between registers or between the stack and a register.
      */
     private static final CounterKey intervalSplits = DebugContext.counter("LinearScanWalker[intervalSplits]");
+    private static final CounterKey fastPathRecoverySplits = DebugContext.counter("LinearScanWalker[fastPathRecoverySplits]");
+    private static final CounterKey fastPathRecoverySplitLimitReached = DebugContext.counter("LinearScanWalker[fastPathRecoverySplitLimitReached]");
+    private static final CounterKey fastPathPredecessorRegisterHints = DebugContext.counter("LinearScanWalker[fastPathPredecessorRegisterHints]");
+
     /**
      * The number of intervals assigned to spill slots, after any splitting. For example, a parent
      * interval split into three child intervals, of which two are spilled, will add 2 to this
@@ -94,6 +102,10 @@ class LinearScanWalker extends IntervalWalker {
     private int minReg;
 
     private int maxReg;
+
+    private int fastPathRecoverySplitCount;
+    private boolean fastPathRecoverySplitLimitReported;
+    private EconomicMap<Interval, Register> fastPathRegisterHints;
 
     // accessors mapped to same functions in class LinearScan
     int blockCount() {
@@ -295,6 +307,35 @@ class LinearScanWalker extends IntervalWalker {
         }
     }
 
+    /*
+     * Excludes active intervals defined or used in the current fast-path block from consideration
+     * as spill victims. These intervals are already in registers, so retaining them avoids memory
+     * traffic introduced solely by pressure from another path.
+     */
+    @SuppressWarnings("try")
+    void spillExcludeIntervalsDefinedOrUsedAtCurrentFastPathBlock() {
+        try (DebugCloseable t = allocator.start(spillExcludeFastPathBlock)) {
+            var block = allocator.blockForId(currentPosition);
+            if (block.isFastPathBlock()) {
+                Interval interval = activeLists.get(RegisterBinding.Any);
+                while (!interval.isEndMarker()) {
+                    if (allocator.blockForId(interval.from() - 1) == block) {
+                        // defined in the current block
+                        excludeFromUse(interval);
+                    } else {
+                        int from = allocator.getLIR().getLIRforBlock(block).get(0).id();
+                        int usage = interval.nextUsage(RegisterPriority.None, from);
+                        if (usage <= allocator.maxOpId() && allocator.blockForId(usage) == block) {
+                            // used in the current block
+                            excludeFromUse(interval);
+                        }
+                    }
+                    interval = interval.next;
+                }
+            }
+        }
+    }
+
     @SuppressWarnings("try")
     void spillBlockInactiveFixed(Interval current) {
         try (DebugCloseable t = allocator.start(spillBlockInactiveFixed)) {
@@ -314,14 +355,42 @@ class LinearScanWalker extends IntervalWalker {
     @SuppressWarnings("try")
     void spillCollectActiveAny(RegisterPriority registerPriority) {
         try (DebugCloseable t = allocator.start(spillCollectActiveAny)) {
+            boolean preferStateOnlyVictim = registerPriority == RegisterPriority.LiveAtLoopEnd &&
+                            allocator.blockForId(currentPosition).isFastPathBlock();
             Interval interval = activeLists.get(RegisterBinding.Any);
             while (!interval.isEndMarker()) {
                 if (isActiveRegister(interval)) {
-                    setUsePos(interval, Math.min(interval.nextUsage(registerPriority, currentPosition), interval.to()), false);
+                    int nextUsage = interval.nextUsage(registerPriority, currentPosition);
+                    int usePosition;
+                    if (preferStateOnlyVictim && !hasFutureRegisterUsageInSplitFamily(interval)) {
+                        /*
+                         * A value with no future register-requiring use can remain in its spill
+                         * slot. Prefer it as the victim over a value that must later return to a
+                         * register. Inspect the entire split family because a later child may have
+                         * such a use even when the current child does not.
+                         */
+                        usePosition = Integer.MAX_VALUE;
+                    } else {
+                        usePosition = Math.min(nextUsage, interval.to());
+                    }
+                    setUsePos(interval, usePosition, false);
                 }
                 interval = interval.next;
             }
         }
+    }
+
+    private boolean hasFutureRegisterUsageInSplitFamily(Interval interval) {
+        Interval splitParent = interval.splitParent();
+        if (splitParent.getSplitChildren().isEmpty()) {
+            return splitParent.nextUsage(RegisterPriority.ShouldHaveRegister, currentPosition) != Integer.MAX_VALUE;
+        }
+        for (Interval splitChild : splitParent.getSplitChildren()) {
+            if (splitChild.nextUsage(RegisterPriority.ShouldHaveRegister, currentPosition) != Integer.MAX_VALUE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @SuppressWarnings("try")
@@ -454,7 +523,7 @@ class LinearScanWalker extends IntervalWalker {
                     optimalSplitPos = maxSplitPos;
 
                 } else {
-                    // seach optimal block boundary between minSplitPos and maxSplitPos
+                    // search optimal block boundary between minSplitPos and maxSplitPos
                     if (debug.isLogEnabled()) {
                         debug.log("moving split pos to optimal block boundary between block B%d and B%d", minBlock.getId(), maxBlock.getId());
                     }
@@ -513,12 +582,15 @@ class LinearScanWalker extends IntervalWalker {
         return optimalSplitPos;
     }
 
-    // split an interval at the optimal position between minSplitPos and
-    // maxSplitPos in two parts:
-    // 1) the left part has already a location assigned
-    // 2) the right part is sorted into to the unhandled-list
+    /**
+     * Splits an interval at the optimal position between {@code minSplitPos} and
+     * {@code maxSplitPos}. The left part retains its assigned location and the right part is added
+     * to the unhandled list.
+     *
+     * @return the right split part, or {@code null} when no split is necessary
+     */
     @SuppressWarnings("try")
-    void splitBeforeUsage(Interval interval, int minSplitPos, int maxSplitPos) {
+    Interval splitBeforeUsage(Interval interval, int minSplitPos, int maxSplitPos) {
         DebugContext debug = allocator.getDebug();
         try (Indent indent = debug.logAndIndent("splitting interval %s between %d and %d", interval, minSplitPos, maxSplitPos)) {
 
@@ -539,7 +611,7 @@ class LinearScanWalker extends IntervalWalker {
                 if (debug.isLogEnabled()) {
                     debug.log("no split necessary because optimal split position is at end of interval");
                 }
-                return;
+                return null;
             }
 
             // must calculate this before the actual split is performed and before split position is
@@ -569,6 +641,174 @@ class LinearScanWalker extends IntervalWalker {
             if (debug.isLogEnabled()) {
                 debug.log("left interval  %s: %s", moveNecessary ? "      " : "", interval.logString(allocator));
                 debug.log("right interval %s: %s", moveNecessary ? "(move)" : "", splitPart.logString(allocator));
+            }
+            return splitPart;
+        }
+    }
+
+    /**
+     * Returns whether every live predecessor of {@code block} carries {@code interval} in its
+     * current spill location. A predecessor whose interval child has not been allocated yet is
+     * conservatively treated as carrying the spill; during linear scan this is normally a
+     * backedge.
+     */
+    private boolean spillFlowsIntoBlock(Interval interval, BasicBlock<?> block) {
+        int operandNumber = interval.splitParent().operandNumber;
+        boolean hasLivePredecessor = false;
+        for (int i = 0; i < block.getPredecessorCount(); i++) {
+            BasicBlock<?> predecessor = block.getPredecessorAt(i);
+            if (!allocator.getBlockData(predecessor).liveOut.get(operandNumber)) {
+                continue;
+            }
+
+            hasLivePredecessor = true;
+            int predecessorEnd = allocator.getLastLirInstructionId(predecessor) + 1;
+            Interval incoming = allocator.splitChildAtOpId(interval.splitParent(), predecessorEnd, LIRInstruction.OperandMode.DEF);
+            if (incoming.location() == null) {
+                // Assume that the unknown backedge carries the spill.
+                continue;
+            }
+            if (!incoming.location().equals(interval.location())) {
+                return false;
+            }
+        }
+        assert hasLivePredecessor : "live interval enters block without a live predecessor";
+        return true;
+    }
+
+    /**
+     * If {@code interval} covers a fast-path block, returns the first live block after
+     * {@link #currentPosition} where the current spill location does not arrive from every live
+     * predecessor. Otherwise returns {@code -1}.
+     *
+     * <pre>
+     *                       B0 (v = register)
+     *                      /                 \
+     *      slow path: B1 (pressure spill)  B2 : fast path
+     *                      \                 /
+     *                               B3
+     *
+     *      linear-scan order: B0, B1, B2, B3
+     *                            [ v = stack ... ]
+     *                                ^
+     *                                split and recover v because B0 carries v in a register into
+     *                                B2, even though the spilled interval covers B2
+     * </pre>
+     */
+    private int findFastPathRecoveryPosition(Interval interval) {
+        int firstRecoveryBlock = allocator.blockForId(currentPosition).getLinearScanNumber() + 1;
+        int recoveryPos = -1;
+        boolean coversFastPathBlock = false;
+        for (BasicBlock<?> block : allocator.blocksForInterval(interval)) {
+            coversFastPathBlock |= block.isFastPathBlock();
+            if (recoveryPos == -1 && block.getLinearScanNumber() >= firstRecoveryBlock) {
+                int blockFrom = allocator.getFirstLirInstructionId(block);
+                if (!interval.hasHoleBetween(blockFrom, blockFrom + 1) && !spillFlowsIntoBlock(interval, block)) {
+                    recoveryPos = blockFrom;
+                }
+            }
+        }
+        return coversFastPathBlock ? recoveryPos : -1;
+    }
+
+    /**
+     * Makes allocation of the recovered child predecessor-sensitive. When a register-allocated
+     * predecessor is known, the register carrying the greatest combined predecessor frequency is
+     * preferred even though those predecessors are no longer active in linear-scan order. This
+     * remains a location hint, not a register requirement.
+     */
+    private void addFastPathRegisterHint(Interval recovered, int recoveryPos) {
+        BasicBlock<?> recoveryBlock = allocator.blockForId(recoveryPos);
+        int operandNumber = recovered.splitParent().operandNumber;
+        double[] registerFrequencies = new double[allocator.getRegisters().size()];
+        Register hint = null;
+        double hintFrequency = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < recoveryBlock.getPredecessorCount(); i++) {
+            BasicBlock<?> predecessor = recoveryBlock.getPredecessorAt(i);
+            if (!allocator.getBlockData(predecessor).liveOut.get(operandNumber)) {
+                continue;
+            }
+            int predecessorEnd = allocator.getLastLirInstructionId(predecessor) + 1;
+            Interval incoming = allocator.splitChildAtOpId(recovered.splitParent(), predecessorEnd, LIRInstruction.OperandMode.DEF);
+            if (incoming.location() != null && isRegister(incoming.location())) {
+                Register incomingRegister = asRegister(incoming.location());
+                double frequency = registerFrequencies[incomingRegister.number] + predecessor.getRelativeFrequency();
+                registerFrequencies[incomingRegister.number] = frequency;
+                if (frequency > hintFrequency) {
+                    hint = incomingRegister;
+                    hintFrequency = frequency;
+                }
+            }
+        }
+        if (hint != null) {
+            if (fastPathRegisterHints == null) {
+                fastPathRegisterHints = EconomicMap.create(Equivalence.IDENTITY);
+            }
+            fastPathRegisterHints.put(recovered, hint);
+            fastPathPredecessorRegisterHints.increment(allocator.getDebug());
+        }
+    }
+
+    /**
+     * Prevents a pressure spill from propagating into an unrelated marked fast path. A stack
+     * location belongs to an interval's split family, so linear-scan order can extend it across a
+     * block even when that location does not reach the block through the CFG.
+     * <p>
+     * For a non-materializable spilled child that covers a marked block, recovery starts at the
+     * first later live block where the stack location does not arrive from every live predecessor.
+     * The interval is split at that block start and the recovered child is allocated normally. A
+     * register carrying the greatest combined predecessor frequency is used as a location hint when
+     * available; no synthetic register use is added. If every live predecessor carries the stack
+     * location, no split is needed merely because the interval covers a marked block.
+     * <p>
+     * Recovery-created children increase allocation work and can themselves be split again, so the
+     * optimization is limited by
+     * {@link LinearScan.Options#LIROptLSRAMaxBlocksForFastPathRecovery} and
+     * {@link LinearScan.Options#LIROptLSRAMaxFastPathRecoverySplits}. Spill optimization is disabled
+     * for a recovered split family unless the value starts in memory, preventing later spill-store
+     * combining from hoisting the store back onto unaffected paths.
+     */
+    @SuppressWarnings("try")
+    private void splitPressureSpillBeforeFastPath(Interval interval) {
+        if (!allocator.hasFastPathBlocks()) {
+            return;
+        }
+        int maxRecoveryBlocks = LinearScan.Options.LIROptLSRAMaxBlocksForFastPathRecovery.getValue(allocator.getOptions());
+        if (maxRecoveryBlocks <= 0 || allocator.blockCount() > maxRecoveryBlocks) {
+            return;
+        }
+        int maxRecoverySplits = LinearScan.Options.LIROptLSRAMaxFastPathRecoverySplits.getValue(allocator.getOptions());
+        if (fastPathRecoverySplitCount >= maxRecoverySplits) {
+            if (maxRecoverySplits > 0 && !fastPathRecoverySplitLimitReported) {
+                fastPathRecoverySplitLimitReached.increment(allocator.getDebug());
+                fastPathRecoverySplitLimitReported = true;
+            }
+            return;
+        }
+        if (interval.canMaterialize()) {
+            return;
+        }
+        assert LIRValueUtil.isStackSlotValue(interval.location()) : "not a spilled interval: " + interval;
+
+        int splitPos = findFastPathRecoveryPosition(interval);
+        if (splitPos == -1) {
+            return;
+        }
+
+        DebugContext debug = allocator.getDebug();
+        try (Indent indent = debug.logAndIndent("splitting pressure spill %s before fast path at %d", interval, splitPos)) {
+            Interval recovered = splitBeforeUsage(interval, splitPos, splitPos);
+            assert recovered != null : "live interval must continue beyond recovery block";
+            fastPathRecoverySplitCount++;
+            fastPathRecoverySplits.increment(debug);
+            addFastPathRegisterHint(recovered, splitPos);
+            if (interval.spillState() != SpillState.StartInMemory) {
+                /*
+                 * Spill state is shared by all children of a split parent. Combining a later spill
+                 * of the recovered child with the current spill could hoist a store onto paths that
+                 * do not need a stack copy.
+                 */
+                interval.setSpillState(SpillState.NoOptimization);
             }
         }
     }
@@ -622,7 +862,8 @@ class LinearScanWalker extends IntervalWalker {
                         parent = parent.getSplitChildBeforeOpId(parent.from());
 
                         if (isRegister(parent.location())) {
-                            if (parent.firstUsage(RegisterPriority.ShouldHaveRegister) == Integer.MAX_VALUE) {
+                            if (parent.firstUsage(RegisterPriority.ShouldHaveRegister) == Integer.MAX_VALUE &&
+                                            !allocator.intervalCoversFastPathBlock(parent)) {
                                 // parent is never used, so kick it out of its assigned register
                                 if (debug.isLogEnabled()) {
                                     debug.log("kicking out interval %d out of its register because it is never used", parent.operandNumber);
@@ -631,12 +872,17 @@ class LinearScanWalker extends IntervalWalker {
                                 handleSpillSlot(parent);
                                 spillSlotsAssigned.increment(debug);
                             } else {
-                                // do not go further back because the register is actually used by
-                                // the interval
+                                /*
+                                 * Do not propagate the spill through a register child that is used
+                                 * or covers a marked fast-path block. This retains an existing
+                                 * register allocation without requiring later children to use a
+                                 * register.
+                                 */
                                 parent = null;
                             }
                         }
                     }
+                    splitPressureSpillBeforeFastPath(interval);
                 }
 
             } else {
@@ -673,6 +919,7 @@ class LinearScanWalker extends IntervalWalker {
                     // the currentSplitChild is needed later when moves are inserted for reloading
                     assert spilledPart.currentSplitChild() == interval : "overwriting wrong currentSplitChild";
                     spilledPart.makeCurrentSplitChild();
+                    splitPressureSpillBeforeFastPath(spilledPart);
 
                     if (debug.isLogEnabled()) {
                         debug.log("left interval: %s", interval.logString(allocator));
@@ -698,6 +945,9 @@ class LinearScanWalker extends IntervalWalker {
                     if (LinearScan.Options.LIROptLSRAOptimizeSpillPosition.getValue(allocator.getOptions())) {
                         // find best spill position in dominator the tree
                         interval.setSpillState(SpillState.SpillInDominator);
+                    } else if (allocator.splitFamilyCoversFastPathBlock(interval)) {
+                        // Keep the spill store local instead of moving it to the definition.
+                        interval.setSpillState(SpillState.NoOptimization);
                     } else {
                         // store at definition of the interval
                         interval.setSpillState(SpillState.StoreAtDefinition);
@@ -720,6 +970,9 @@ class LinearScanWalker extends IntervalWalker {
                     if (LinearScan.Options.LIROptLSRAOptimizeSpillPosition.getValue(allocator.getOptions())) {
                         // the interval is spilled more then once
                         interval.setSpillState(SpillState.SpillInDominator);
+                    } else if (allocator.splitFamilyCoversFastPathBlock(interval)) {
+                        // Keep the spill stores local instead of moving them to the definition.
+                        interval.setSpillState(SpillState.NoOptimization);
                     } else {
                         // It is better to store it to memory at the definition.
                         interval.setSpillState(SpillState.StoreAtDefinition);
@@ -881,12 +1134,18 @@ class LinearScanWalker extends IntervalWalker {
                 }
             }
 
-            Register hint = null;
-            Interval locationHint = interval.locationHint(true);
-            if (locationHint != null && locationHint.location() != null && isActiveRegister(locationHint)) {
-                hint = asRegister(locationHint.location());
+            Register hint = fastPathRegisterHints == null ? null : fastPathRegisterHints.removeKey(interval);
+            if (hint != null) {
                 if (debug.isLogEnabled()) {
-                    debug.log("hint register %d from interval %s", hint.number, locationHint);
+                    debug.log("fast-path predecessor hint register %d", hint.number);
+                }
+            } else {
+                Interval locationHint = interval.locationHint(true);
+                if (locationHint != null && locationHint.location() != null && isActiveRegister(locationHint)) {
+                    hint = asRegister(locationHint.location());
+                    if (debug.isLogEnabled()) {
+                        debug.log("hint register %d from interval %s", hint.number, locationHint);
+                    }
                 }
             }
             assert interval.location() == null : "register already assigned to interval";
@@ -975,6 +1234,11 @@ class LinearScanWalker extends IntervalWalker {
                 // collect current usage of registers
                 initUseLists(false);
                 spillExcludeActiveFixed();
+                if (registerPriority == RegisterPriority.LiveAtLoopEnd) {
+                    // try to avoid registers used/defined in the current block in the first
+                    // iteration
+                    spillExcludeIntervalsDefinedOrUsedAtCurrentFastPathBlock();
+                }
                 // spillBlockUnhandledFixed(cur);
                 assert unhandledLists.get(RegisterBinding.Fixed).isEndMarker() : "must not have unhandled fixed intervals because all fixed intervals have a use at position 0";
                 spillBlockInactiveFixed(interval);
@@ -1056,7 +1320,6 @@ class LinearScanWalker extends IntervalWalker {
 
             // perform splitting and spilling for all affected intervals
             splitAndSpillIntersectingIntervals(reg);
-            return;
         }
     }
 
@@ -1082,7 +1345,7 @@ class LinearScanWalker extends IntervalWalker {
 
     boolean noAllocationPossible(Interval interval) {
         if (allocator.callKillsRegisters()) {
-            // fast calculation of intervals that can never get a register because the
+            // fast calculation of intervals that can never get a register because
             // the next instruction is a call that blocks all registers
             // Note: this only works if a call kills all registers
 

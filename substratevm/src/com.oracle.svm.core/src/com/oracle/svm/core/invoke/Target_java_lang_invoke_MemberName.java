@@ -34,9 +34,11 @@ import com.oracle.svm.core.annotate.Inject;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
+import com.oracle.svm.core.annotate.TargetElement;
+import com.oracle.svm.core.hub.RuntimeClassLoading.WithRuntimeClassLoading;
 import com.oracle.svm.core.methodhandles.Target_java_lang_invoke_MethodHandleNatives;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 @TargetClass(className = "java.lang.invoke.MemberName")
 public final class Target_java_lang_invoke_MemberName {
@@ -46,7 +48,16 @@ public final class Target_java_lang_invoke_MemberName {
     @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset)//
     public MethodHandleIntrinsic intrinsic;
 
+    /**
+     * This is used by crema to store metadata for the resolved field or method.
+     */
+    @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset)//
+    @TargetElement(onlyWith = WithRuntimeClassLoading.class)//
+    public ResolvedMember resolved;
+
+    @Alias public Class<?> clazz;
     @Alias public String name;
+    @Alias public Object type;
     @Alias public int flags;
     @Alias public Object resolution;
 
@@ -56,6 +67,9 @@ public final class Target_java_lang_invoke_MemberName {
 
     @Alias
     public native boolean isStatic();
+
+    @Alias
+    public native boolean isPrivate();
 
     @Alias
     public native boolean isMethod();
@@ -111,7 +125,7 @@ public final class Target_java_lang_invoke_MemberName {
 final class Target_java_lang_invoke_MemberName_Factory {
     @Substitute
     @SuppressWarnings("static-method")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/b685ea54081fcf54a6567dddb49b63435a6e1ea4/src/java.base/share/classes/java/lang/invoke/MemberName.java#L937-L973")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/b685ea54081fcf54a6567dddb49b63435a6e1ea4/src/java.base/share/classes/java/lang/invoke/MemberName.java#L937-L973")
     private Target_java_lang_invoke_MemberName resolve(byte refKind, Target_java_lang_invoke_MemberName ref, Class<?> lookupClass, int allowedModes,
                     boolean speculativeResolve) {
         Target_java_lang_invoke_MemberName m = ref.clone();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,9 +42,13 @@ package com.oracle.truffle.api.test.polyglot;
 
 import static com.oracle.truffle.api.test.common.AbstractExecutableTestLanguage.evalTestLanguage;
 import static com.oracle.truffle.api.test.common.TestUtils.getDefaultLanguageId;
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -239,6 +243,57 @@ public class PolyglotExceptionTest extends AbstractPolyglotTest {
             } else {
                 throw UnsupportedMessageException.create();
             }
+        }
+    }
+
+    @ExportLibrary(InteropLibrary.class)
+    @SuppressWarnings("serial")
+    static final class TestGuestErrorWithHostObject extends TestGuestError {
+
+        private final Object hostObject;
+
+        TestGuestErrorWithHostObject(Object hostObject) {
+            this.hostObject = hostObject;
+        }
+
+        @ExportMessage
+        @SuppressWarnings("static-method")
+        boolean isHostObject() {
+            return true;
+        }
+
+        @ExportMessage
+        Object asHostObject() {
+            return hostObject;
+        }
+    }
+
+    @Test
+    public void testGuestExceptionWithNonThrowableHostObject() throws IOException {
+        Object hostObject = new Object();
+        CauseErrorTruffleObject throwError = new CauseErrorTruffleObject();
+        throwError.thrownError = new TestGuestErrorWithHostObject(hostObject);
+
+        try (Context testContext = Context.create()) {
+            PolyglotException exception = Assert.assertThrows(PolyglotException.class, () -> testContext.asValue(throwError).execute());
+            assertTrue(exception.isGuestException());
+            assertFalse(exception.isHostException());
+            assertTrue(exception.getGuestObject().isHostObject());
+            assertSame(hostObject, exception.getGuestObject().asHostObject());
+            assertStackTraceStart(exception, PolyglotException.class.getName() + ": MyError");
+        }
+    }
+
+    @Test
+    public void testGuestExceptionWithThrowableHostObject() {
+        RuntimeException hostException = new RuntimeException("Host exception");
+        CauseErrorTruffleObject throwError = new CauseErrorTruffleObject();
+        throwError.thrownError = new TestGuestErrorWithHostObject(hostException);
+
+        try (Context testContext = Context.create()) {
+            PolyglotException exception = Assert.assertThrows(PolyglotException.class, () -> testContext.asValue(throwError).execute());
+            assertTrue(exception.isHostException());
+            assertSame(hostException, exception.asHostException());
         }
     }
 
@@ -526,10 +581,8 @@ public class PolyglotExceptionTest extends AbstractPolyglotTest {
                             assertEquals("testRootName", frame.getRootName());
                         }
                     }
-                    if (TruffleTestAssumptions.isNoIsolateEncapsulation()) { // GR-35913
-                        // No guest stack trace injected into OutOfMemoryError.
-                        assertFalse(foundFrame);
-                    }
+                    // No guest stack trace injected into OutOfMemoryError.
+                    assertFalse(foundFrame);
                 });
             }
         };
@@ -693,9 +746,6 @@ public class PolyglotExceptionTest extends AbstractPolyglotTest {
                         break;
                     }
                     prev = element;
-                    if (TruffleTestAssumptions.isIsolateEncapsulation()) { // GR-35913
-                        break;
-                    }
                 }
                 assertNotNull("No host frame found.", prev);
                 assertEquals(BrokenList.class.getName(), prev.getClassName());
@@ -937,6 +987,30 @@ public class PolyglotExceptionTest extends AbstractPolyglotTest {
                     out.writeObject(polyglotExceptionHolder.get());
                     return null;
                 }, NotSerializableException.class);
+            }
+        }
+    }
+
+    @Test
+    public void testCause() {
+        try (Context ctx = Context.create()) {
+            try {
+                ctx.eval(ITL_ID, "ROOT(THROW(a,\"an error with no cause\"))");
+            } catch (PolyglotException e) {
+                assertTrue("Expected a guest exception", e.isGuestException());
+                assertThat(e.getMessage(), containsString("an error with no cause"));
+                assertNull(e.getCause());
+            }
+
+            try {
+                ctx.eval(ITL_ID, "ROOT(THROW(with_cause,\"an error with cause\"))");
+            } catch (PolyglotException e) {
+                assertTrue("Expected a guest exception", e.isGuestException());
+                assertThat(e.getMessage(), containsString("an error with cause"));
+                Throwable cause = e.getCause();
+                assertThat(cause, instanceOf(PolyglotException.class));
+                PolyglotException polyglotCause = (PolyglotException) cause;
+                assertTrue("Expected a guest cause", polyglotCause.isGuestException());
             }
         }
     }

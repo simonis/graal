@@ -30,7 +30,6 @@ import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.java.MethodCallTargetNode;
 import jdk.graal.compiler.nodes.loop.CountedLoopInfo;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
-import jdk.graal.compiler.phases.VerifyPhase;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -49,6 +48,7 @@ public class VerifyLoopInfo extends VerifyPhase<CoreProviders> {
         allowedCallers.add("getBodyIVEqualsLimitCheckedIV");
         allowedCallers.add("getBodyIVExitValue");
         allowedCallers.add("getBodyIVExtremum");
+        allowedCallers.add("toString");
     }
 
     @Override

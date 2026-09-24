@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -302,7 +302,8 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         if (NumUtil.isInt(src)) {
             emitAMD64MIOp(AMD64MIOp.MOV, OperandSize.QWORD, dst, (int) src, false);
         } else {
-            AMD64Address high = new AMD64Address(dst.getBase(), dst.getIndex(), dst.getScale(), dst.getDisplacement() + 4, dst.getDisplacementAnnotation(), dst.instructionStartPosition);
+            AMD64Address high = new AMD64Address(dst.getBase(), dst.getIndex(), dst.getScale(), dst.getDisplacement() + 4, dst.getDisplacementAnnotation(), dst.instructionStartPosition,
+                            dst.canSkipMemoryReadFence());
             movl(dst, (int) (src & 0xFFFFFFFF));
             movl(high, (int) (src >> 32));
         }
@@ -609,6 +610,30 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     /**
      * See {@link #applyMIOpAndJcc}.
      */
+    private int applyMROpAndJcc(AMD64MROp op, OperandSize size, AMD64Address dst, Register src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(!rip.equals(dst.getBase()), "RIP-relative memory operand cannot be fused");
+        /*
+         * The extra bytes introduced by MemoryReadInterceptor are also included in the fused pair
+         * size, which may lead to imprecision. However, this does not affect the correctness of the
+         * Intel JCC erratum, as it ensures that both the instrumented logic and the fused pair
+         * remain within the 32-byte boundary. If the total size exceeds 32 bytes, the assertion in
+         * alignFusedPair will detect it.
+         */
+        final int bytesToEmit = getPrefixInBytes(size, src, op.srcIsByte, dst) + OPCODE_IN_BYTES + addressInBytes(dst) +
+                        (op.isMemRead() ? extraSourceAddressBytes(dst) : 0);
+        alignFusedPair(branchTarget, isShortJmp, bytesToEmit);
+        final int beforeFusedPair = position();
+        op.emit(this, size, dst, src);
+        final int beforeJcc = position();
+        assert beforeFusedPair + bytesToEmit == beforeJcc : Assertions.errorMessage(beforeFusedPair, bytesToEmit, beforeJcc);
+        jcc(cc, branchTarget, isShortJmp);
+        assert ensureWithinBoundary(beforeFusedPair);
+        return beforeJcc;
+    }
+
+    /**
+     * See {@link #applyMIOpAndJcc}.
+     */
     public int applyMOpAndJcc(AMD64MOp op, OperandSize size, Register dst, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         final int bytesToEmit = getPrefixInBytes(size, dst, op.srcIsByte) + OPCODE_IN_BYTES + MODRM_IN_BYTES;
         alignFusedPair(branchTarget, isShortJmp, bytesToEmit);
@@ -713,6 +738,11 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final int cmplAndJcc(Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
         GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
         return applyRMOpAndJcc(AMD64BinaryArithmetic.CMP.getRMOpcode(OperandSize.DWORD), OperandSize.DWORD, src1, src2, cc, branchTarget, isShortJmp, null);
+    }
+
+    public final int cmplAndJcc(AMD64Address dst, Register src, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
+        GraalError.guarantee(canBeFusedWithAddSubCmp(cc), "cmp cannot be fused with JCC on %s", cc);
+        return applyMROpAndJcc(AMD64BinaryArithmetic.CMP.getMROpcode(OperandSize.DWORD), OperandSize.DWORD, dst, src, cc, branchTarget, isShortJmp);
     }
 
     public final int cmpqAndJcc(Register src1, AMD64Address src2, ConditionFlag cc, Label branchTarget, boolean isShortJmp) {
@@ -873,12 +903,13 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pmovSZxQWORD(ExtendMode extendMode, Register dst, Stride strideDst, Register src, Stride strideSrc, Register index, int displacement) {
         int scaledDisplacement = scaleDisplacement(strideDst, strideSrc, displacement);
+        GraalError.guarantee(inRC(AMD64.CPU, src), "expect CPU register as src base register: %s", src);
         AMD64Address address = new AMD64Address(src, index, strideSrc, scaledDisplacement);
 
         if (strideSrc.value < strideDst.value) {
             GraalError.guarantee(strideDst.log2 - strideSrc.log2 == 1, "unsupported stride pair %s %s", strideSrc, strideDst);
             if (isAVX()) {
-                VexMoveOp.VMOVD.emit(this, AVXKind.AVXSize.XMM, dst, address);
+                VexMoveOp.VMOVD.encoding(avxEncoding).emit(this, AVXKind.AVXSize.XMM, dst, address);
                 loadAndExtendAVX(AVXKind.AVXSize.QWORD, extendMode, dst, strideDst, dst, strideSrc);
             } else {
                 movdl(dst, address);
@@ -887,7 +918,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         } else {
             GraalError.guarantee(strideSrc.value == strideDst.value, "source stride must be smaller or equal to target stride");
             if (isAVX()) {
-                VexMoveOp.VMOVQ.emit(this, AVXKind.AVXSize.XMM, dst, address);
+                VexMoveOp.VMOVQ.encoding(avxEncoding).emit(this, AVXKind.AVXSize.XMM, dst, address);
             } else {
                 movdq(dst, address);
             }
@@ -915,6 +946,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
         int scaledDisplacement = scaleDisplacement(strideDst, strideSrc, displacement);
         AMD64Address address = new AMD64Address(src, index, strideSrc, scaledDisplacement);
+        GraalError.guarantee(inRC(AMD64.CPU, src), "expect CPU register as src base register: %s", src);
         pmovSZx(size, extendMode, dst, strideDst, address, strideSrc);
     }
 
@@ -950,7 +982,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pmovmsk(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRMOp.VPMOVMSKB.emit(this, size, dst, src);
+            VexRMOp.VPMOVMSKB.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             pmovmskb(dst, src);
         }
@@ -959,7 +991,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -968,7 +1000,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, AMD64Address dst, Register src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -977,7 +1009,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     public final void movdqu(AVXKind.AVXSize size, Register dst, Register src) {
         GraalError.guarantee(size == AVXKind.AVXSize.XMM || size == AVXKind.AVXSize.YMM, "unsupported AVXSize %s", size);
         if (isAVX()) {
-            VexMoveOp.VMOVDQU32.emit(this, size, dst, src);
+            VexMoveOp.VMOVDQU32.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(dst, src);
         }
@@ -1005,7 +1037,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqw(AVXKind.AVXSize vectorSize, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQW.emit(this, vectorSize, dst, src, dst);
+            VexRVMOp.VPCMPEQW.encoding(avxEncoding).emit(this, vectorSize, dst, src, dst);
         } else { // SSE
             pcmpeqw(dst, src);
         }
@@ -1013,7 +1045,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqd(AVXKind.AVXSize vectorSize, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQD.emit(this, vectorSize, dst, src, dst);
+            VexRVMOp.VPCMPEQD.encoding(avxEncoding).emit(this, vectorSize, dst, src, dst);
         } else { // SSE
             pcmpeqd(dst, src);
         }
@@ -1021,7 +1053,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqb(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQB.emit(this, size, dst, src, dst);
+            VexRVMOp.VPCMPEQB.encoding(avxEncoding).emit(this, size, dst, src, dst);
         } else { // SSE
             pcmpeqb(dst, src);
         }
@@ -1049,7 +1081,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqb(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqb(dst, src);
         }
@@ -1057,7 +1089,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqw(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQW.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQW.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqw(dst, src);
         }
@@ -1065,7 +1097,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpeqd(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPEQD.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPEQD.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpeqd(dst, src);
         }
@@ -1073,7 +1105,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpgtb(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPGTB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPGTB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpgtb(dst, src);
         }
@@ -1081,7 +1113,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pcmpgtd(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPCMPGTD.emit(this, size, dst, dst, src);
+            VexRVMOp.VPCMPGTD.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else { // SSE
             pcmpgtd(dst, src);
         }
@@ -1117,7 +1149,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     private void simdRVMOp(VexRVMOp avxOp, SSEOp sseOp, AVXKind.AVXSize vectorSize, Register dst, Register src1, Register src2, boolean isCommutative) {
         if (isAVX()) {
-            avxOp.emit(this, vectorSize, dst, src1, src2);
+            avxOp.encoding(avxEncoding).emit(this, vectorSize, dst, src1, src2);
         } else {
             threeVectorOpSSE(sseOp, dst, src1, src2, isCommutative);
         }
@@ -1148,11 +1180,11 @@ public class AMD64MacroAssembler extends AMD64Assembler {
     }
 
     public final void loadAndExtendAVX(AVXKind.AVXSize size, ExtendMode extendMode, Register dst, Stride strideDst, Register src, Stride strideSrc) {
-        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).emit(this, size, dst, src);
+        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).encoding(avxEncoding).emit(this, size, dst, src);
     }
 
     public final void loadAndExtendAVX(AVXKind.AVXSize size, ExtendMode extendMode, Register dst, Stride strideDst, AMD64Address src, Stride strideSrc) {
-        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).emit(this, size, dst, src);
+        getAVXLoadAndExtendOp(strideDst, strideSrc, extendMode).encoding(avxEncoding).emit(this, size, dst, src);
     }
 
     private static VexRMOp getAVXLoadAndExtendOp(Stride strideDst, Stride strideSrc, ExtendMode extendMode) {
@@ -1303,6 +1335,14 @@ public class AMD64MacroAssembler extends AMD64Assembler {
         simdRVMOp(VexRVMOp.VPACKUSWB, SSEOp.PACKUSWB, size, dst, src1, src2, false);
     }
 
+    public final void packssdw(AVXKind.AVXSize size, Register dst, Register src) {
+        packssdw(size, dst, dst, src);
+    }
+
+    public final void packssdw(AVXKind.AVXSize size, Register dst, Register src1, Register src2) {
+        simdRVMOp(VexRVMOp.VPACKSSDW, SSEOp.PACKSSDW, size, dst, src1, src2, false);
+    }
+
     public final void packusdw(AVXKind.AVXSize size, Register dst, Register src) {
         packusdw(size, dst, dst, src);
     }
@@ -1317,7 +1357,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void palignr(AVXKind.AVXSize size, Register dst, Register src1, Register src2, int imm8) {
         if (isAVX()) {
-            VexRVMIOp.VPALIGNR.emit(this, size, dst, src1, src2, imm8);
+            VexRVMIOp.VPALIGNR.encoding(avxEncoding).emit(this, size, dst, src1, src2, imm8);
         } else {
             // SSE
             if (!dst.equals(src1)) {
@@ -1333,7 +1373,19 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pand(AVXKind.AVXSize size, Register dst, Register src1, Register src2) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, src1, src2);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, src1, src2);
+        } else {
+            // SSE
+            if (!dst.equals(src1)) {
+                movdqu(dst, src1);
+            }
+            pand(dst, src2);
+        }
+    }
+
+    public final void pand(AVXKind.AVXSize size, Register dst, Register src1, AMD64Address src2) {
+        if (isAVX()) {
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, src1, src2);
         } else {
             // SSE
             if (!dst.equals(src1)) {
@@ -1345,7 +1397,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pand(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, dst, src);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pand(dst, src);
@@ -1357,7 +1409,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
      */
     public final void pandU(AVXKind.AVXSize size, Register dst, AMD64Address src, Register tmp) {
         if (isAVX()) {
-            VexRVMOp.VPAND.emit(this, size, dst, dst, src);
+            VexRVMOp.VPAND.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             movdqu(tmp, src);
@@ -1367,7 +1419,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pandn(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPANDN.emit(this, size, dst, dst, src);
+            VexRVMOp.VPANDN.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pandn(dst, src);
@@ -1376,7 +1428,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void por(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRVMOp.VPOR.emit(this, size, dst, dst, src);
+            VexRVMOp.VPOR.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             por(dst, src);
         }
@@ -1388,7 +1440,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pxor(AVXKind.AVXSize size, Register dst, Register src1, Register src2) {
         if (isAVX()) {
-            VexRVMOp.VPXOR.emit(this, size, dst, src1, src2);
+            VexRVMOp.VPXOR.encoding(avxEncoding).emit(this, size, dst, src1, src2);
         } else {
             if (!dst.equals(src1)) {
                 movdqu(dst, src1);
@@ -1399,7 +1451,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psllw(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSLLW.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSLLW.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1411,7 +1463,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psrlw(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSRLW.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSRLW.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1423,7 +1475,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pslld(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSLLD.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSLLD.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1435,7 +1487,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void psrld(AVXKind.AVXSize size, Register dst, Register src, int imm8) {
         if (isAVX()) {
-            VexShiftOp.VPSRLD.emit(this, size, dst, src, imm8);
+            VexShiftOp.VPSRLD.encoding(avxEncoding).emit(this, size, dst, src, imm8);
         } else {
             // SSE
             if (!dst.equals(src)) {
@@ -1455,7 +1507,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void pshufb(AVXKind.AVXSize size, Register dst, AMD64Address src) {
         if (isAVX()) {
-            VexRVMOp.VPSHUFB.emit(this, size, dst, dst, src);
+            VexRVMOp.VPSHUFB.encoding(avxEncoding).emit(this, size, dst, dst, src);
         } else {
             // SSE
             pshufb(dst, src);
@@ -1464,7 +1516,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
 
     public final void ptest(AVXKind.AVXSize size, Register dst, Register src) {
         if (isAVX()) {
-            VexRMOp.VPTEST.emit(this, size, dst, src);
+            VexRMOp.VPTEST.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             ptest(dst, src);
         }
@@ -1475,7 +1527,7 @@ public class AMD64MacroAssembler extends AMD64Assembler {
      */
     public final void ptestU(AVXKind.AVXSize size, Register dst, AMD64Address src, Register tmp) {
         if (isAVX()) {
-            VexRMOp.VPTEST.emit(this, size, dst, src);
+            VexRMOp.VPTEST.encoding(avxEncoding).emit(this, size, dst, src);
         } else {
             movdqu(tmp, src);
             ptest(dst, tmp);

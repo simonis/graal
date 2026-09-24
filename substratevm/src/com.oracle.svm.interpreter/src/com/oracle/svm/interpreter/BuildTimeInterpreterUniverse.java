@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -48,13 +48,13 @@ import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.util.HostedStringDeduplication;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
@@ -72,6 +72,9 @@ import com.oracle.svm.interpreter.metadata.InterpreterUniverseImpl;
 import com.oracle.svm.interpreter.metadata.InterpreterUnresolvedSignature;
 import com.oracle.svm.interpreter.metadata.MetadataUtil;
 import com.oracle.svm.interpreter.metadata.ReferenceConstant;
+import com.oracle.svm.interpreter.metadata.RuntimeLoadedClassHierarchy;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.OriginalClassProvider;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.vm.ci.meta.ExceptionHandler;
@@ -144,7 +147,8 @@ public final class BuildTimeInterpreterUniverse {
         String name = universe.dedup(resolvedJavaType.getName());
         Class<?> clazz = OriginalClassProvider.getJavaClass(resolvedJavaType);
         ResolvedJavaType originalType = MetadataUtil.requireNonNull(resolvedJavaType);
-        int modifiers = resolvedJavaType.getModifiers();
+        // Substituted classes can use a package-private target holder even when the original class is public.
+        int modifiers = OriginalClassProvider.getOriginalType(resolvedJavaType).getModifiers();
         InterpreterResolvedJavaType componentType;
         if (originalType.isArray()) {
             componentType = universe.getOrCreateType(originalType.getComponentType());
@@ -189,7 +193,7 @@ public final class BuildTimeInterpreterUniverse {
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public static InterpreterResolvedJavaMethod createResolveJavaMethod(ResolvedJavaMethod originalMethod) {
+    public static InterpreterResolvedJavaMethod createResolveJavaMethod(ResolvedJavaMethod originalMethod, boolean retainMethodCode) {
         assert originalMethod instanceof AnalysisMethod;
         MetadataUtil.requireNonNull(originalMethod);
         BuildTimeInterpreterUniverse universe = BuildTimeInterpreterUniverse.singleton();
@@ -199,11 +203,13 @@ public final class BuildTimeInterpreterUniverse {
         int modifiers = originalMethod.getModifiers();
         InterpreterResolvedObjectType declaringClass = universe.referenceType(originalMethod.getDeclaringClass());
         InterpreterUnresolvedSignature signature = universe.unresolvedSignature(originalMethod.getSignature());
-        byte[] interpretedCode = originalMethod.getCode() == null ? null : originalMethod.getCode().clone();
+        byte[] interpretedCode = retainMethodCode && originalMethod.getCode() != null ? originalMethod.getCode().clone() : null;
 
+        boolean isSubstitutedNative = false;
         AnalysisMethod analysisMethod = (AnalysisMethod) originalMethod;
         if (analysisMethod.wrapped instanceof SubstitutionMethod substitutionMethod) {
             modifiers = substitutionMethod.getOriginal().getModifiers();
+            isSubstitutedNative = Modifier.isNative(modifiers);
             if (substitutionMethod.hasBytecodes()) {
                 /*
                  * GR-53710: Keep bytecodes for substitutions, but only when there's no compiled
@@ -215,21 +221,22 @@ public final class BuildTimeInterpreterUniverse {
             }
         }
 
-        LineNumberTable lineNumberTable = originalMethod.getLineNumberTable();
-        return InterpreterResolvedJavaMethod.create(
-                        originalMethod,
+        LineNumberTable lineNumberTable = retainMethodCode ? originalMethod.getLineNumberTable() : null;
+        return InterpreterResolvedJavaMethod.createAtBuildTime(
+                        analysisMethod,
                         name,
                         maxLocals,
                         maxStackSize,
                         modifiers,
                         declaringClass,
                         signature,
+                        isSubstitutedNative,
                         interpretedCode,
                         null,
                         lineNumberTable,
                         null,
                         null,
-                        InterpreterResolvedJavaMethod.VTBL_NO_ENTRY,
+                        InterpreterResolvedJavaMethod.VTBL_UNINITIALIZED,
                         GOTEntryAllocator.GOT_NO_ENTRY,
                         InterpreterResolvedJavaMethod.EST_NO_ENTRY,
                         InterpreterResolvedJavaMethod.UNKNOWN_METHOD_ID);
@@ -325,7 +332,7 @@ public final class BuildTimeInterpreterUniverse {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public static void setUnmaterializedConstantValue(InterpreterResolvedJavaField thiz, JavaConstant constant) {
-        assert constant == JavaConstant.NULL_POINTER || constant instanceof PrimitiveConstant || constant instanceof ImageHeapConstant;
+        assert constant.equals(JavaConstant.NULL_POINTER) || constant instanceof PrimitiveConstant || constant instanceof ImageHeapConstant;
         BuildTimeInterpreterUniverse buildTimeInterpreterUniverse = BuildTimeInterpreterUniverse.singleton();
         switch (thiz.getJavaKind()) {
             case Boolean, Byte, Short, Char, Int, Float, Long, Double:
@@ -355,7 +362,7 @@ public final class BuildTimeInterpreterUniverse {
         }
         if (!thiz.isUndefined()) {
             if (thiz.isWordStorage()) {
-                VMError.guarantee(thiz.getUnmaterializedConstant().getJavaKind() == InterpreterToVM.wordJavaKind());
+                VMError.guarantee(thiz.getUnmaterializedConstant().getJavaKind() == SubstrateTarget.getWordKind());
             } else {
                 VMError.guarantee(thiz.getUnmaterializedConstant().getJavaKind() == thiz.getJavaKind());
             }
@@ -503,6 +510,9 @@ public final class BuildTimeInterpreterUniverse {
             return previous;
         }
 
+        if (SubstrateOptions.useRistretto() && result instanceof InterpreterResolvedObjectType objectType) {
+            RuntimeLoadedClassHierarchy.registerImageType(objectType);
+        }
         InterpreterUtil.log("[universe] Adding type '%s'", resolvedJavaType);
         return result;
     }
@@ -541,15 +551,16 @@ public final class BuildTimeInterpreterUniverse {
         return methods.get(wrapped);
     }
 
-    public InterpreterResolvedJavaMethod getOrCreateMethod(ResolvedJavaMethod resolvedJavaMethod) {
+    public InterpreterResolvedJavaMethod getOrCreateMethod(ResolvedJavaMethod resolvedJavaMethod, boolean retainMethodCode) {
         assert resolvedJavaMethod instanceof AnalysisMethod;
         InterpreterResolvedJavaMethod result = getMethod(resolvedJavaMethod);
 
         if (result != null) {
+            ensureMethodCodeRetained(result, resolvedJavaMethod, retainMethodCode);
             return result;
         }
 
-        result = createResolveJavaMethod(resolvedJavaMethod);
+        result = createResolveJavaMethod(resolvedJavaMethod, retainMethodCode);
 
         InterpreterResolvedJavaMethod previous = methods.putIfAbsent(resolvedJavaMethod, result);
         if (previous != null) {
@@ -561,12 +572,19 @@ public final class BuildTimeInterpreterUniverse {
     }
 
     public InterpreterResolvedJavaMethod getOrCreateMethodWithMethodBody(ResolvedJavaMethod resolvedJavaMethod, MetaAccessProvider metaAccessProvider) {
-        InterpreterResolvedJavaMethod result = getOrCreateMethod(resolvedJavaMethod);
+        InterpreterResolvedJavaMethod result = getOrCreateMethod(resolvedJavaMethod, true);
 
         /* added explicitly, bytecodes are needed for interpretation */
         setNeedMethodBody(result, true, metaAccessProvider);
 
         return result;
+    }
+
+    private static void ensureMethodCodeRetained(InterpreterResolvedJavaMethod method, ResolvedJavaMethod resolvedJavaMethod, boolean retainMethodCode) {
+        if (!retainMethodCode || method.getInterpretedCode() != null || resolvedJavaMethod.getCode() == null) {
+            return;
+        }
+        method.setCode(resolvedJavaMethod.getCode().clone());
     }
 
     public JavaConstant weakObjectConstant(ImageHeapConstant imageHeapConstant) {
@@ -751,7 +769,7 @@ public final class BuildTimeInterpreterUniverse {
     }
 
     static boolean isReachable(InterpreterResolvedJavaMethod method) {
-        AnalysisMethod originalMethod = (AnalysisMethod) method.getOriginalMethod();
+        AnalysisMethod originalMethod = method.getOriginalMethod();
         return originalMethod.isReachable() && originalMethod.getDeclaringClass().isReachable();
     }
 
@@ -790,7 +808,7 @@ public final class BuildTimeInterpreterUniverse {
             }
 
             if (!isReachable(interpreterMethod)) {
-                AnalysisMethod analysisMethod = (AnalysisMethod) interpreterMethod.getOriginalMethod();
+                AnalysisMethod analysisMethod = interpreterMethod.getOriginalMethod();
                 boolean isRoot = analysisMethod.isDirectRootMethod() || analysisMethod.isVirtualRootMethod() || analysisMethod.isInvoked();
                 int implementations = analysisMethod.collectMethodImplementations(true).size();
                 if (!isRoot && (next.getValue().isStatic() || implementations <= 1)) {
@@ -937,7 +955,7 @@ public final class BuildTimeInterpreterUniverse {
                 iVTable[i] = getMethod(hostedDispatchTable[i].getWrapped());
             }
         }
-        objectType.setVtable(iVTable);
+        objectType.setVtable(iVTable, hostedType.getInterpreterClassVTableLength());
         rescanFieldInHeap.accept(objectType);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,22 +24,36 @@
  */
 package com.oracle.svm.interpreter.metadata;
 
-import java.lang.annotation.Annotation;
+import static com.oracle.svm.espresso.classfile.Constants.ACC_HIDDEN;
+import static com.oracle.svm.espresso.classfile.Constants.ACC_STABLE;
+import static com.oracle.svm.espresso.classfile.Constants.JVM_RECOGNIZED_FIELD_MODIFIERS;
+
 import java.lang.reflect.Modifier;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.graal.pointsto.meta.AnalysisField;
+import com.oracle.svm.core.SubstrateMetadata;
 import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.invoke.ResolvedMember;
+import com.oracle.svm.core.meta.SharedField;
+import com.oracle.svm.core.stack.StackOverflowCheck;
+import com.oracle.svm.espresso.classfile.ClassfileParser;
+import com.oracle.svm.espresso.classfile.Constants;
 import com.oracle.svm.espresso.classfile.descriptors.Name;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.classfile.descriptors.Type;
 import com.oracle.svm.espresso.classfile.descriptors.TypeSymbols;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.GuestAnnotationAccess;
 
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.vm.ci.meta.JavaConstant;
@@ -49,16 +63,24 @@ import jdk.vm.ci.meta.PrimitiveConstant;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.UnresolvedJavaType;
 
-public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFieldAccess {
+public class InterpreterResolvedJavaField extends InterpreterAnnotated implements ResolvedJavaField, CremaFieldAccess, CremaResolvedMember, ResolvedMember, SubstrateMetadata {
     public static final InterpreterResolvedJavaField[] EMPTY_ARRAY = new InterpreterResolvedJavaField[0];
 
     // Special offset values
+    private static final int FIELD_NOT_INCLUDED = SharedField.LOC_UNINITIALIZED;
+    /**
+     * Typically used as offset for static fields that are part of the image but are not
+     * materialized because all their usages have been inlined.
+     * <p>
+     * This must be synchronized with {@code HostedField.LOC_UNMATERIALIZED_STATIC_CONSTANT}.
+     */
     private static final int FIELD_UNMATERIALIZED = -10;
     private static final int OFFSET_UNINITIALIZED = -11;
 
-    private final int modifiers;
+    private final int flags;
     private final Symbol<Name> name;
     private final Symbol<Type> typeSymbol;
+    private final JavaKind javaKind;
 
     // Computed after analysis.
     private int offset;
@@ -82,15 +104,21 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
      */
     @Platforms(Platform.HOSTED_ONLY.class) private boolean artificiallyReachable;
 
+    // TODO move to crema once GR-71517 is resolved
+    private volatile ResolvedJavaField ristrettoField;
+    private static final AtomicReferenceFieldUpdater<InterpreterResolvedJavaField, ResolvedJavaField> RISTRETTO_FIELD_UPDATER = AtomicReferenceFieldUpdater
+                    .newUpdater(InterpreterResolvedJavaField.class, ResolvedJavaField.class, "ristrettoField");
+
     protected InterpreterResolvedJavaField(
-                    Symbol<Name> name, Symbol<Type> typeSymbol, int modifiers,
+                    Symbol<Name> name, Symbol<Type> typeSymbol, int flags,
                     InterpreterResolvedJavaType resolvedType, InterpreterResolvedObjectType declaringClass,
                     int offset,
                     JavaConstant constant,
                     boolean isWordStorage) {
         this.name = MetadataUtil.requireNonNull(name);
         this.typeSymbol = MetadataUtil.requireNonNull(typeSymbol);
-        this.modifiers = modifiers;
+        this.javaKind = CremaTypeAccess.symbolToJvmciKind(typeSymbol);
+        this.flags = flags;
         this.declaringClass = MetadataUtil.requireNonNull(declaringClass);
         this.offset = offset;
         this.constantValue = constant;
@@ -100,7 +128,7 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
             // Primitive types are trivially resolved.
             this.resolvedType = InterpreterResolvedPrimitiveType.fromKind(CremaTypeAccess.symbolToJvmciKind(typeSymbol));
         }
-        this.layerNum = NumUtil.safeToByte(Modifier.isStatic(modifiers) /*- Prevents 'this-escape' warning. */
+        this.layerNum = NumUtil.safeToByte(Modifier.isStatic(flags) /*- Prevents 'this-escape' warning. */
                         ? MultiLayeredImageSingleton.LAYER_NUM_UNINSTALLED
                         : MultiLayeredImageSingleton.NONSTATIC_FIELD_LAYER_NUMBER);
     }
@@ -109,8 +137,11 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
     public static InterpreterResolvedJavaField createAtBuildTime(AnalysisField originalField, InterpreterResolvedObjectType declaringClass) {
         Symbol<Name> nameSymbol = SymbolsSupport.getNames().getOrCreate(originalField.getName());
         Symbol<Type> typeSymbol = CremaTypeAccess.jvmciNameToType(originalField.getType().getName());
+        boolean isStable = GuestAnnotationAccess.isAnnotationPresent(originalField, jdk.internal.vm.annotation.Stable.class);
+        boolean isHidden = originalField.isInternal();
+        int flags = createFlags(originalField.getModifiers(), isStable, isHidden);
         InterpreterResolvedJavaField field = new InterpreterResolvedJavaField(
-                        nameSymbol, typeSymbol, originalField.getModifiers(),
+                        nameSymbol, typeSymbol, flags,
                         /*- resolvedType */ null,
                         declaringClass,
                         OFFSET_UNINITIALIZED,
@@ -120,7 +151,11 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
         return field;
     }
 
-    public static InterpreterResolvedJavaField createForInterpreter(String name, int modifiers,
+    private static int createFlags(int modifiers, boolean isStable, boolean isHidden) {
+        return modifiers | (isStable ? ACC_STABLE : 0) | (isHidden ? ACC_HIDDEN : 0);
+    }
+
+    public static InterpreterResolvedJavaField createForInterpreter(String name, int flags,
                     JavaType type, InterpreterResolvedObjectType declaringClass,
                     int offset,
                     JavaConstant constant,
@@ -131,7 +166,7 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
         Symbol<Name> nameSymbol = SymbolsSupport.getNames().getOrCreate(name);
         InterpreterResolvedJavaType resolvedType = type instanceof InterpreterResolvedJavaType ? (InterpreterResolvedJavaType) type : null;
         Symbol<Type> symbolicType = resolvedType == null ? CremaTypeAccess.jvmciNameToType(type.getName()) : resolvedType.getSymbolicType();
-        InterpreterResolvedJavaField result = new InterpreterResolvedJavaField(nameSymbol, symbolicType, modifiers, resolvedType, declaringClass, offset, constant, isWordStorage);
+        InterpreterResolvedJavaField result = new InterpreterResolvedJavaField(nameSymbol, symbolicType, flags, resolvedType, declaringClass, offset, constant, isWordStorage);
         if (result.isStatic()) {
             result.layerNum = NumUtil.safeToByte(layerNum);
         }
@@ -155,18 +190,45 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
         this.constantValue = constant;
     }
 
+    public ResolvedJavaField getRistrettoField(Function<InterpreterResolvedJavaField, ResolvedJavaField> ristrettoFieldSupplier) {
+        if (this.ristrettoField != null) {
+            return this.ristrettoField;
+        }
+        /*
+         * We allow concurrent allocation of a ristretto field per interpreter field. Eventually
+         * however we CAS on the pointer in the interpreter representation, if another thread was
+         * faster return its field.
+         */
+        return getOrSetRistrettoField(ristrettoFieldSupplier.apply(this));
+    }
+
+    private ResolvedJavaField getOrSetRistrettoField(ResolvedJavaField newRistrettoField) {
+        if (RISTRETTO_FIELD_UPDATER.compareAndSet(this, null, newRistrettoField)) {
+            return newRistrettoField;
+        }
+        var field = this.ristrettoField;
+        assert field != null : "If CAS for null fails must have written a field already";
+        return field;
+    }
+
     public final boolean isUnmaterializedConstant() {
         return this.offset == FIELD_UNMATERIALIZED;
     }
 
     /**
      * A field is undefined when it is unmaterialized, and the value is not preserved for the
-     * interpreter. Examples of undefined fields include: {@link jdk.graal.compiler.word.Word}
-     * subtypes, {@link DynamicHub}'s vtable.
+     * interpreter, or if the field is otherwise not part of the image. Examples of undefined fields
+     * include: {@link Word} subtypes, {@link DynamicHub}'s vtable.
      */
     public final boolean isUndefined() {
-        return this.isUnmaterializedConstant() &&
-                        this.getUnmaterializedConstant().getJavaKind() == JavaKind.Illegal;
+        if (offset == FIELD_NOT_INCLUDED) {
+            return true;
+        }
+        if (isUnmaterializedConstant()) {
+            JavaConstant constant = getUnmaterializedConstant();
+            return constant == null || constant.getJavaKind() == JavaKind.Illegal;
+        }
+        return false;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -192,7 +254,7 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
 
     @Override
     public final int getModifiers() {
-        return modifiers;
+        return flags & JVM_RECOGNIZED_FIELD_MODIFIERS;
     }
 
     @Override
@@ -236,7 +298,7 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
 
     @Override
     public final JavaKind getJavaKind() {
-        return CremaTypeAccess.symbolToJvmciKind(getSymbolicType());
+        return javaKind;
     }
 
     public final boolean isWordStorage() {
@@ -258,7 +320,7 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
         // stored in the image heap.
         // Also take into account WordBase types, which have an Object kind, but the constantValue
         // is a long.
-        assert (isWordStorage()) || constantValue == JavaConstant.ILLEGAL || getJavaKind() == constantValue.getJavaKind();
+        assert (isWordStorage()) || constantValue == null || constantValue.equals(JavaConstant.ILLEGAL) || getJavaKind() == constantValue.getJavaKind();
         return constantValue;
     }
 
@@ -301,17 +363,30 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
 
     @Override
     public final boolean shouldEnforceInitializerCheck() {
-        throw VMError.unimplemented("shouldEnforceInitializerCheck");
+        // Match HotSpot's bytecode rule: enforce final-field initializer writes for Java 9+ class
+        // files.
+        return getDeclaringClass().getConstantPool().getMajorVersion() >= ClassfileParser.JAVA_9_VERSION;
     }
 
     @Override
-    public final boolean accessChecks(InterpreterResolvedJavaType accessingClass, InterpreterResolvedJavaType holderClass) {
-        throw VMError.unimplemented("accessChecks");
-    }
+    public final void loadingConstraints(InterpreterResolvedJavaType accessingClass) {
+        /*
+         * Loading-constraint checks can update shared VM state and therefore must not be interrupted
+         * by a StackOverflowError. Make the yellow zone available before doing any constraint work
+         * so a check that starts near the regular stack boundary can finish. No application code is
+         * invoked while the yellow zone is available.
+         */
+        StackOverflowCheck.singleton().makeYellowZoneAvailable();
+        try {
+            ClassLoader loader1 = accessingClass.getClassLoader();
+            ClassLoader loader2 = getDeclaringClass().getClassLoader();
 
-    @Override
-    public final void loadingConstraints(InterpreterResolvedJavaType accessingClass, Function<String, RuntimeException> errorHandler) {
-        throw VMError.unimplemented("loadingConstraints");
+            if (loader1 != loader2) {
+                CremaSupport.singleton().checkLoadingConstraint(getSymbolicType(), loader1, loader2);
+            }
+        } finally {
+            StackOverflowCheck.singleton().protectYellowZone();
+        }
     }
 
     @Override
@@ -321,22 +396,12 @@ public class InterpreterResolvedJavaField implements ResolvedJavaField, CremaFie
 
     @Override
     public final boolean isSynthetic() {
-        throw VMError.intentionallyUnimplemented();
+        return (flags & Constants.ACC_SYNTHETIC) != 0;
     }
 
-    @Override
-    public final <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
-        throw VMError.intentionallyUnimplemented();
-    }
-
-    @Override
-    public final Annotation[] getAnnotations() {
-        throw VMError.intentionallyUnimplemented();
-    }
-
-    @Override
-    public final Annotation[] getDeclaredAnnotations() {
-        throw VMError.intentionallyUnimplemented();
+    public final boolean isTrustedFinal() {
+        SubstrateUtil.guaranteeRuntimeOnly();
+        return isFinal() && (isStatic() || Record.class.isAssignableFrom(getDeclaringClass().getJavaClass()) || getDeclaringClass().isHidden());
     }
 
     // endregion Unimplemented methods

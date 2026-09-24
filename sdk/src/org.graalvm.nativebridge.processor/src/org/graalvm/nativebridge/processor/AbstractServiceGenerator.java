@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,7 +40,6 @@
  */
 package org.graalvm.nativebridge.processor;
 
-import org.graalvm.nativebridge.processor.AbstractBridgeParser.AbstractTypeCache;
 import org.graalvm.nativebridge.processor.AbstractBridgeParser.MarshallerData;
 import org.graalvm.nativebridge.processor.AbstractServiceParser.CacheData;
 import org.graalvm.nativebridge.processor.AbstractServiceParser.ServiceDefinitionData;
@@ -74,9 +73,14 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
 
     final Types types;
 
-    AbstractServiceGenerator(AbstractServiceParser parser, AbstractTypeCache typeCache, ServiceDefinitionData definitionData) {
+    AbstractServiceGenerator(AbstractServiceParser parser, NativeBridgeTypeCache typeCache, ServiceDefinitionData definitionData) {
         super(parser, definitionData, typeCache);
         this.types = parser.types;
+    }
+
+    @Override
+    NativeBridgeTypeCache getTypeCache() {
+        return (NativeBridgeTypeCache) super.getTypeCache();
     }
 
     @Override
@@ -354,6 +358,26 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
         builder.lineEnd(";");
     }
 
+    static void generateIsolateDeathHandlerBlockStart(CodeBuilder builder, MethodData methodData) {
+        if (methodData.isolateDeathHandler != null) {
+            builder.line("try {");
+            builder.indent();
+        }
+    }
+
+    final void generateIsolateDeathHandlerBlockEnd(CodeBuilder builder, MethodData methodData, CharSequence receiverVar) {
+        CharSequence isolateDeathExceptionVar = "isolateDeathException";
+        if (methodData.isolateDeathHandler != null) {
+            builder.dedent();
+            builder.lineStart("} catch (").write(getTypeCache().isolateDeathException).space().write(isolateDeathExceptionVar).lineEnd(") {");
+            builder.indent();
+            builder.lineStart().invokeStatic(methodData.isolateDeathHandler.handlerType(), "handleIsolateDeath", receiverVar, isolateDeathExceptionVar).lineEnd(";");
+            builder.lineStart("throw ").newInstance(getTypeCache().assertionError, "\"Should not reach here.\"").lineEnd(";");
+            builder.dedent();
+            builder.line("}");
+        }
+    }
+
     static CharSequence resolveLength(AbstractServiceParser.DirectionData directionData) {
         return directionData.lengthParameter != null && !directionData.lengthParameter.isEmpty() ? directionData.lengthParameter : null;
     }
@@ -470,9 +494,9 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
     abstract static class CacheSnippet {
 
         final Types types;
-        final AbstractTypeCache cache;
+        final NativeBridgeTypeCache cache;
 
-        CacheSnippet(Types type, AbstractTypeCache cache) {
+        CacheSnippet(Types type, NativeBridgeTypeCache cache) {
             this.types = type;
             this.cache = cache;
         }
@@ -487,17 +511,17 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
 
         abstract CharSequence writeCache(CodeBuilder currentBuilder, CharSequence cacheField, CharSequence receiver, CharSequence value);
 
-        static CacheSnippet standardDispatch(Types types, AbstractTypeCache cache) {
+        static CacheSnippet standardDispatch(Types types, NativeBridgeTypeCache cache) {
             return new StandardDispatch(types, cache);
         }
 
-        static CacheSnippet customDispatch(Types types, AbstractTypeCache cache) {
+        static CacheSnippet customDispatch(Types types, NativeBridgeTypeCache cache) {
             return new CustomDispatch(types, cache);
         }
 
         private static final class StandardDispatch extends CacheSnippet {
 
-            StandardDispatch(Types types, AbstractTypeCache cache) {
+            StandardDispatch(Types types, NativeBridgeTypeCache cache) {
                 super(types, cache);
             }
 
@@ -529,7 +553,7 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
 
         private static final class CustomDispatch extends CacheSnippet {
 
-            CustomDispatch(Types type, AbstractTypeCache cache) {
+            CustomDispatch(Types type, NativeBridgeTypeCache cache) {
                 super(type, cache);
             }
 
@@ -596,9 +620,9 @@ abstract class AbstractServiceGenerator extends AbstractBridgeGenerator {
 
         final MarshallerData marshallerData;
         final Types types;
-        private final AbstractTypeCache cache;
+        private final NativeBridgeTypeCache cache;
 
-        AbstractMarshallerSnippet(MarshallerData marshallerData, Types types, AbstractTypeCache cache) {
+        AbstractMarshallerSnippet(MarshallerData marshallerData, Types types, NativeBridgeTypeCache cache) {
             this.marshallerData = marshallerData;
             this.types = types;
             this.cache = cache;

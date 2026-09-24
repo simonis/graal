@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -310,11 +310,10 @@ public abstract class LIRGenerator extends CoreProvidersDelegate implements LIRG
     }
 
     private static boolean verify(final LIRInstruction op) {
-        op.visitEachInput(LIRGenerator::allowed);
-        op.visitEachAlive(LIRGenerator::allowed);
+        // Operand-flag validation is a single boundary walk over operand buckets, so it uses the
+        // canonical forward operand order.
+        op.visitEachValueForward(LIRGenerator::allowed);
         op.visitEachState(LIRGenerator::allowed);
-        op.visitEachTemp(LIRGenerator::allowed);
-        op.visitEachOutput(LIRGenerator::allowed);
 
         op.verify();
         return true;
@@ -432,6 +431,10 @@ public abstract class LIRGenerator extends CoreProvidersDelegate implements LIRG
         ((StandardOp.LabelOp) res.getLIR().getLIRforBlock(getCurrentBlock()).get(0)).setIncomingValues(params);
     }
 
+    public void addIncomingValues(Value[] params) {
+        ((StandardOp.LabelOp) res.getLIR().getLIRforBlock(getCurrentBlock()).get(0)).addIncomingValues(params);
+    }
+
     @Override
     public abstract void emitJump(LabelRef label);
 
@@ -456,16 +459,11 @@ public abstract class LIRGenerator extends CoreProvidersDelegate implements LIRG
 
     public abstract Variable emitOpMaskOrTestMove(Value leftVal, Value right, boolean allZeros, Value trueValue, Value falseValue);
 
-    /** Loads the target address for indirect {@linkplain #emitForeignCall foreign calls}. */
-    protected Value emitIndirectForeignCallAddress(@SuppressWarnings("unused") ForeignCallLinkage linkage) {
-        return null;
-    }
-
     /**
      * Emits the single call operation at the heart of generating LIR for a
      * {@linkplain #emitForeignCall foreign call}.
      */
-    protected abstract void emitForeignCallOp(ForeignCallLinkage linkage, Value targetAddress, Value result, Value[] arguments, Value[] temps, LIRFrameState info);
+    protected abstract void emitForeignCallOp(ForeignCallLinkage linkage, Value result, Value[] arguments, Value[] temps, LIRFrameState info);
 
     @Override
     public Variable emitForeignCall(ForeignCallLinkage linkage, LIRFrameState frameState, Value... args) {
@@ -478,8 +476,6 @@ public abstract class LIRGenerator extends CoreProvidersDelegate implements LIRG
                 state = new LIRFrameState(null, null, null, false);
             }
         }
-
-        Value targetAddress = emitIndirectForeignCallAddress(linkage);
 
         // move the arguments into the correct location
         CallingConvention linkageCc = linkage.getOutgoingCallingConvention();
@@ -494,7 +490,7 @@ public abstract class LIRGenerator extends CoreProvidersDelegate implements LIRG
         }
 
         res.setForeignCall(true);
-        emitForeignCallOp(linkage, targetAddress, linkageCc.getReturn(), argLocations, linkage.getTemporaries(), state);
+        emitForeignCallOp(linkage, linkageCc.getReturn(), argLocations, linkage.getTemporaries(), state);
 
         if (isLegal(linkageCc.getReturn())) {
             return emitMove(linkageCc.getReturn());

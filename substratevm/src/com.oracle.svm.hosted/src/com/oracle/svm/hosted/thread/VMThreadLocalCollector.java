@@ -24,26 +24,26 @@
  */
 package com.oracle.svm.hosted.thread;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHere;
 
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.heap.SubstrateReferenceMap;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.threadlocal.FastThreadLocal;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
 import com.oracle.svm.core.threadlocal.VMThreadLocalInfo;
-import com.oracle.svm.core.util.ObservableImageHeapMapProvider;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.threadlocal.VMThreadLocalOffsetProvider;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.guest.staging.util.ObservableImageHeapMapProvider;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.nodes.PiNode;
@@ -54,7 +54,8 @@ import jdk.graal.compiler.options.Option;
 /**
  * Collects all {@link FastThreadLocal} instances that are actually used by the application.
  */
-public class VMThreadLocalCollector implements Function<Object, Object>, LayeredImageSingleton {
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+public class VMThreadLocalCollector implements Function<Object, Object>, VMThreadLocalOffsetProvider {
 
     public static class Options {
         @Option(help = "Ensure all create ThreadLocals have unique names")//
@@ -116,7 +117,8 @@ public class VMThreadLocalCollector implements Function<Object, Object>, Layered
         return source;
     }
 
-    public int getOffset(FastThreadLocal threadLocal) {
+    @Override
+    public int offsetOf(FastThreadLocal threadLocal) {
         VMThreadLocalInfo result = threadLocals.get(threadLocal);
         return result.offset;
     }
@@ -142,7 +144,7 @@ public class VMThreadLocalCollector implements Function<Object, Object>, Layered
             assert unalignedSize > 0;
             return NumUtil.roundUp(unalignedSize, 8);
         } else {
-            return ConfigurationValues.getObjectLayout().sizeInBytes(info.storageKind);
+            return ObjectLayout.singleton().sizeInBytes(info.storageKind);
         }
     }
 
@@ -226,15 +228,5 @@ public class VMThreadLocalCollector implements Function<Object, Object>, Layered
             cur = ((PiNode) cur).object();
         }
         return cur;
-    }
-
-    @Override
-    public final EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
-        return LayeredImageSingletonBuilderFlags.BUILDTIME_ACCESS_ONLY;
-    }
-
-    @Override
-    public PersistFlags preparePersist(ImageSingletonWriter writer) {
-        return PersistFlags.NOTHING;
     }
 }

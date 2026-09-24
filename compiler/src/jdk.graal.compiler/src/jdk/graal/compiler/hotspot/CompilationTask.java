@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,8 @@ import static jdk.graal.compiler.java.BytecodeParserOptions.InlineDuringParsing;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.graalvm.collections.EconomicMap;
 
@@ -45,7 +47,6 @@ import jdk.graal.compiler.core.CompilationPrinter;
 import jdk.graal.compiler.core.CompilationWatchDog;
 import jdk.graal.compiler.core.CompilationWrapper;
 import jdk.graal.compiler.core.common.CompilationIdentifier;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.debug.Assertions;
 import jdk.graal.compiler.debug.CounterKey;
 import jdk.graal.compiler.debug.DebugCloseable;
@@ -63,6 +64,7 @@ import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.spi.ProfileProvider;
 import jdk.graal.compiler.nodes.spi.StableProfileProvider;
 import jdk.graal.compiler.nodes.spi.StableProfileProvider.TypeFilter;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
@@ -168,6 +170,44 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
         @Override
         protected void exitHostVM(int status) {
             HotSpotGraalServices.exit(status, jvmciRuntime);
+        }
+
+        @Override
+        protected boolean requestExitVMOnCompilationFailure() {
+            /*
+             * Request VM exit with status -1 from a separate thread before normal VM shutdown can
+             * finish with status 0. The new thread reaches HotSpotGraalRuntime.shutdown() and
+             * waits in outputDirectory.close() while the current compiler thread writes failure
+             * diagnostics inside the caller's diagnostics output scope. Closing that scope lets the
+             * thread running HotSpotGraalServices.exit archive and delete the diagnostics
+             * directory after those files are complete.
+             */
+            CountDownLatch exitStarted = new CountDownLatch(1);
+            AtomicBoolean exitRequested = new AtomicBoolean();
+            Thread exitThread = new HotSpotGraalServiceThread(() -> {
+                exitRequested.set(true);
+                exitStarted.countDown();
+                HotSpotGraalServices.exit(-1, jvmciRuntime);
+            }) {
+                @Override
+                protected void onAttachError(InternalError error) {
+                    exitStarted.countDown();
+                    super.onAttachError(error);
+                }
+            };
+            exitThread.setName("GraalExitVMOnCompilationFailure");
+            exitThread.setDaemon(false);
+            try {
+                exitThread.start();
+            } catch (Throwable t) {
+                return false;
+            }
+            try {
+                exitStarted.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return exitRequested.get();
         }
 
         @Override
@@ -351,7 +391,7 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
          */
         private void performRecompilationCheck(OptionValues options, HotSpotResolvedJavaMethod method) {
             if (checkRecompileCycle && (MethodRecompilationLimit.getValue(options) >= 0 && decompileCount >= MethodRecompilationLimit.getValue(options))) {
-                ProfilingInfo info = profileProvider.getProfilingInfo(method);
+                ProfilingInfo info = profileProvider.getProfilingInfo(null, method);
                 throw new ForceDeoptSpeculationPhase.TooManyDeoptimizationsError("too many decompiles: " + decompileCount + " " + ForceDeoptSpeculationPhase.getDeoptSummary(info));
             }
         }
@@ -408,13 +448,14 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
                         performRecompilationCheck(options, method);
                         CompilationReplayBytecodes.add(debug, result.getBytecodeSize());
                     } catch (Throwable e) {
+                        replaySupport.recordCompilationTaskException(e);
                         throw debug.handle(e);
                     }
                     try (DebugCloseable b = CodeInstallationTime.start(debug)) {
                         installMethod(selectedCompiler.getGraalRuntime().getHostBackend(), debug, graph, result);
                     }
                     printer.finish(result, installedCode);
-                    replaySupport.recordCompilationArtifacts(graph, result);
+                    replaySupport.recordCompilationTaskArtifacts(graph, result);
                     return buildCompilationRequestResult(method);
                 }
             }
@@ -514,7 +555,7 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
             }
 
             if (values != null) {
-                newOptions = new OptionValues(newOptions, values);
+                newOptions = newOptions.derive(values);
                 if (PrintCompilation.getValue(newOptions)) {
                     TTY.println("Compiling " + getMethod() + " with extra options: " + new OptionValues(values));
                 }
@@ -532,7 +573,7 @@ public class CompilationTask implements CompilationWatchDog.EventHandler {
                 m.put(InlineDuringParsing, false);
             }
             if (!m.isEmpty()) {
-                newOptions = new OptionValues(newOptions, m);
+                newOptions = newOptions.derive(m);
             }
         }
 

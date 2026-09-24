@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -47,7 +47,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Collections;
@@ -64,6 +67,7 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.stream.StreamSupport;
 
+import org.graalvm.polyglot.Engine.ToStringSupport;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractContextDispatch;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.IOAccessor;
 import org.graalvm.polyglot.io.FileSystem;
@@ -662,19 +666,21 @@ public final class Context implements AutoCloseable {
      * <li>If the <code>hostValue</code> is an instance of {@link Boolean}, then it will be
      * interpreted as polyglot {@link Value#isBoolean() boolean}.
      * <li>If the <code>hostValue</code> is an instance of {@link Instant}, {@link LocalTime},
-     * {@link ZonedDateTime}, {@link java.util.Date} but not {@link java.sql.Date} or
-     * {@link java.sql.Time} then it will be interpreted as polyglot {@link Value#isTime() time}.
+     * {@link LocalDateTime}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link OffsetTime},
+     * {@link java.sql.Time}, or {@link java.util.Date} but not {@link java.sql.Date}, then it will
+     * be interpreted as polyglot {@link Value#isTime() time}.
      * <li>If the <code>hostValue</code> is an instance of {@link Instant}, {@link LocalDate},
-     * {@link ZonedDateTime}, {@link java.util.Date} but not {@link java.sql.Time} or
-     * {@link java.sql.Date} then it will be interpreted as polyglot {@link Value#isDate() date}.
+     * {@link LocalDateTime}, {@link ZonedDateTime}, {@link OffsetDateTime}, or
+     * {@link java.util.Date} but not {@link java.sql.Time}, then it will be interpreted as polyglot
+     * {@link Value#isDate() date}.
      * <li>If the <code>hostValue</code> is an instance of {@link ZoneId}, {@link Instant},
-     * {@link ZonedDateTime}, {@link java.util.Date} but not {@link java.sql.Time} and
-     * {@link java.sql.Date} then it will be interpreted as polyglot {@link Value#isTimeZone() time
-     * zone}.
-     * <li>If the <code>hostValue</code> is an instance of {@link ZonedDateTime}, {@link Instant},
-     * {@link ZonedDateTime}, {@link java.util.Date} but not {@link java.sql.Time} and
-     * {@link java.sql.Date} then it will be interpreted as polyglot {@link Value#isInstant()
-     * instant}.
+     * {@link ZonedDateTime}, {@link OffsetDateTime}, {@link OffsetTime}, or {@link java.util.Date}
+     * but not {@link java.sql.Time} or {@link java.sql.Date}, then it will be interpreted as
+     * polyglot {@link Value#isTimeZone() time zone}.
+     * <li>If the <code>hostValue</code> is an instance of {@link ZonedDateTime},
+     * {@link OffsetDateTime}, {@link Instant}, or {@link java.util.Date} but not
+     * {@link java.sql.Time} or {@link java.sql.Date}, then it will be interpreted as polyglot
+     * {@link Value#isInstant() instant}.
      * <li>If the <code>hostValue</code> is an instance of {@link Duration} then it will be
      * interpreted as polyglot {@link Value#isDuration() duration}.
      * <li>If the <code>hostValue</code> is a {@link Proxy polyglot proxy}, then it will be
@@ -831,6 +837,20 @@ public final class Context implements AutoCloseable {
     @Override
     public int hashCode() {
         return Objects.hashCode(receiver);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @since 25.3
+     */
+    @Override
+    public String toString() {
+        try {
+            return dispatch.toString(receiver, System.identityHashCode(this), null);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
+        }
     }
 
     /**
@@ -1026,7 +1046,7 @@ public final class Context implements AutoCloseable {
 
     /**
      * Creates a context with default configuration. This method is a shortcut for
-     * {@link #newBuilder(String...) newBuilder(permittedLanuages).build()}.
+     * {@link #newBuilder(String...) newBuilder(permittedLanguages).build()}.
      *
      * @see #newBuilder(String...)
      * @since 19.0
@@ -1116,6 +1136,8 @@ public final class Context implements AutoCloseable {
         private ClassLoader hostClassLoader;
         private boolean useSystemExit;
         private SandboxPolicy sandboxPolicy;
+        private Consumer<PolyglotException> exceptionHandler;
+        private Boolean spawnIsolate;
 
         Builder(String... permittedLanguages) {
             Objects.requireNonNull(permittedLanguages);
@@ -1891,6 +1913,79 @@ public final class Context implements AutoCloseable {
         }
 
         /**
+         * Sets an exception handler that is invoked whenever a {@link PolyglotException} is about
+         * to be thrown from a context bound value back to the host.
+         * <p>
+         * The handler is called on the host thread that performs the polyglot operation, for
+         * example when invoking {@link Value} methods, executing guest code, or initializing a
+         * language. It receives the {@link PolyglotException} that would normally be thrown to the
+         * caller.
+         * <p>
+         * The handler can inspect the exception, perform additional logging or metrics, or
+         * translate the {@link PolyglotException} into a different exception type. If the handler
+         * throws an exception, that exception is propagated to the caller instead of the original
+         * {@link PolyglotException}. If the handler returns normally, the original
+         * {@link PolyglotException} is thrown as usual.
+         * <p>
+         * A common use case is to unwrap and rethrow host runtime exceptions so that calling code
+         * can handle them directly:
+         *
+         * <pre>
+         * static void rethrowHostRuntimeException(PolyglotException e) {
+         *     if (e.isHostException()) {
+         *         Throwable t = e.asHostException();
+         *         if (t instanceof RuntimeException rt) {
+         *             // rethrow the original host runtime exception
+         *             throw rt;
+         *         }
+         *     }
+         *     // fall through, the PolyglotException will be thrown
+         * }
+         *
+         * try (Context c = Context.newBuilder()
+         *                 .exceptionHandler(MyHost::rethrowHostRuntimeException)
+         *                 .build()) {
+         *     try {
+         *         // Without an exception handler, this would throw a PolyglotException
+         *         // wrapping the IllegalStateException as a host exception.
+         *         c.asValue(new IllegalStateException("test")).throwException();
+         *     } catch (IllegalStateException e) {
+         *         // The handler rethrew the original host exception.
+         *         assert "test".equals(e.getMessage());
+         *     }
+         * }
+         * </pre>
+         *
+         * In this example, {@link Value#throwException()} would normally throw a
+         * {@link PolyglotException}. Because the handler rethrows the underlying host
+         * {@link RuntimeException}, the caller observes {@code IllegalStateException} directly
+         * instead of {@link PolyglotException}.
+         *
+         * <p>
+         * Handlers should be written carefully, because any host call into the context can then
+         * appear to throw additional exception types. In particular, translating guest exceptions
+         * into unrelated runtime exceptions can make APIs harder to reason about and should only be
+         * done with care.
+         * <p>
+         * When this builder is used together with an explicit {@link Engine}, and that engine has
+         * an exception handler configured, the context must either use the same handler instance or
+         * {@code null}. Using a different handler instance and an explicit engine at the same time
+         * causes {@link #build()} to fail with an {@link IllegalArgumentException}. Passing
+         * {@code null} lets the context inherit the handler configured on the engine.
+         *
+         * @param handler the handler to invoke before a {@link PolyglotException} is thrown to the
+         *            host, or {@code null} to disable custom handling and, when an explicit engine
+         *            is used, inherit the handler from that engine
+         *
+         * @see Engine.Builder#exceptionHandler(Consumer)
+         * @since 25.1
+         */
+        public Builder exceptionHandler(Consumer<PolyglotException> handler) {
+            this.exceptionHandler = handler;
+            return this;
+        }
+
+        /**
          * Sets a code sandbox policy to a context. By default, the context's sandbox policy is
          * {@link SandboxPolicy#TRUSTED}, there are no restrictions to the context configuration.
          *
@@ -1976,7 +2071,7 @@ public final class Context implements AutoCloseable {
          * Sets a host class loader. If set the given {@code classLoader} is used to load host
          * classes and it's also set as a {@link Thread#setContextClassLoader(java.lang.ClassLoader)
          * context ClassLoader} during code execution. Otherwise the ClassLoader that was captured
-         * when the context was {@link #build() built} is used to to load host classes and the
+         * when the context was {@link #build() built} is used to load host classes and the
          * {@link Thread#setContextClassLoader(java.lang.ClassLoader) context ClassLoader} is not
          * set during code execution. Setting the hostClassLoader has a negative effect on enter and
          * leave performance.
@@ -2003,13 +2098,40 @@ public final class Context implements AutoCloseable {
         }
 
         /**
+         * Specifies whether the implicitly created engine should run guest languages in a polyglot
+         * isolate.
+         * <p>
+         * A polyglot isolate executes guest languages with an isolated heap. This can be useful for
+         * sandboxing and for running guest languages as native images when the current runtime does
+         * not support optimizing guest language execution. If enabled, all languages permitted by
+         * this context are run in the isolate. If {@code value} is {@code true}, this builder must
+         * have been created with an explicit permitted languages list, for example using
+         * {@code Context.newBuilder("js")}.
+         * <p>
+         * This setting is equivalent to setting the {@code engine.SpawnIsolate} engine option to
+         * {@code true} or {@code false}. If both are set to conflicting values, {@link #build()}
+         * fails with {@link IllegalArgumentException}. For contexts that use an explicit engine,
+         * configure isolate spawning on the engine builder rather than on the context builder.
+         *
+         * @param value {@code true} to spawn a polyglot isolate
+         * @see Engine.Builder#spawnIsolate(boolean)
+         * @see Engine#supportsCompilation()
+         * @see <a href="https://www.graalvm.org/latest/reference-manual/embed-languages/#polyglot-isolates">
+         *      Polyglot Isolates documentation</a>
+         * @since 25.1
+         */
+        public Builder spawnIsolate(boolean value) {
+            spawnIsolate = value;
+            return this;
+        }
+
+        /**
          * Creates a new context instance from the configuration provided in the builder. The same
          * context builder can be used to create multiple context instances.
          *
          * @since 19.0
          */
         public Context build() {
-
             boolean nativeAccess = orAllAccess(allowNativeAccess);
             boolean createThread = orAllAccess(allowCreateThread);
             boolean hostClassLoading = orAllAccess(allowHostClassLoading);
@@ -2131,12 +2253,20 @@ public final class Context implements AutoCloseable {
                     engineBuilder.logHandler((OutputStream) customLogHandler);
                 }
                 engineBuilder.sandbox(useSandboxPolicy);
+                engineBuilder.exceptionHandler(exceptionHandler);
                 engineBuilder.allowExperimentalOptions(experimentalOptions);
                 engineBuilder.setBoundEngine(true);
+                if (spawnIsolate != null) {
+                    engineBuilder.spawnIsolate(spawnIsolate);
+                }
                 engine = engineBuilder.build();
             } else {
                 if (messageTransport != null) {
                     throw new IllegalStateException("Cannot use MessageTransport in a context that shares an Engine.");
+                }
+                if (spawnIsolate != null) {
+                    throw new IllegalStateException("Context.Builder.spawnIsolate(" + spawnIsolate + ") cannot be used together with Context.Builder.engine(Engine). " +
+                                    "Configure isolate spawning on the shared engine instead, using Engine.Builder.spawnIsolate(" + spawnIsolate + ") to build the Engine.");
                 }
                 contextOptions = options == null ? Collections.emptyMap() : options;
                 contextOut = out;
@@ -2148,8 +2278,8 @@ public final class Context implements AutoCloseable {
             ctx = engine.dispatch.createContext(engine.receiver, engine, useSandboxPolicy, contextOut, contextErr, contextIn, hostClassLookupEnabled,
                             hostAccess, polyglotAccess, nativeAccess, createThread, hostClassLoading, innerContextOptions,
                             experimentalOptions, localHostLookupFilter, contextOptions, arguments == null ? Collections.emptyMap() : arguments,
-                            permittedLanguages, useIOAccess, logHandler, createProcess, processHandler, useEnvironmentAccess, environment, zone, limits,
-                            localCurrentWorkingDirectory, tmpDir, hostClassLoader, allowValueSharing, useSystemExit, true);
+                            permittedLanguages, useIOAccess, logHandler, createProcess, processHandler, exceptionHandler, useEnvironmentAccess, environment, zone,
+                            limits, localCurrentWorkingDirectory, tmpDir, hostClassLoader, allowValueSharing, useSystemExit, true);
             return ctx;
         }
 
@@ -2180,6 +2310,132 @@ public final class Context implements AutoCloseable {
                 useSandboxPolicy = SandboxPolicy.TRUSTED;
             }
             return useSandboxPolicy;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * @since 25.3
+         */
+        @Override
+        public String toString() {
+            StringBuilder b = new StringBuilder("Context.newBuilder(");
+            String separator = "";
+            for (String language : permittedLanguages) {
+                b.append(separator);
+                b.append(ToStringSupport.quote(language));
+                separator = ", ";
+            }
+            b.append(')');
+            if (sharedEngine != null) {
+                ToStringSupport.appendCall(b, "engine", sharedEngine);
+            }
+            if (out != null) {
+                ToStringSupport.appendCall(b, "out", out);
+            }
+            if (err != null) {
+                ToStringSupport.appendCall(b, "err", err);
+            }
+            if (in != null) {
+                ToStringSupport.appendCall(b, "in", in);
+            }
+            if (options != null) {
+                for (Map.Entry<String, String> entry : options.entrySet()) {
+                    ToStringSupport.appendCall(b, "option", ToStringSupport.quote(entry.getKey()), ToStringSupport.quote(entry.getValue()));
+                }
+            }
+            if (arguments != null) {
+                for (Map.Entry<String, String[]> entry : arguments.entrySet()) {
+                    ToStringSupport.appendCall(b, "arguments", ToStringSupport.quote(entry.getKey()), ToStringSupport.stringArray(entry.getValue()));
+                }
+            }
+            if (messageTransport != null) {
+                ToStringSupport.appendCall(b, "serverTransport", messageTransport);
+            }
+            if (customLogHandler != null) {
+                ToStringSupport.appendCall(b, "logHandler", customLogHandler);
+            }
+            if (resourceLimits != null) {
+                ToStringSupport.appendCall(b, "resourceLimits", resourceLimits);
+            }
+            if (sandboxPolicy != null) {
+                ToStringSupport.appendCall(b, "sandbox", "SandboxPolicy." + sandboxPolicy);
+            }
+            if (zone != null) {
+                ToStringSupport.appendCall(b, "timeZone", "ZoneId.of(" + ToStringSupport.quote(zone.getId()) + ")");
+            }
+            if (processHandler != null) {
+                ToStringSupport.appendCall(b, "processHandler", processHandler);
+            }
+            if (environment != null) {
+                for (Map.Entry<String, String> entry : environment.entrySet()) {
+                    ToStringSupport.appendCall(b, "environment", ToStringSupport.quote(entry.getKey()), ToStringSupport.quote(entry.getValue()));
+                }
+            }
+            if (currentWorkingDirectory != null) {
+                ToStringSupport.appendCall(b, "currentWorkingDirectory", "Path.of(" + ToStringSupport.quote(currentWorkingDirectory.toString()) + ")");
+            }
+            if (hostClassLoader != null) {
+                ToStringSupport.appendCall(b, "hostClassLoader", hostClassLoader);
+            }
+            if (useSystemExit) {
+                ToStringSupport.appendCall(b, "useSystemExit", true);
+            }
+            if (allowAllAccess) {
+                ToStringSupport.appendCall(b, "allowAllAccess", true);
+            }
+            if (allowHostAccess != null) {
+                ToStringSupport.appendCall(b, "allowHostAccess", allowHostAccess);
+            }
+            if (hostAccess != null) {
+                ToStringSupport.appendCall(b, "allowHostAccess", hostAccess);
+            }
+            if (allowIO != null) {
+                ToStringSupport.appendCall(b, "allowIO", allowIO);
+            }
+            if (ioAccess != null) {
+                ToStringSupport.appendCall(b, "allowIO", ioAccess);
+            }
+            if (customFileSystem != null) {
+                ToStringSupport.appendCall(b, "fileSystem", customFileSystem);
+            }
+            if (allowNativeAccess != null) {
+                ToStringSupport.appendCall(b, "allowNativeAccess", allowNativeAccess);
+            }
+            if (allowCreateThread != null) {
+                ToStringSupport.appendCall(b, "allowCreateThread", allowCreateThread);
+            }
+            if (allowHostClassLoading != null) {
+                ToStringSupport.appendCall(b, "allowHostClassLoading", allowHostClassLoading);
+            }
+            if (hostClassFilter != UNSET_HOST_LOOKUP) {
+                ToStringSupport.appendCall(b, "allowHostClassLookup", hostClassFilter);
+            }
+            if (environmentAccess != null) {
+                ToStringSupport.appendCall(b, "allowEnvironmentAccess", environmentAccess);
+            }
+            if (allowExperimentalOptions != null) {
+                ToStringSupport.appendCall(b, "allowExperimentalOptions", allowExperimentalOptions);
+            }
+            if (polyglotAccess != null) {
+                ToStringSupport.appendCall(b, "allowPolyglotAccess", polyglotAccess);
+            }
+            if (!allowValueSharing) {
+                ToStringSupport.appendCall(b, "allowValueSharing", false);
+            }
+            if (allowInnerContextOptions != null) {
+                ToStringSupport.appendCall(b, "allowInnerContextOptions", allowInnerContextOptions);
+            }
+            if (allowCreateProcess != null) {
+                ToStringSupport.appendCall(b, "allowCreateProcess", allowCreateProcess);
+            }
+            if (exceptionHandler != null) {
+                ToStringSupport.appendCall(b, "exceptionHandler", exceptionHandler);
+            }
+            if (spawnIsolate != null) {
+                ToStringSupport.appendCall(b, "spawnIsolate", spawnIsolate);
+            }
+            return b.toString();
         }
 
         /**
@@ -2267,11 +2523,17 @@ public final class Context implements AutoCloseable {
                                     "do not set Builder.allowHostAccess(boolean) to use the sandbox policy preset or set Builder.allowHostAccess(HostAccess)");
                 }
                 if (hostAccess != null) {
-                    if (hostAccess.allowPublic) {
+                    if (hostAccess.allowsAllPublicAccess()) {
                         throw Engine.Builder.throwSandboxException(useSandboxPolicy,
                                         "Builder.allowHostAccess(HostAccess) is set to a HostAccess which was created with HostAccess.Builder.allowPublicAccess(boolean) set to true, " +
                                                         "but HostAccess.Builder.allowPublicAccess(boolean) must not be set to true.",
                                         "do not set HostAccess.Builder.allowPublicAccess(boolean)");
+                    }
+                    if (hostAccess.hasPublicAccessPredicate()) {
+                        throw Engine.Builder.throwSandboxException(useSandboxPolicy,
+                                        "Builder.allowHostAccess(HostAccess) is set to a HostAccess which was created with HostAccess.Builder.allowPublicAccess(Predicate) configured, " +
+                                                        "but HostAccess.Builder.allowPublicAccess(Predicate) must not be configured.",
+                                        "do not configure HostAccess.Builder.allowPublicAccess(Predicate)");
                     }
                     if (hostAccess.allowAccessInheritance) {
                         throw Engine.Builder.throwSandboxException(useSandboxPolicy,

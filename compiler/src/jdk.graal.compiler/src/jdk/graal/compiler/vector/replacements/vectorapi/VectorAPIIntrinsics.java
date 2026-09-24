@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,20 +26,33 @@ package jdk.graal.compiler.vector.replacements.vectorapi;
 
 import java.util.function.BiFunction;
 
-import org.graalvm.word.LocationIdentity;
-
 import jdk.graal.compiler.core.common.GraalOptions;
 import jdk.graal.compiler.core.common.type.ObjectStamp;
+import jdk.graal.compiler.core.common.type.StampFactory;
 import jdk.graal.compiler.core.common.type.StampPair;
 import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.nodes.BeginNode;
 import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.nodes.EndNode;
+import jdk.graal.compiler.nodes.IfNode;
+import jdk.graal.compiler.nodes.LogicNode;
+import jdk.graal.compiler.nodes.MergeNode;
+import jdk.graal.compiler.nodes.NamedLocationIdentity;
+import jdk.graal.compiler.nodes.NodeView;
+import jdk.graal.compiler.nodes.PiNode;
+import jdk.graal.compiler.nodes.ProfileData.BranchProbabilityData;
+import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.graal.compiler.nodes.ValueNode;
+import jdk.graal.compiler.nodes.ValuePhiNode;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderContext;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin.InlineOnlyInvocationPlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins;
-import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins.OptionalLazySymbol;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins.Registration;
+import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins.TypeSymbol;
+import jdk.graal.compiler.nodes.calc.IsNullNode;
 import jdk.graal.compiler.nodes.memory.address.AddressNode;
+import jdk.graal.compiler.nodes.memory.address.OffsetAddressNode;
+import jdk.graal.compiler.nodes.type.StampTool;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionValues;
@@ -54,10 +67,14 @@ import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIConvertNo
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIExtractNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIFromBitsCoercedNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIIndexPartiallyInUpperRangeNode;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIIndexVectorNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIInsertNode;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPILibraryBinaryOpNode;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPILibraryUnaryOpNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPILoadMaskedNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPILoadNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIMacroNode;
+import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIMemoryAccess;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIMaskReductionCoercedNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIRearrangeOpNode;
 import jdk.graal.compiler.vector.replacements.vectorapi.nodes.VectorAPIReductionCoercedNode;
@@ -114,32 +131,33 @@ public class VectorAPIIntrinsics {
         r = new Registration(plugins, vectorSupportName);
 
         /* Types of vectors and related data. */
-        OptionalLazySymbol vectorSpecies = new OptionalLazySymbol(vectorSupportName + "$VectorSpecies");
-        OptionalLazySymbol vector = new OptionalLazySymbol(vectorSupportName + "$Vector");
-        OptionalLazySymbol vectorMask = new OptionalLazySymbol(vectorSupportName + "$VectorMask");
-        OptionalLazySymbol vectorShuffle = new OptionalLazySymbol(vectorSupportName + "$VectorShuffle");
-        OptionalLazySymbol vectorPayload = new OptionalLazySymbol(vectorSupportName + "$VectorPayload");
+        TypeSymbol vectorSpecies = new TypeSymbol(vectorSupportName + "$VectorSpecies");
+        TypeSymbol vector = new TypeSymbol(vectorSupportName + "$Vector");
+        TypeSymbol vectorMask = new TypeSymbol(vectorSupportName + "$VectorMask");
+        TypeSymbol vectorShuffle = new TypeSymbol(vectorSupportName + "$VectorShuffle");
+        TypeSymbol vectorPayload = new TypeSymbol(vectorSupportName + "$VectorPayload");
 
         /* Types of operations on vectors. */
-        OptionalLazySymbol fromBitsCoercedOperation = new OptionalLazySymbol(vectorSupportName + "$FromBitsCoercedOperation");
-        OptionalLazySymbol indexPartiallyInUpperRangeOp = new OptionalLazySymbol(vectorSupportName + "$IndexPartiallyInUpperRangeOperation");
-        OptionalLazySymbol reductionOperation = new OptionalLazySymbol(vectorSupportName + "$ReductionOperation");
-        OptionalLazySymbol extractOp = new OptionalLazySymbol(vectorSupportName + "$VecExtractOp");
-        OptionalLazySymbol insertOp = new OptionalLazySymbol(vectorSupportName + "$VecInsertOp");
-        OptionalLazySymbol unaryOperation = new OptionalLazySymbol(vectorSupportName + "$UnaryOperation");
-        OptionalLazySymbol binaryOperation = new OptionalLazySymbol(vectorSupportName + "$BinaryOperation");
-        OptionalLazySymbol ternaryOperation = new OptionalLazySymbol(vectorSupportName + "$TernaryOperation");
-        OptionalLazySymbol loadOperation = new OptionalLazySymbol(vectorSupportName + "$LoadOperation");
-        OptionalLazySymbol loadMaskedOperation = new OptionalLazySymbol(vectorSupportName + "$LoadVectorMaskedOperation");
-        OptionalLazySymbol storeVectorOperation = new OptionalLazySymbol(vectorSupportName + "$StoreVectorOperation");
-        OptionalLazySymbol storeMaskedOperation = new OptionalLazySymbol(vectorSupportName + "$StoreVectorMaskedOperation");
-        OptionalLazySymbol vectorCompareOp = new OptionalLazySymbol(vectorSupportName + "$VectorCompareOp");
-        OptionalLazySymbol vectorBlendOp = new OptionalLazySymbol(vectorSupportName + "$VectorBlendOp");
-        OptionalLazySymbol vectorBroadcastIntOp = new OptionalLazySymbol(vectorSupportName + "$VectorBroadcastIntOp");
-        OptionalLazySymbol vectorConvertOp = new OptionalLazySymbol(vectorSupportName + "$VectorConvertOp");
-        OptionalLazySymbol vectorRearrangeOp = new OptionalLazySymbol(vectorSupportName + "$VectorRearrangeOp");
-        OptionalLazySymbol compressExpandOperation = new OptionalLazySymbol(vectorSupportName + "$CompressExpandOperation");
-        OptionalLazySymbol vectorMaskOp = new OptionalLazySymbol(vectorSupportName + "$VectorMaskOp");
+        TypeSymbol fromBitsCoercedOperation = new TypeSymbol(vectorSupportName + "$FromBitsCoercedOperation");
+        TypeSymbol indexPartiallyInUpperRangeOp = new TypeSymbol(vectorSupportName + "$IndexPartiallyInUpperRangeOperation");
+        TypeSymbol indexOperation = new TypeSymbol(vectorSupportName + "$IndexOperation");
+        TypeSymbol reductionOperation = new TypeSymbol(vectorSupportName + "$ReductionOperation");
+        TypeSymbol extractOp = new TypeSymbol(vectorSupportName + "$VecExtractOp");
+        TypeSymbol insertOp = new TypeSymbol(vectorSupportName + "$VecInsertOp");
+        TypeSymbol unaryOperation = new TypeSymbol(vectorSupportName + "$UnaryOperation");
+        TypeSymbol binaryOperation = new TypeSymbol(vectorSupportName + "$BinaryOperation");
+        TypeSymbol ternaryOperation = new TypeSymbol(vectorSupportName + "$TernaryOperation");
+        TypeSymbol loadOperation = new TypeSymbol(vectorSupportName + "$LoadOperation");
+        TypeSymbol loadMaskedOperation = new TypeSymbol(vectorSupportName + "$LoadVectorMaskedOperation");
+        TypeSymbol storeVectorOperation = new TypeSymbol(vectorSupportName + "$StoreVectorOperation");
+        TypeSymbol storeMaskedOperation = new TypeSymbol(vectorSupportName + "$StoreVectorMaskedOperation");
+        TypeSymbol vectorCompareOp = new TypeSymbol(vectorSupportName + "$VectorCompareOp");
+        TypeSymbol vectorBlendOp = new TypeSymbol(vectorSupportName + "$VectorBlendOp");
+        TypeSymbol vectorBroadcastIntOp = new TypeSymbol(vectorSupportName + "$VectorBroadcastIntOp");
+        TypeSymbol vectorConvertOp = new TypeSymbol(vectorSupportName + "$VectorConvertOp");
+        TypeSymbol vectorRearrangeOp = new TypeSymbol(vectorSupportName + "$VectorRearrangeOp");
+        TypeSymbol compressExpandOperation = new TypeSymbol(vectorSupportName + "$CompressExpandOperation");
+        TypeSymbol vectorMaskOp = new TypeSymbol(vectorSupportName + "$VectorMaskOp");
 
         r.register(new InlineOnlyInvocationPlugin("fromBitsCoerced", Class.class, Class.class, int.class, long.class, int.class, vectorSpecies, fromBitsCoercedOperation) {
             @Override
@@ -161,6 +179,18 @@ public class VectorAPIIntrinsics {
                 StampPair returnStamp = makeReturnStamp(b, speciesStamp);
                 MacroParams params = MacroParams.of(b, targetMethod, returnStamp, mClass, eClass, length, offset, limit, defaultImpl);
                 b.addPush(JavaKind.Object, VectorAPIIndexPartiallyInUpperRangeNode.create(params, b));
+                return true;
+            }
+        });
+
+        r.register(new InlineOnlyInvocationPlugin("indexVector", Class.class, Class.class, int.class, vector, int.class, vectorSpecies, indexOperation) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver type, ValueNode vClass, ValueNode eClass, ValueNode length, ValueNode v, ValueNode scale,
+                            ValueNode s, ValueNode defaultImpl) {
+                ObjectStamp speciesStamp = VectorAPIUtils.nonNullStampForClassValue(b, vClass);
+                StampPair returnStamp = makeReturnStamp(b, speciesStamp);
+                MacroParams params = MacroParams.of(b, targetMethod, returnStamp, vClass, eClass, length, b.nullCheckedValue(v), scale, s, defaultImpl);
+                b.addPush(JavaKind.Object, VectorAPIIndexVectorNode.create(params, b));
                 return true;
             }
         });
@@ -227,6 +257,30 @@ public class VectorAPIIntrinsics {
             }
         });
 
+        r.register(new InlineOnlyInvocationPlugin("libraryUnaryOp", long.class, Class.class, Class.class, int.class, String.class, vector, unaryOperation) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver type, ValueNode address, ValueNode vClass, ValueNode eClass, ValueNode length, ValueNode symbolName,
+                            ValueNode v, ValueNode defaultImpl) {
+                ObjectStamp speciesStamp = VectorAPIUtils.nonNullStampForClassValue(b, vClass);
+                StampPair returnStamp = makeReturnStamp(b, speciesStamp);
+                MacroParams params = MacroParams.of(b, targetMethod, returnStamp, address, vClass, eClass, length, symbolName, b.nullCheckedValue(v), defaultImpl);
+                b.addPush(JavaKind.Object, VectorAPILibraryUnaryOpNode.create(params, b));
+                return true;
+            }
+        });
+
+        r.register(new InlineOnlyInvocationPlugin("libraryBinaryOp", long.class, Class.class, Class.class, int.class, String.class, vectorPayload, vectorPayload, binaryOperation) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver type, ValueNode address, ValueNode vmClass, ValueNode eClass, ValueNode length, ValueNode symbolName,
+                            ValueNode v1, ValueNode v2, ValueNode defaultImpl) {
+                ObjectStamp speciesStamp = VectorAPIUtils.nonNullStampForClassValue(b, vmClass);
+                StampPair returnStamp = makeReturnStamp(b, speciesStamp);
+                MacroParams params = MacroParams.of(b, targetMethod, returnStamp, address, vmClass, eClass, length, symbolName, b.nullCheckedValue(v1), b.nullCheckedValue(v2), defaultImpl);
+                b.addPush(JavaKind.Object, VectorAPILibraryBinaryOpNode.create(params, b));
+                return true;
+            }
+        });
+
         r.register(new InlineOnlyInvocationPlugin("ternaryOp", int.class, Class.class, Class.class, Class.class, int.class, vector, vector, vector, vectorMask, ternaryOperation) {
             @Override
             public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver type, ValueNode oprId, ValueNode vClass, ValueNode mClass, ValueNode eClass, ValueNode length,
@@ -248,13 +302,9 @@ public class VectorAPIIntrinsics {
                 ObjectStamp speciesStamp = VectorAPIUtils.nonNullStampForClassValue(b, vmClass);
                 VectorAPIType loadType = VectorAPIType.ofConstant(vmClass, b);
                 AddressNode address = VectorAPIUtils.buildAddress(base, offset, container, index);
-                LocationIdentity location = VectorAPIUtils.containerLocationIdentity(container);
-                if (!fromSegment.isDefaultConstant()) {
-                    GraalError.guarantee(location.isAny(), "we don't know anything about the location of a possible memory segment access");
-                }
                 StampPair returnStamp = makeReturnStamp(b, speciesStamp);
                 MacroParams params = MacroParams.of(b, targetMethod, returnStamp, vmClass, eClass, length, base, offset, fromSegment, container, index, s, defaultImpl);
-                b.addPush(JavaKind.Object, VectorAPILoadNode.create(params, loadType, address, location, b));
+                addMemoryAccess(b, base, offset, fromSegment, address, VectorAPILoadNode.create(params, loadType, address, b), JavaKind.Object);
                 return true;
             }
         });
@@ -267,13 +317,9 @@ public class VectorAPIIntrinsics {
                 ObjectStamp speciesStamp = VectorAPIUtils.nonNullStampForClassValue(b, vClass);
                 VectorAPIType loadType = VectorAPIType.ofConstant(vClass, b);
                 AddressNode address = VectorAPIUtils.buildAddress(base, offset, container, index);
-                LocationIdentity location = VectorAPIUtils.containerLocationIdentity(container);
-                if (!fromSegment.isDefaultConstant()) {
-                    GraalError.guarantee(location.isAny(), "we don't know anything about the location of a possible memory segment access");
-                }
                 StampPair returnStamp = makeReturnStamp(b, speciesStamp);
                 MacroParams params = MacroParams.of(b, targetMethod, returnStamp, vClass, mClass, eClass, length, base, offset, fromSegment, m, offsetInRange, container, index, s, defaultImpl);
-                b.addPush(JavaKind.Object, VectorAPILoadMaskedNode.create(params, loadType, address, location, b));
+                addMemoryAccess(b, base, offset, fromSegment, address, VectorAPILoadMaskedNode.create(params, loadType, address, b), JavaKind.Object);
                 return true;
             }
         });
@@ -286,12 +332,8 @@ public class VectorAPIIntrinsics {
                 SimdStamp inputStamp = VectorAPIUtils.stampForVectorClass(vClass, eClass, length, b);
                 VectorAPIType storeType = VectorAPIType.ofConstant(vClass, b);
                 AddressNode address = VectorAPIUtils.buildAddress(base, offset, container, index);
-                LocationIdentity location = VectorAPIUtils.containerLocationIdentity(container);
-                if (!fromSegment.isDefaultConstant()) {
-                    GraalError.guarantee(location.isAny(), "we don't know anything about the location of a possible memory segment access");
-                }
                 MacroParams params = MacroParams.of(b, targetMethod, vClass, eClass, length, base, offset, fromSegment, b.nullCheckedValue(v), container, index, defaultImpl);
-                b.add(new VectorAPIStoreNode(params, inputStamp, storeType, address, location));
+                addMemoryAccess(b, base, offset, fromSegment, address, VectorAPIStoreNode.create(params, inputStamp, storeType, address), JavaKind.Void);
                 return true;
             }
         });
@@ -303,13 +345,9 @@ public class VectorAPIIntrinsics {
                             ValueNode offset, ValueNode fromSegment, ValueNode v, ValueNode m, ValueNode container, ValueNode index, ValueNode defaultImpl) {
                 VectorAPIType storeType = VectorAPIType.ofConstant(vClass, b);
                 AddressNode address = VectorAPIUtils.buildAddress(base, offset, container, index);
-                LocationIdentity location = VectorAPIUtils.containerLocationIdentity(container);
-                if (!fromSegment.isDefaultConstant()) {
-                    GraalError.guarantee(location.isAny(), "we don't know anything about the location of a possible memory segment access");
-                }
                 MacroParams params = MacroParams.of(b, targetMethod, vClass, mClass, eClass, length, base, offset, fromSegment, b.nullCheckedValue(v), b.nullCheckedValue(m), container, index,
                                 defaultImpl);
-                b.add(VectorAPIStoreMaskedNode.create(params, storeType, address, location));
+                addMemoryAccess(b, base, offset, fromSegment, address, VectorAPIStoreMaskedNode.create(params, storeType, address), JavaKind.Void);
                 return true;
             }
         });
@@ -421,6 +459,93 @@ public class VectorAPIIntrinsics {
                 return true;
             }
         });
+    }
+
+    /**
+     * Adds a Vector API memory access to the graph. If the access is to a memory segment, it may be
+     * on-heap (non-null address base) or off-heap (null address base). If we cannot decide
+     * statically which variant it is, this method builds an {@code if} diamond with both variants.
+     * This branch may or may not fold away later. Compare the handling of scalar unsafe accesses in
+     * {@code UnsafeAccessPlugin#createUnsafeAccess}.
+     */
+    private static <T extends VectorAPIMacroNode & VectorAPIMemoryAccess> void addMemoryAccess(GraphBuilderContext b, ValueNode base, ValueNode offset, ValueNode fromSegment, AddressNode address,
+                    T accessNode, JavaKind resultKind) {
+        if (!(fromSegment.isJavaConstant() && fromSegment.asJavaConstant().asInt() != 0) || StampTool.isPointerAlwaysNull(base) || StampTool.isPointerNonNull(base) ||
+                        NamedLocationIdentity.isArrayLocation(accessNode.locationIdentity())) {
+            /* Not a segment access, or we know statically which variant it is. */
+            if (resultKind == JavaKind.Void) {
+                b.add(accessNode);
+            } else {
+                b.addPush(resultKind, accessNode);
+            }
+            return;
+        }
+
+        /* Set up the empty control flow diamond. */
+        StructuredGraph graph = b.getGraph();
+        LogicNode isNull = graph.addOrUniqueWithInputs(IsNullNode.create(base));
+        BeginNode offHeapPath = graph.add(new BeginNode());
+        BeginNode heapPath = graph.add(new BeginNode());
+        b.add(new IfNode(isNull, offHeapPath, heapPath, BranchProbabilityData.injected(0.5, true)));
+        EndNode offHeapEnd = graph.add(new EndNode());
+        offHeapPath.setNext(offHeapEnd);
+        EndNode heapEnd = graph.add(new EndNode());
+        heapPath.setNext(heapEnd);
+
+        PiNode nonNullBase = graph.addWithoutUnique(new PiNode(base, StampFactory.objectNonNull(), heapPath));
+        AddressNode offHeapAddress = OffsetAddressNode.create(offset);
+        AddressNode onHeapAddress = new OffsetAddressNode(nonNullBase, offset);
+
+        /*
+         * The new copy of the macro node will be the on-heap variant, the original `accessNode`
+         * will be the off-heap variant.
+         */
+        GraalError.guarantee(accessNode.locationIdentity().isAny(), "initial location identity must be any, to be refined later %s / %s", accessNode, accessNode.locationIdentity());
+        VectorAPIMacroNode heapAccess = (VectorAPIMacroNode) accessNode.copyWithInputs(false);
+        accessNode.getNodeClass().replaceFirstInput(accessNode, address, offHeapAddress);
+        accessNode.getNodeClass().replaceFirstInput(accessNode, base, ConstantNode.defaultForKind(JavaKind.Object));
+        heapAccess.getNodeClass().replaceFirstInput(heapAccess, address, onHeapAddress);
+        heapAccess.getNodeClass().replaceFirstInput(heapAccess, base, nonNullBase);
+
+        if (resultKind == JavaKind.Void) {
+            b.add(accessNode);
+            b.add(heapAccess);
+        } else {
+            b.addPush(resultKind, accessNode);
+            b.pop(resultKind);
+            b.addPush(resultKind, heapAccess);
+            /*
+             * Leave the heapAccess on the stack as a placeholder value. When we add the merge, it
+             * will be assigned a frame state, and that state's stack effect must be correct. Below
+             * we will build a phi and a new state for the merge.
+             */
+        }
+        MergeNode merge = b.add(new MergeNode());
+
+        /*
+         * We added the macro nodes via the GraphBuilderContext, which is convenient because it
+         * initializes the frame states and exception paths. But it added the macros and the merge
+         * in a row, we must unlink them from each other and wire them up correctly.
+         */
+        accessNode.replaceAtPredecessor(null);
+        heapAccess.replaceAtPredecessor(null);
+        merge.replaceAtPredecessor(null);
+
+        offHeapEnd.replaceAtPredecessor(null);
+        offHeapPath.setNext(accessNode);
+        accessNode.next().setNext(offHeapEnd);
+        heapEnd.replaceAtPredecessor(null);
+        heapPath.setNext(heapAccess);
+        heapAccess.next().setNext(heapEnd);
+
+        merge.addForwardEnd(offHeapEnd);
+        merge.addForwardEnd(heapEnd);
+
+        if (resultKind != JavaKind.Void) {
+            b.pop(resultKind);  // remove the placeholder
+            b.push(resultKind, graph.addOrUnique(new ValuePhiNode(accessNode.stamp(NodeView.DEFAULT), merge, new ValueNode[]{accessNode, heapAccess})));
+        }
+        b.setStateAfter(merge);
     }
 
     /**

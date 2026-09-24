@@ -24,12 +24,13 @@
  */
 package com.oracle.graal.pointsto.meta;
 
-import java.lang.annotation.Annotation;
 import java.util.List;
 
-import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.util.AnalysisError;
+import com.oracle.svm.util.AnnotationsContainer;
+import com.oracle.svm.util.OriginalClassProvider;
 
+import jdk.graal.compiler.annotation.AnnotationValue;
 import jdk.vm.ci.meta.Assumptions;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
@@ -47,7 +48,7 @@ import jdk.vm.ci.meta.UnresolvedJavaType;
  * this case, a {@link BaseLayerType} is created using information from the base layer and wrapped
  * in an {@link AnalysisType} to replace this missing type is the new layer.
  */
-public class BaseLayerType extends BaseLayerElement implements ResolvedJavaType, OriginalClassProvider {
+public class BaseLayerType extends AnnotationsContainer implements ResolvedJavaType, OriginalClassProvider {
     /**
      * The type corresponding to this {@link BaseLayerType} can be created later while building the
      * new layer. To avoid both types having the same name, the name of the {@link BaseLayerType} is
@@ -68,12 +69,18 @@ public class BaseLayerType extends BaseLayerElement implements ResolvedJavaType,
     private final ResolvedJavaType superClass;
     private final ResolvedJavaType[] interfaces;
     private final ResolvedJavaType objectType;
+    private final MethodResolver methodResolver;
     private ResolvedJavaField[] instanceFields;
     private ResolvedJavaField[] instanceFieldsWithSuper;
 
+    @FunctionalInterface
+    public interface MethodResolver {
+        ResolvedJavaMethod resolve(BaseLayerType declaringType, ResolvedJavaMethod method, ResolvedJavaType callerType);
+    }
+
     public BaseLayerType(String name, int baseLayerId, int modifiers, boolean isInterface, boolean isEnum, boolean isRecord, boolean isInitialized, boolean isLinked,
                     String sourceFileName, ResolvedJavaType enclosingType, ResolvedJavaType componentType, ResolvedJavaType superClass, ResolvedJavaType[] interfaces, ResolvedJavaType objectType,
-                    Annotation[] annotations) {
+                    AnnotationValue[] annotations, MethodResolver methodResolver) {
         super(annotations);
         this.name = name.substring(0, name.length() - 1) + BASE_LAYER_SUFFIX;
         this.baseLayerId = baseLayerId;
@@ -89,6 +96,7 @@ public class BaseLayerType extends BaseLayerElement implements ResolvedJavaType,
         this.superClass = superClass;
         this.interfaces = interfaces;
         this.objectType = objectType;
+        this.methodResolver = methodResolver;
     }
 
     public void setInstanceFields(ResolvedJavaField[] instanceFields) {
@@ -255,10 +263,16 @@ public class BaseLayerType extends BaseLayerElement implements ResolvedJavaType,
     @Override
     public ResolvedJavaMethod resolveMethod(ResolvedJavaMethod method, ResolvedJavaType callerType) {
         /*
-         * For now, the base layer types have no methods. If they are needed, a BaseLayerMethod can
-         * be created and put in an AnalysisMethod in a similar way to this BaseLayerType.
+         * BaseLayerType only supports the concrete-method query used by analysis. Full method
+         * resolution is still unavailable because the type remains an incomplete stand-in for a
+         * persisted type from an earlier layer.
          */
         return null;
+    }
+
+    @Override
+    public ResolvedJavaMethod resolveConcreteMethod(ResolvedJavaMethod method, ResolvedJavaType callerType) {
+        return methodResolver.resolve(this, method, callerType);
     }
 
     @Override
@@ -352,21 +366,6 @@ public class BaseLayerType extends BaseLayerElement implements ResolvedJavaType,
 
     @Override
     public boolean isCloneableWithAllocation() {
-        throw AnalysisError.shouldNotReachHere("This type is incomplete and should not be used.");
-    }
-
-    @Override
-    public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
-        throw AnalysisError.shouldNotReachHere("This type is incomplete and should not be used.");
-    }
-
-    @Override
-    public Annotation[] getAnnotations() {
-        throw AnalysisError.shouldNotReachHere("This type is incomplete and should not be used.");
-    }
-
-    @Override
-    public Annotation[] getDeclaredAnnotations() {
         throw AnalysisError.shouldNotReachHere("This type is incomplete and should not be used.");
     }
 

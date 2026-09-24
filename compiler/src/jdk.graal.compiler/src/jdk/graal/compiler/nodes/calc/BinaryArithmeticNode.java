@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,8 @@ import java.util.Arrays;
 
 import jdk.graal.compiler.core.common.type.ArithmeticOpTable;
 import jdk.graal.compiler.core.common.type.ArithmeticOpTable.BinaryOp;
+import jdk.graal.compiler.core.common.type.ArithmeticOpTable.BinaryOp.Div;
+import jdk.graal.compiler.core.common.type.ArithmeticOpTable.BinaryOp.Rem;
 import jdk.graal.compiler.core.common.type.ArithmeticStamp;
 import jdk.graal.compiler.core.common.type.FloatStamp;
 import jdk.graal.compiler.core.common.type.IntegerStamp;
@@ -53,6 +55,8 @@ import jdk.graal.compiler.nodes.spi.ArithmeticLIRLowerable;
 import jdk.graal.compiler.nodes.spi.Canonicalizable;
 import jdk.graal.compiler.nodes.spi.CanonicalizerTool;
 import jdk.graal.compiler.nodes.spi.NodeValueMap;
+import jdk.graal.compiler.vector.nodes.simd.SimdBroadcastNode;
+import jdk.graal.compiler.vector.nodes.simd.SimdStamp;
 import jdk.vm.ci.meta.Constant;
 
 @NodeInfo(cycles = CYCLES_1, size = SIZE_1)
@@ -80,6 +84,21 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
         return getOp(table);
     }
 
+    /**
+     * Creates an integer constant compatible with either a scalar integer stamp or a SIMD stamp with
+     * integer lanes.
+     */
+    public static ValueNode createIntegerConstant(Stamp stamp, long value) {
+        if (stamp instanceof IntegerStamp) {
+            return ConstantNode.forIntegerStamp(stamp, value);
+        } else if (stamp instanceof SimdStamp simdStamp) {
+            Stamp componentStamp = simdStamp.getComponent(0);
+            GraalError.guarantee(componentStamp instanceof IntegerStamp, "expected integer SIMD component stamp: %s", componentStamp);
+            return new SimdBroadcastNode(ConstantNode.forIntegerStamp(componentStamp, value), simdStamp.getVectorLength());
+        }
+        throw GraalError.shouldNotReachHereUnexpectedValue(stamp); // ExcludeFromJacocoGeneratedReport
+    }
+
     @Override
     public final BinaryOp<OP> getArithmeticOp() {
         return getOp(getX(), getY());
@@ -88,31 +107,26 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
     @Override
     public ValueNode canonical(CanonicalizerTool tool, ValueNode forX, ValueNode forY) {
         NodeView view = NodeView.from(tool);
-        ValueNode result = tryConstantFold(getOp(forX, forY), forX, forY, stamp(view), view);
+        BinaryOp<OP> op = getOp(forX, forY);
+        ValueNode result = tryConstantFold(op, forX, forY, stamp(view), view);
         if (result != null) {
             return result;
         }
-        if (forX instanceof ConditionalNode && forY.isConstant() && forX.hasExactlyOneUsage()) {
-            ConditionalNode conditionalNode = (ConditionalNode) forX;
-            BinaryOp<OP> arithmeticOp = getArithmeticOp();
-            ConstantNode trueConstant = tryConstantFold(arithmeticOp, conditionalNode.trueValue(), forY, this.stamp(view), view);
-            if (trueConstant != null) {
-                ConstantNode falseConstant = tryConstantFold(arithmeticOp, conditionalNode.falseValue(), forY, this.stamp(view), view);
-                if (falseConstant != null) {
-                    // @formatter:off
-                    /* The arithmetic is folded into a constant on both sides of the conditional.
-                     * Example:
-                     *            (cond ? -5 : 5) + 100
-                     * canonicalizes to:
-                     *            (cond ? 95 : 105)
-                     */
-                    // @formatter:on
-                    return ConditionalNode.create(conditionalNode.condition, trueConstant,
-                                    falseConstant, view);
-                }
-            }
+        if (!(this instanceof GuardedNode) && !(op instanceof Div) && !(op instanceof Rem) && stamp(view) instanceof IntegerStamp) {
+            ValueNode folded = foldConditional(forX, forY, view,
+                            (newX, newY) -> tryConstantFold(op, newX, newY, stamp(view), view),
+                            this::duplicateWithInputs);
+            return folded == null ? this : folded;
         }
         return this;
+    }
+
+    private ValueNode duplicateWithInputs(ValueNode newX, ValueNode newY) {
+        var duplicate = (BinaryArithmeticNode<?>) copyWithInputs(false);
+        duplicate.x = newX;
+        duplicate.y = newY;
+        duplicate.inferStamp();
+        return duplicate;
     }
 
     @SuppressWarnings("unused")
@@ -166,6 +180,14 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
             return umax(v1, v2, view);
         } else if (IntegerStamp.OPS.getUMin().equals(op)) {
             return umin(v1, v2, view);
+        } else if (IntegerStamp.OPS.getSAdd().equals(op)) {
+            return SaturatingAddNode.create(v1, v2, view);
+        } else if (IntegerStamp.OPS.getSSub().equals(op)) {
+            return SaturatingSubNode.create(v1, v2, view);
+        } else if (IntegerStamp.OPS.getSUAdd().equals(op)) {
+            return SaturatingUAddNode.create(v1, v2, view);
+        } else if (IntegerStamp.OPS.getSUSub().equals(op)) {
+            return SaturatingUSubNode.create(v1, v2, view);
         } else if (Arrays.asList(IntegerStamp.OPS.getBinaryOps()).contains(op)) {
             GraalError.unimplemented(String.format("creating %s via BinaryArithmeticNode#binaryIntegerOp is not implemented yet", op));
         } else {
@@ -371,35 +393,6 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
 
     public static ValueNode ushr(ValueNode v1, ValueNode v2) {
         return ushr(v1, v2, NodeView.DEFAULT);
-    }
-
-    public static ValueNode branchlessMin(ValueNode v1, ValueNode v2, NodeView view) {
-        if (v1.isDefaultConstant() && !v2.isDefaultConstant()) {
-            return branchlessMin(v2, v1, view);
-        }
-        int bits = ((IntegerStamp) v1.stamp(view)).getBits();
-        assert ((IntegerStamp) v2.stamp(view)).getBits() == bits : bits + " and v2 " + v2;
-        ValueNode t1 = sub(v1, v2, view);
-        ValueNode t2 = RightShiftNode.create(t1, bits - 1, view);
-        ValueNode t3 = AndNode.create(t1, t2, view);
-        return add(v2, t3, view);
-    }
-
-    public static ValueNode branchlessMax(ValueNode v1, ValueNode v2, NodeView view) {
-        if (v1.isDefaultConstant() && !v2.isDefaultConstant()) {
-            return branchlessMax(v2, v1, view);
-        }
-        int bits = ((IntegerStamp) v1.stamp(view)).getBits();
-        assert ((IntegerStamp) v2.stamp(view)).getBits() == bits : bits + " and v2 " + v2;
-        if (v2.isDefaultConstant()) {
-            // prefer a & ~(a>>31) to a - (a & (a>>31))
-            return AndNode.create(v1, NotNode.create(RightShiftNode.create(v1, bits - 1, view)), view);
-        } else {
-            ValueNode t1 = sub(v1, v2, view);
-            ValueNode t2 = RightShiftNode.create(t1, bits - 1, view);
-            ValueNode t3 = AndNode.create(t1, t2, view);
-            return sub(v1, t3, view);
-        }
     }
 
     private enum ReassociateMatch {
@@ -614,6 +607,8 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
         } else if (node instanceof UnsignedMaxNode) {
             // Re-association from "umax(x, umax(y, C))" to "umax(umax(x, y), C)"
             return UnsignedMaxNode.create(matchValue, UnsignedMaxNode.create(otherValue1, otherValue2, view), view);
+        } else if (node instanceof SaturatingUAddNode) {
+            return SaturatingUAddNode.create(matchValue, SaturatingUAddNode.create(otherValue1, otherValue2, view), view);
         } else {
             throw GraalError.shouldNotReachHere("unhandled node in reassociation with constants: " + node); // ExcludeFromJacocoGeneratedReport
         }
@@ -731,6 +726,8 @@ public abstract class BinaryArithmeticNode<OP> extends BinaryNode implements Ari
             return UnsignedMaxNode.create(a, UnsignedMaxNode.create(m1, m2, view), view);
         } else if (node instanceof UnsignedMinNode) {
             return UnsignedMinNode.create(a, UnsignedMinNode.create(m1, m2, view), view);
+        } else if (node instanceof SaturatingUAddNode) {
+            return SaturatingUAddNode.create(a, SaturatingUAddNode.create(m1, m2, view), view);
         } else {
             throw GraalError.shouldNotReachHere("unhandled node in reassociation with matched values: " + node); // ExcludeFromJacocoGeneratedReport
         }

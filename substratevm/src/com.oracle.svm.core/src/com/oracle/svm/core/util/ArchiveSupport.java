@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -50,7 +50,8 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import java.util.stream.Stream;
 
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 public class ArchiveSupport {
 
@@ -102,14 +103,18 @@ public class ArchiveSupport {
     }
 
     public void expandJarToDir(Function<Path, Path> relativizeEntry, Path inputJarFilePath, Path outputDir, BooleanSupplier outputDirDeleted) {
+        Path normalizedOutputDir = outputDir.toAbsolutePath().normalize();
         try {
             try (JarFile archive = new JarFile(inputJarFilePath.toFile())) {
                 Enumeration<JarEntry> jarEntries = archive.entries();
                 while (jarEntries.hasMoreElements() && !outputDirDeleted.getAsBoolean()) {
                     JarEntry jarEntry = jarEntries.nextElement();
                     Path originalEntry = outputDir.resolve(jarEntry.getName());
-                    Path targetEntry = relativizeEntry.apply(originalEntry);
+                    Path targetEntry = relativizeEntry.apply(originalEntry).toAbsolutePath().normalize();
                     try {
+                        if (!targetEntry.startsWith(normalizedOutputDir)) {
+                            throw VMError.shouldNotReachHere("Archive entry '" + jarEntry.getName() + "' resolves outside of " + normalizedOutputDir);
+                        }
                         Path targetParent = targetEntry.getParent();
                         if (targetParent != null) {
                             Files.createDirectories(targetParent);
@@ -171,7 +176,7 @@ public class ArchiveSupport {
         } catch (IOException e) {
             if (isVerbose) {
                 LogUtils.info("Could not recursively delete path: " + toDelete);
-                e.printStackTrace();
+                e.printStackTrace(System.out);
             }
         }
     }

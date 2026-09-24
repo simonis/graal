@@ -24,20 +24,18 @@
  */
 package com.oracle.svm.core.jfr;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.JavaMainWrapper;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.UnmanagedMemoryUtil;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.jfr.events.ThreadCPULoadEvent;
 import com.oracle.svm.core.jfr.events.ThreadEndEvent;
 import com.oracle.svm.core.jfr.events.ThreadStartEvent;
@@ -46,13 +44,15 @@ import com.oracle.svm.core.sampler.SamplerStatistics;
 import com.oracle.svm.core.thread.JavaThreads;
 import com.oracle.svm.core.thread.PlatformThreads;
 import com.oracle.svm.core.thread.Target_java_lang_Thread;
-import com.oracle.svm.core.thread.ThreadListener;
+import com.oracle.svm.guest.staging.core.thread.ThreadListener;
 import com.oracle.svm.core.thread.VMOperation;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalInt;
-import com.oracle.svm.core.threadlocal.FastThreadLocalLong;
-import com.oracle.svm.core.threadlocal.FastThreadLocalObject;
-import com.oracle.svm.core.threadlocal.FastThreadLocalWord;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalLong;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalObject;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalWord;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
 import jdk.graal.compiler.api.replacements.Fold;
 
@@ -131,11 +131,15 @@ public class JfrThreadLocal implements ThreadListener {
 
     @Uninterruptible(reason = "Only uninterruptible code may be executed before the thread is fully started.")
     @Override
-    public void beforeThreadStart(IsolateThread isolateThread, Thread javaThread) {
+    public void afterThreadStart(IsolateThread isolateThread, Thread javaThread) {
+        Target_java_lang_Thread targetThread = SubstrateUtil.cast(javaThread, Target_java_lang_Thread.class);
+        Thread parentThread = targetThread.jfrParentThread;
+        targetThread.jfrParentThread = null;
+
         if (SubstrateJVM.get().isRecording()) {
-            SubstrateJVM.getThreadRepo().registerThread(javaThread);
+            SubstrateJVM.getThreadRepo().registerPlatformThread(javaThread);
             ThreadCPULoadEvent.initWallclockTime(isolateThread);
-            ThreadStartEvent.emit(javaThread);
+            ThreadStartEvent.emit(javaThread, parentThread);
         }
     }
 
@@ -251,10 +255,11 @@ public class JfrThreadLocal implements ThreadListener {
     /**
      * Allocation JFR events can be emitted along the allocation slow path. In some cases, when the
      * slow path may be taken, a {@link Thread} object may not yet be assigned to the current
-     * thread, see {@link PlatformThreads#ensureCurrentAssigned(String, ThreadGroup, boolean)} where
-     * a {@link Thread} object must be created before it can be assigned to the current thread. This
-     * may happen during shutdown in {@link JavaMainWrapper}. Therefore, this method must account
-     * for the case where {@link JavaThreads#getCurrentThreadOrNull()} returns null.
+     * thread, see {@link PlatformThreads#ensureCurrentThreadHasThreadObject(String, ThreadGroup,
+     * boolean)} where a {@link Thread} object must be created before it can be assigned to the
+     * current thread. This may happen during shutdown in {@link JavaMainWrapper}. Therefore, this
+     * method must account for the case where {@link JavaThreads#getCurrentThreadOrNull()} returns
+     * null.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean isThreadExcluded(Thread thread) {
@@ -267,16 +272,11 @@ public class JfrThreadLocal implements ThreadListener {
 
     public static Target_jdk_jfr_internal_event_EventWriter getEventWriter() {
         Target_jdk_jfr_internal_event_EventWriter eventWriter = javaEventWriter.get();
-        /*
-         * EventWriter objects cache various thread-specific values. Virtual threads use the
-         * EventWriter object of their carrier thread, so we need to update all cached values so
-         * that they match the virtual thread.
-         */
-        if (eventWriter != null && eventWriter.threadID != SubstrateJVM.getCurrentThreadId()) {
-            eventWriter.threadID = SubstrateJVM.getCurrentThreadId();
-            Target_java_lang_Thread tjlt = SubstrateUtil.cast(Thread.currentThread(), Target_java_lang_Thread.class);
-            eventWriter.excluded = tjlt.jfrExcluded;
+        if (eventWriter == null) {
+            return null;
         }
+
+        JfrEventWriterAccess.updateThreadData(eventWriter);
         return eventWriter;
     }
 
@@ -293,8 +293,12 @@ public class JfrThreadLocal implements ThreadListener {
             throw new OutOfMemoryError("OOME for thread local buffer");
         }
 
-        Target_jdk_jfr_internal_event_EventWriter result = JfrEventWriterAccess.newEventWriter(buffer, isThreadExcluded(JavaThreads.getCurrentThreadOrNull()));
+        /* Allocate and publish the new EventWriter object. */
+        Target_jdk_jfr_internal_event_EventWriter result = JfrEventWriterAccess.newEventWriter(buffer);
         javaEventWriter.set(result);
+
+        /* Update the already published EventWriter object. */
+        JfrEventWriterAccess.updateThreadData(result);
         return result;
     }
 
@@ -473,12 +477,7 @@ public class JfrThreadLocal implements ThreadListener {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void increaseMissedSamples() {
-        missedSamples.set(getMissedSamples() + 1);
-    }
-
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public static long getMissedSamples() {
-        return missedSamples.get();
+        missedSamples.set(missedSamples.get() + 1);
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)

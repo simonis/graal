@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,10 +26,9 @@ package com.oracle.svm.hosted.webimage.codegen.oop;
 
 import static com.oracle.svm.hosted.webimage.metrickeys.UniverseMetricKeys.EMITTED_METHODS;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -38,10 +37,12 @@ import java.util.function.Function;
 
 import org.graalvm.webimage.api.JSResource;
 
+import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedInstanceClass;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
+import com.oracle.svm.hosted.webimage.JSResourceGuestValue;
 import com.oracle.svm.hosted.webimage.Labeler;
 import com.oracle.svm.hosted.webimage.codegen.JSCodeGenTool;
 import com.oracle.svm.hosted.webimage.codegen.WebImageTypeControl;
@@ -54,9 +55,10 @@ import com.oracle.svm.hosted.webimage.logging.LoggerContext;
 import com.oracle.svm.hosted.webimage.metrickeys.ImageBreakdownMetricKeys;
 import com.oracle.svm.hosted.webimage.metrickeys.MethodMetricKeys;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
-import com.oracle.svm.hosted.webimage.util.AnnotationUtil;
 import com.oracle.svm.hosted.webimage.util.metrics.CodeSizeCollector;
 import com.oracle.svm.hosted.webimage.util.metrics.MethodMetricsCollector;
+import com.oracle.svm.util.GuestAnnotationAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.hightiercodegen.CodeBuffer;
 
 import jdk.graal.compiler.core.common.cfg.BlockMap;
@@ -133,7 +135,7 @@ public class ClassLowerer {
          * via a super call
          */
         for (HostedField field : type.getInstanceFields(false)) {
-            if (!ClassWithMirrorLowerer.isFieldRepresentedInJavaScript(field)) {
+            if (!ClassWithMirrorLowerer.isFieldRepresentedInJavaScript(codeGenTool.getProviders().getMetaAccess(), field)) {
                 genFieldInitialization(codeGenTool, masm, field);
             }
         }
@@ -301,18 +303,15 @@ public class ClassLowerer {
      * Emits a static method on the given type for initializing JS resource, if any are present.
      */
     private static void lowerJSResources(HostedType type, JSCodeGenTool loweringTool) {
-        var requiredJSResources = AnnotationUtil.getDeclaredAnnotationsByType(type, JSResource.class, JSResource.Group.class, JSResource.Group::value);
+        var requiredJSResources = GuestAnnotationAccess.getAnnotationValuesByType(type, JSResource.class, JSResource.Group.class);
 
-        /*
-         * JavaScriptResource is annotated as @Repeatable(JavaScriptResource.Group.class).
-         * getDeclaredAnnotationsByType() must detect @Repeatable and thus also look for
-         * JavaScriptResource.Group.
-         */
-        assert requiredJSResources.size() != 0 || !type.isAnnotationPresent(JSResource.Group.class) : "Repeated annotation not detected by getDeclaredAnnotationsByType";
+        /* The metadata lookup must include annotations nested in JSResource.Group. */
+        assert !requiredJSResources.isEmpty() ||
+                        !GuestAnnotationAccess.isAnnotationPresent(type, JSResource.Group.class) : "Repeated annotation not detected by metadata lookup";
 
         List<String> resourceNames = new ArrayList<>(requiredJSResources.size());
 
-        requiredJSResources.stream().map(JSResource::value).forEachOrdered(resourceNames::add);
+        requiredJSResources.stream().map(JSResourceGuestValue::from).map(JSResourceGuestValue::value).forEachOrdered(resourceNames::add);
         for (Function<ResolvedJavaType, String[]> resourceProvider : resourceProviders) {
             String[] resources = resourceProvider.apply(type);
             resourceNames.addAll(List.of(resources));
@@ -321,27 +320,30 @@ public class ClassLowerer {
         CodeBuffer masm = loweringTool.getCodeBuffer();
 
         if (!resourceNames.isEmpty()) {
-            Class<?> clazz = type.getJavaClass();
             masm.emitNewLine();
             String initFun = loweringTool.getJSProviders().typeControl().requestTypeName(type);
             masm.emitText("runtime.jsResourceInits." + initFun + " = () => {");
             masm.emitNewLine();
             for (String resName : resourceNames) {
                 loweringTool.genComment(resName);
-                try (InputStream is = clazz.getResourceAsStream(resName)) {
-                    if (is == null) {
-                        throw new FileNotFoundException(resName);
-                    }
-
-                    masm.emitText("(0,eval)(");
-                    masm.emitNewLine();
-                    masm.emitEscapedStringLiteral(new InputStreamReader(is));
-                    masm.emitNewLine();
-                    masm.emitText(");");
-                    masm.emitNewLine();
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
+                byte[] bytes = JVMCIReflectionUtil.getResource(type, resName);
+                if (bytes == null) {
+                    throw UserError.abort("Resource at '%s' not found for inclusion using @JS.Resource on %s", resName, type);
                 }
+
+                String content;
+                try {
+                    content = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+                } catch (CharacterCodingException e) {
+                    throw UserError.abort(e, "Resource at '%s' for inclusion using @JS.Resource on %s has invalid encoding", resName, type);
+                }
+
+                masm.emitText("(0,eval)(");
+                masm.emitNewLine();
+                masm.emitEscapedStringLiteral(content);
+                masm.emitNewLine();
+                masm.emitText(");");
+                masm.emitNewLine();
             }
             masm.emitText("}");
             masm.emitNewLine();

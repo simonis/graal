@@ -24,17 +24,17 @@
  */
 package com.oracle.svm.core.thread;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.word.LocationIdentity;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.threadlocal.FastThreadLocal;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.core.threadlocal.FastThreadLocalInt;
 import com.oracle.svm.core.threadlocal.VMThreadLocalOffsetProvider;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalInt;
+import com.oracle.svm.shared.Uninterruptible;
 
 /**
  * Per-thread counter for safepoint checks. If the counter reaches a value less or equal 0, the
@@ -70,6 +70,7 @@ public class SafepointCheckCounter {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     static boolean compareAndSet(IsolateThread thread, int oldValue, int newValue) {
+        assert CurrentIsolate.getCurrentThread() == thread || VMThreads.StatusSupport.isStatusCreated(thread) || VMOperationControl.mayExecuteVmOperations();
         return valueTL.compareAndSet(thread, oldValue, newValue);
     }
 

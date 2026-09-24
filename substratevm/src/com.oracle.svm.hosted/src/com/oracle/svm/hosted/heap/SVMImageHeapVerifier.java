@@ -26,8 +26,6 @@ package com.oracle.svm.hosted.heap;
 
 import java.util.Map;
 
-import org.graalvm.nativeimage.ImageSingletons;
-
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.ObjectScanner;
 import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
@@ -59,16 +57,16 @@ public class SVMImageHeapVerifier extends HeapSnapshotVerifier {
      * An additional analysis iteration is required if a verification run modifies state such as:
      * 
      * - an image heap map, e.g., via an object replacer like
-     * com.oracle.svm.enterprise.core.stringformat.StringFormatFeature.collectZeroDigits(). Signal
-     * this by returning true to make sure that
-     * com.oracle.graal.pointsto.heap.ImageHeapCollectionFeature.duringAnalysis() is run to properly
-     * patch all ImageHeapMaps.
+     * com.oracle.svm.hosted.stringformat.StringFormatFeature.collectZeroDigits(). Signal this by
+     * returning true to make sure that
+     * com.oracle.svm.hosted.heap.ImageHeapCollectionSupport.updateAndRescanCollections() is run to
+     * properly patch all ImageHeapMaps.
      * 
      * - runtime reflection registration.
      * 
      */
     private static boolean imageStateModified() {
-        return ImageSingletons.lookup(ImageHeapCollectionFeature.class).needsUpdate();
+        return ImageHeapCollectionSupport.singleton().needsUpdate();
     }
 
     @Override

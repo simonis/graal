@@ -24,11 +24,13 @@
  */
 package jdk.graal.compiler.hotspot.stubs;
 
+import static jdk.graal.compiler.hotspot.replacements.HotSpotReplacementsUtil.HotSpotFieldLocationIdentity.PENDING_EXCEPTION_LOCATION;
 import static jdk.graal.compiler.hotspot.stubs.StubUtil.fatal;
 import static jdk.vm.ci.meta.DeoptimizationReason.RuntimeConstraint;
 
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.api.replacements.Fold.InjectedParameter;
@@ -46,7 +48,6 @@ import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.replacements.SnippetTemplate.AbstractTemplates;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
 import jdk.graal.compiler.replacements.Snippets;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.DeoptimizationAction;
 
 public class ForeignCallSnippets implements Snippets {
@@ -70,7 +71,11 @@ public class ForeignCallSnippets implements Snippets {
      */
     @Snippet(allowMissingProbabilities = true)
     public static void handlePendingException(Word thread, boolean shouldClearException, boolean isObjectResult) {
-        if ((shouldClearException && HotSpotReplacementsUtil.clearPendingException(thread) != null) || (!shouldClearException && HotSpotReplacementsUtil.getPendingException(thread) != null)) {
+        Object pendingException = PENDING_EXCEPTION_LOCATION.readObject(thread);
+        if (shouldClearException) {
+            PENDING_EXCEPTION_LOCATION.writeObject(thread, null);
+        }
+        if (pendingException != null) {
             if (isObjectResult) {
                 getAndClearObjectResult(thread);
             }

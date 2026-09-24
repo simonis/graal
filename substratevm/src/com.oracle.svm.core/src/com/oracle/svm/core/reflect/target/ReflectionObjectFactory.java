@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,48 +31,61 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
 
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.configure.RuntimeConditionSet;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.configure.RuntimeDynamicAccessMetadata;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 public final class ReflectionObjectFactory {
     public static final int FIELD_OFFSET_NONE = 0;
 
-    public static Field newField(RuntimeConditionSet conditions, Class<?> declaringClass, String name, Class<?> type, int modifiers,
+    public static Field newField(RuntimeDynamicAccessMetadata dynamicAccessMetadata, Class<?> declaringClass, String name, Class<?> type, int modifiers,
                     boolean trustedFinal, String signature, byte[] annotations, int offset, String deletedReason, byte[] typeAnnotations) {
+        return newField(dynamicAccessMetadata, declaringClass, name, type, modifiers, trustedFinal, signature, annotations, offset,
+                        MultiLayeredImageSingleton.LAYER_NUM_UNINSTALLED, deletedReason, typeAnnotations);
+    }
+
+    public static Field newField(RuntimeDynamicAccessMetadata dynamicAccessMetadata, Class<?> declaringClass, String name, Class<?> type, int modifiers,
+                    boolean trustedFinal, String signature, byte[] annotations, int offset, int installedLayerNumber, String deletedReason, byte[] typeAnnotations) {
         Target_java_lang_reflect_Field field = new Target_java_lang_reflect_Field();
         field.constructor(declaringClass, name, type, modifiers, trustedFinal, -1, signature, annotations);
         field.offset = offset;
         field.deletedReason = deletedReason;
+        field.installedLayerNumber = installedLayerNumber;
         Target_java_lang_reflect_AccessibleObject accessibleObject = SubstrateUtil.cast(field, Target_java_lang_reflect_AccessibleObject.class);
         accessibleObject.typeAnnotations = typeAnnotations;
-        accessibleObject.conditions = conditions;
+        accessibleObject.dynamicAccessMetadata = dynamicAccessMetadata;
         return SubstrateUtil.cast(field, Field.class);
     }
 
-    public static Method newMethod(RuntimeConditionSet conditions, Class<?> declaringClass, String name, Class<?>[] parameterTypes, Class<?> returnType, Class<?>[] exceptionTypes, int modifiers,
-                    String signature, byte[] annotations, byte[] parameterAnnotations, byte[] annotationDefault, Object accessor, byte[] rawParameters,
+    public static Method newMethod(RuntimeDynamicAccessMetadata dynamicAccessMetadata, Class<?> declaringClass, String name, Class<?>[] parameterTypes, Class<?> returnType, Class<?>[] exceptionTypes,
+                    int modifiers,
+                    String signature, byte[] annotations, byte[] parameterAnnotations, byte[] annotationDefault, Object accessor, Object parameterMetadata,
                     byte[] typeAnnotations, int layerId) {
         Target_java_lang_reflect_Method method = new Target_java_lang_reflect_Method();
         method.constructor(declaringClass, name, parameterTypes, returnType, exceptionTypes, modifiers, -1, signature, annotations, parameterAnnotations, annotationDefault);
         method.methodAccessorFromMetadata = (Target_jdk_internal_reflect_MethodAccessor) accessor;
-        SubstrateUtil.cast(method, Target_java_lang_reflect_Executable.class).rawParameters = rawParameters;
+        Target_java_lang_reflect_Executable executable = SubstrateUtil.cast(method, Target_java_lang_reflect_Executable.class);
+        executable.parameterMetadata = parameterMetadata;
+        executable.layerId = layerId;
         Target_java_lang_reflect_AccessibleObject accessibleObject = SubstrateUtil.cast(method, Target_java_lang_reflect_AccessibleObject.class);
         accessibleObject.typeAnnotations = typeAnnotations;
-        accessibleObject.conditions = conditions;
-        method.layerId = layerId;
+        accessibleObject.dynamicAccessMetadata = dynamicAccessMetadata;
         return SubstrateUtil.cast(method, Method.class);
     }
 
-    public static Constructor<?> newConstructor(RuntimeConditionSet conditions, Class<?> declaringClass, Class<?>[] parameterTypes, Class<?>[] exceptionTypes, int modifiers, String signature,
-                    byte[] annotations, byte[] parameterAnnotations, Object accessor, byte[] rawParameters, byte[] typeAnnotations) {
+    public static Constructor<?> newConstructor(RuntimeDynamicAccessMetadata dynamicAccessMetadata, Class<?> declaringClass, Class<?>[] parameterTypes, Class<?>[] exceptionTypes, int modifiers,
+                    String signature,
+                    byte[] annotations, byte[] parameterAnnotations, Object accessor, Object parameterMetadata, byte[] typeAnnotations, int layerId) {
         Target_java_lang_reflect_Constructor ctor = new Target_java_lang_reflect_Constructor();
         ctor.constructor(declaringClass, parameterTypes, exceptionTypes, modifiers, -1, signature, annotations, parameterAnnotations);
         ctor.constructorAccessorFromMetadata = (Target_jdk_internal_reflect_ConstructorAccessor) accessor;
-        SubstrateUtil.cast(ctor, Target_java_lang_reflect_Executable.class).rawParameters = rawParameters;
+        Target_java_lang_reflect_Executable executable = SubstrateUtil.cast(ctor, Target_java_lang_reflect_Executable.class);
+        executable.parameterMetadata = parameterMetadata;
+        executable.layerId = layerId;
         Target_java_lang_reflect_AccessibleObject accessibleObject = SubstrateUtil.cast(ctor, Target_java_lang_reflect_AccessibleObject.class);
         accessibleObject.typeAnnotations = typeAnnotations;
-        accessibleObject.conditions = conditions;
+        accessibleObject.dynamicAccessMetadata = dynamicAccessMetadata;
         return SubstrateUtil.cast(ctor, Constructor.class);
     }
 

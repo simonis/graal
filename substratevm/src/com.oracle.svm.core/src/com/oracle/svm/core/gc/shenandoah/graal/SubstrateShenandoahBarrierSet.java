@@ -33,9 +33,13 @@ import com.oracle.svm.core.heap.ReferenceAccess;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.memory.BarrierType;
+import jdk.graal.compiler.core.common.type.AbstractObjectStamp;
 import jdk.graal.compiler.core.common.type.Stamp;
+import jdk.graal.compiler.nodes.NodeView;
 import jdk.graal.compiler.nodes.ValueNode;
 import jdk.graal.compiler.nodes.gc.shenandoah.ShenandoahBarrierSet;
+import jdk.graal.compiler.nodes.memory.FixedAccessNode;
+import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -72,6 +76,32 @@ public class SubstrateShenandoahBarrierSet extends ShenandoahBarrierSet {
         this.useSATBBarrier = !passive;
         this.useCASBarrier = !passive;
         this.useCardBarrier = ShenandoahOptions.isGenerational();
+    }
+
+    /**
+     * Skips barrier insertion for vectorized (SIMD) object reads.
+     *
+     * <p>Auto-vectorization can merge several barriered object-array element reads into a single
+     * SIMD read. Such a node reports {@link Stamp#isObjectStamp()} {@code == true} (its lanes are
+     * objects), but its stamp is a {@code SimdStamp}, which is <em>not</em> an
+     * {@link AbstractObjectStamp}. The Shenandoah load-reference barrier operates on a single
+     * scalar reference - {@code ShenandoahLoadRefBarrierNode} requires an
+     * {@link AbstractObjectStamp} and would otherwise fail with a {@code ClassCastException} during
+     * LIR generation - so it cannot be attached to a vectorized read.
+     *
+     * <p>Skipping the barrier here is safe under Shenandoah's load-reference-barrier model: the
+     * copied references remain valid (they may point into from-space) and are forwarded on their
+     * eventual scalar loads and by the concurrent update-references phase. All scalar object reads
+     * carry an {@link AbstractObjectStamp} (including {@code NarrowOopStamp}) and are handled by the
+     * shared implementation as before.
+     */
+    @Override
+    public void addBarriers(FixedAccessNode n, CoreProviders context) {
+        Stamp accessStamp = n.stamp(NodeView.DEFAULT);
+        if (accessStamp.isObjectStamp() && !(accessStamp instanceof AbstractObjectStamp)) {
+            return;
+        }
+        super.addBarriers(n, context);
     }
 
     /**

@@ -30,13 +30,18 @@ import com.oracle.svm.core.pltgot.amd64.AMD64ExitMethodAddressResolutionOp;
 import com.oracle.svm.core.pltgot.amd64.AMD64MethodAddressResolutionDispatcher;
 import com.oracle.svm.hosted.pltgot.HostedPLTGOTConfiguration;
 import com.oracle.svm.hosted.pltgot.PLTStubGenerator;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterConfig;
 import jdk.vm.ci.code.RegisterValue;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public final class AMD64HostedPLTGOTConfiguration extends HostedPLTGOTConfiguration {
 
     @Override
@@ -45,7 +50,7 @@ public final class AMD64HostedPLTGOTConfiguration extends HostedPLTGOTConfigurat
     }
 
     @Override
-    public PLTStubGenerator getArchSpecificPLTStubGenerator() {
+    public PLTStubGenerator createArchSpecificPLTStubGenerator() {
         return new AMD64PLTStubGenerator();
     }
 

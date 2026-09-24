@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.jvmti;
 
-import static com.oracle.svm.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
+import static com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess.Access.NO_ALLOCATION;
 import static com.oracle.svm.core.jvmti.headers.JvmtiError.JVMTI_ERROR_ACCESS_DENIED;
 import static com.oracle.svm.core.jvmti.headers.JvmtiError.JVMTI_ERROR_ILLEGAL_ARGUMENT;
 import static com.oracle.svm.core.jvmti.headers.JvmtiError.JVMTI_ERROR_INVALID_EVENT_TYPE;
@@ -53,14 +53,14 @@ import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.c.BooleanPointer;
-import com.oracle.svm.core.c.function.CEntryPointActions;
-import com.oracle.svm.core.c.function.CEntryPointErrors;
-import com.oracle.svm.core.c.function.CEntryPointOptions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointActions;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
+import com.oracle.svm.guest.staging.c.function.CEntryPointOptions;
 import com.oracle.svm.core.heap.GCCause;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.jdk.UninterruptibleUtils;
 import com.oracle.svm.core.jni.JNIObjectHandles;
 import com.oracle.svm.core.jni.headers.JNIFieldId;
@@ -111,8 +111,7 @@ import com.oracle.svm.core.jvmti.headers.JvmtiVersion;
 import com.oracle.svm.core.jvmti.headers.VoidPointerPointer;
 import com.oracle.svm.core.memory.NullableNativeMemory;
 import com.oracle.svm.core.nmt.NmtCategory;
-
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.Word;
 
 /**
  * Defines all JVMTI entry points. This class may only contain methods that are annotated with
@@ -497,7 +496,7 @@ public final class JvmtiFunctions {
     @CEntryPoint(include = JvmtiEnabled.class, publishAs = CEntryPoint.Publish.NotPublished)
     @CEntryPointOptions(prologue = JvmtiEnvEnterPrologue.class)
     static int ForceGarbageCollection(JvmtiExternalEnv externalEnv) {
-        Heap.getHeap().getGC().collectCompletely(GCCause.JvmtiForceGC);
+        Heap.getHeap().getGC().collect(GCCause.JvmtiForceGC);
         return JVMTI_ERROR_NONE.getCValue();
     }
 

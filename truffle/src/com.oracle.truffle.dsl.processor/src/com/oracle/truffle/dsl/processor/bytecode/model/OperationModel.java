@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.dsl.processor.bytecode.model;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -48,8 +49,8 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.type.TypeMirror;
 
 import com.oracle.truffle.dsl.processor.bytecode.parser.CustomOperationParser;
-import com.oracle.truffle.dsl.processor.bytecode.parser.SpecializationSignatureParser.SpecializationSignature;
 import com.oracle.truffle.dsl.processor.java.model.CodeVariableElement;
+import com.oracle.truffle.dsl.processor.model.NodeData;
 import com.oracle.truffle.dsl.processor.model.SpecializationData;
 
 public class OperationModel implements PrettyPrintable {
@@ -77,14 +78,19 @@ public class OperationModel implements PrettyPrintable {
         LOAD_NULL,
         LOAD_ARGUMENT,
         LOAD_EXCEPTION,
+        BIND_STACKVALUE,
+        LOAD_STACKVALUE,
+        STORE_STACKVALUE,
         LOAD_LOCAL,
         LOAD_LOCAL_MATERIALIZED,
         STORE_LOCAL,
         STORE_LOCAL_MATERIALIZED,
+        CLEAR_LOCAL,
 
         CUSTOM,
         CUSTOM_SHORT_CIRCUIT,
         CUSTOM_YIELD,
+        CUSTOM_RETURN,
         CUSTOM_INSTRUMENTATION,
     }
 
@@ -115,6 +121,7 @@ public class OperationModel implements PrettyPrintable {
             CONSTANT,
             LOCAL,
             LOCAL_ARRAY,
+            STACK_VALUE,
             TAGS,
             LABEL,
             FINALLY_GENERATOR,
@@ -151,25 +158,26 @@ public class OperationModel implements PrettyPrintable {
     public final String javadoc;
 
     /**
-     * Transparent operations do not have their own logic; any value produced by their children is
-     * simply forwarded to the parent operation.
-     *
-     * e.g., blocks do not have their own logic, but are useful to support operation sequencing.
-     * Source position-related operations are also transparent.
+     * Whether this operation forwards its last child's result and bytecode index to its parent.
      */
-    public boolean isTransparent;
+    public boolean forwardsChildResult;
     public boolean isVoid;
     public boolean isVariadic;
     public int variadicOffset = 0;
     public boolean variadicReturn;
 
     /**
-     * Internal operations are generated and used internally by the DSL. They should not be exposed
-     * through the builder and should not be serialized.
+     * Internal operations are generated and used internally by the DSL. They should not be
+     * serialized.
      */
     public boolean isInternal;
+    /**
+     * Private operations should not be exposed to the user through the builder. {@link #isInternal}
+     * implies {@link #isPrivate}.
+     */
+    public boolean isPrivate;
 
-    public InstructionModel instruction;
+    public final List<InstructionModel> instructions = new ArrayList<>();
     public CustomOperationModel customModel;
 
     // The constant operands parsed from {@code @ConstantOperand} annotations.
@@ -184,10 +192,6 @@ public class OperationModel implements PrettyPrintable {
 
     public OperationArgument[] operationBeginArguments = EMPTY_ARGUMENTS;
     public OperationArgument[] operationEndArguments = EMPTY_ARGUMENTS;
-    public boolean operationBeginArgumentVarArgs = false;
-
-    // A unique identifier for instrumentation instructions.
-    public int instrumentationIndex;
 
     public OperationModel(BytecodeDSLModel parent, int id, OperationKind kind, String name, String builderName, String javadoc) {
         this.parent = parent;
@@ -210,24 +214,19 @@ public class OperationModel implements PrettyPrintable {
         return isVariadic || numDynamicOperands() > 0;
     }
 
-    public void setInstrumentationIndex(int instrumentationIndex) {
-        this.instrumentationIndex = instrumentationIndex;
-    }
-
-    public SpecializationSignature getSpecializationSignature(SpecializationData specialization) {
+    public Signature getSpecializationSignature(SpecializationData specialization) {
         return getSpecializationSignature(List.of(specialization));
     }
 
-    public SpecializationSignature getSpecializationSignature(List<SpecializationData> specializations) {
+    public Signature getSpecializationSignature(List<SpecializationData> specializations) {
         List<ExecutableElement> methods = specializations.stream().map(s -> s.getMethod()).toList();
-        SpecializationSignature includedSpecializationSignatures = CustomOperationParser.parseSignatures(methods,
+        return CustomOperationParser.parseSpecializationSignatures(methods,
                         specializations.get(0).getNode(),
                         constantOperands).get(0);
-        return includedSpecializationSignatures;
     }
 
-    public OperationModel setTransparent(boolean isTransparent) {
-        this.isTransparent = isTransparent;
+    public OperationModel setForwardsChildResult(boolean forwardsChildResult) {
+        this.forwardsChildResult = forwardsChildResult;
         return this;
     }
 
@@ -237,8 +236,8 @@ public class OperationModel implements PrettyPrintable {
         return this;
     }
 
-    public boolean isTransparent() {
-        return isTransparent;
+    public boolean forwardsChildResult() {
+        return forwardsChildResult;
     }
 
     public OperationModel setVoid(boolean isVoid) {
@@ -260,7 +259,10 @@ public class OperationModel implements PrettyPrintable {
     }
 
     public OperationModel setInstruction(InstructionModel instruction) {
-        this.instruction = instruction;
+        if (!instructions.isEmpty()) {
+            throw new AssertionError("instruction already set for this operation");
+        }
+        this.instructions.add(instruction);
         if (instruction.operation != null) {
             throw new AssertionError("operation already set");
         }
@@ -268,9 +270,22 @@ public class OperationModel implements PrettyPrintable {
         return this;
     }
 
-    public OperationModel setOperationBeginArgumentVarArgs(boolean varArgs) {
-        this.operationBeginArgumentVarArgs = varArgs;
-        return this;
+    public boolean hasInstruction() {
+        return !instructions.isEmpty();
+    }
+
+    public InstructionModel instruction() {
+        if (instructions.size() != 1) {
+            throw new AssertionError("Expected exactly one instruction for operation %s, but found %s.".formatted(name, instructions));
+        }
+        return instructions.get(0);
+    }
+
+    public NodeData getNodeData() {
+        if (instructions.isEmpty()) {
+            return null;
+        }
+        return instructions.getFirst().nodeData;
     }
 
     public OperationModel setOperationBeginArguments(OperationArgument... operationBeginArguments) {
@@ -301,6 +316,11 @@ public class OperationModel implements PrettyPrintable {
 
     public OperationModel setInternal() {
         this.isInternal = true;
+        return setPrivate();
+    }
+
+    public OperationModel setPrivate() {
+        this.isPrivate = true;
         return this;
     }
 
@@ -315,15 +335,19 @@ public class OperationModel implements PrettyPrintable {
     }
 
     public boolean isCustom() {
-        return kind == OperationKind.CUSTOM || kind == OperationKind.CUSTOM_YIELD || kind == OperationKind.CUSTOM_SHORT_CIRCUIT || kind == OperationKind.CUSTOM_INSTRUMENTATION;
+        return kind == OperationKind.CUSTOM || kind == OperationKind.CUSTOM_YIELD || kind == OperationKind.CUSTOM_RETURN || kind == OperationKind.CUSTOM_SHORT_CIRCUIT ||
+                        kind == OperationKind.CUSTOM_INSTRUMENTATION;
+    }
+
+    public boolean isCustomVariadic() {
+        return switch (kind) {
+            case CUSTOM, CUSTOM_YIELD, CUSTOM_INSTRUMENTATION -> isVariadic;
+            default -> false;
+        };
     }
 
     public boolean requiresRootOperation() {
         return kind != OperationKind.SOURCE && kind != OperationKind.SOURCE_SECTION;
-    }
-
-    public boolean requiresStackBalancing() {
-        return kind != OperationKind.TAG;
     }
 
     public String getConstantName() {

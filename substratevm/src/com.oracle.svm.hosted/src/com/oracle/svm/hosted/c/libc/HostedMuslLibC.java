@@ -29,7 +29,11 @@ import java.util.List;
 
 import com.oracle.svm.core.c.libc.MuslLibC;
 import com.oracle.svm.hosted.image.AbstractImage;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class HostedMuslLibC extends MuslLibC implements HostedLibCBase {
     @Override
     public List<String> getAdditionalQueryCodeCompilerOptions() {

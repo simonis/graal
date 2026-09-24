@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -442,6 +442,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
             return node;  // error sync point
         }
 
+        initializeCacheUsedInCache(node);
         initializeUncachable(node);
         initializeAOT(node);
         boolean recommendInline = initializeInlinable(resolver, node);
@@ -660,45 +661,18 @@ public final class NodeParser extends AbstractParser<NodeData> {
             }
 
             boolean usesInlinedNodes = false;
-            boolean usesSpecializationClass = FlatNodeGenFactory.useSpecializationClass(specialization);
-            boolean usesSharedInlineNodes = false;
-            boolean usesExclusiveInlineNodes = false;
-            ArrayList<String> sharedInlinedCachesNames = new ArrayList<>(specialization.getCaches().size());
             for (CacheExpression cache : specialization.getCaches()) {
                 if (cache.getInlinedNode() != null) {
                     usesInlinedNodes = true;
-                    if (cache.getSharedGroup() != null) {
-                        sharedInlinedCachesNames.add(cache.getParameter().getLocalName());
-                        usesSharedInlineNodes = true;
-                    } else {
-                        usesExclusiveInlineNodes = true;
-                    }
+                    break;
                 }
             }
 
             if (usesInlinedNodes) {
-                if (usesSpecializationClass && usesSharedInlineNodes && usesExclusiveInlineNodes) {
-                    specialization.addSuppressableWarning(TruffleSuppressedWarnings.INTERPRETED_PERFORMANCE,
-                                    String.format("It is discouraged that specializations with specialization data class combine " + //
-                                                    "shared and exclusive @Cached inline nodes or profiles arguments. Truffle inlining support code then must " + //
-                                                    "traverse the parent pointer in order to resolve the inline data of the shared nodes or profiles, " + //
-                                                    "which incurs performance hit in the interpreter. To resolve this: make @Exclusive all the currently @Shared inline " + //
-                                                    "arguments (%s), or merge specializations to avoid @Shared arguments, or if the footprint benefit " + //
-                                                    "outweighs the performance degradation, then suppress the warning.", String.join(", ", sharedInlinedCachesNames)));
-                }
-
                 boolean isStatic = element.getModifiers().contains(Modifier.STATIC);
+                boolean nodeBound = specialization.isNodeBound();
                 if (node.isGenerateInline()) {
-                    /*
-                     * For inlined nodes we need pass down the inlineTarget Node even for shared
-                     * nodes using the first specialization parameter.
-                     */
-                    boolean firstParameterNode = false;
-                    for (Parameter p : specialization.getSignatureParameters()) {
-                        firstParameterNode = p.isDeclared();
-                        break;
-                    }
-                    if (!firstParameterNode) {
+                    if (!nodeBound) {
                         specialization.addError("For @%s annotated nodes all specialization methods with inlined cached values must declare 'Node node' dynamic parameter. " +
                                         "This parameter must be passed along to inlined cached values. " +
                                         "To resolve this add the 'Node node' parameter as first parameter to the specialization method and pass the value along to inlined cached values.",
@@ -709,24 +683,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
                                         "To resolve this add the static keyword to the specialization method. ",
                                         getSimpleName(types.GenerateInline));
                     }
-                } else if (mode == ParseMode.EXPORTED_MESSAGE || FlatNodeGenFactory.substituteNodeWithSpecializationClass(specialization)) {
-                    /*
-                     * For exported message we need to use @Bind("$node") always even for any
-                     * inlined cache as the "this" receiver refers to the library receiver.
-                     *
-                     * For regular cached nodes @Bind("this") must be used if a specialization data
-                     * class is in use. If all inlined caches are shared we can use this and avoid
-                     * the warning.
-                     */
-                    boolean hasNodeParameter = false;
-                    for (CacheExpression cache : specialization.getCaches()) {
-                        if (cache.isBind() && specialization.isNodeReceiverBound(cache.getDefaultExpression())) {
-                            hasNodeParameter = true;
-                            break;
-                        }
-                    }
 
-                    if (!hasNodeParameter) {
+                } else if (mode == ParseMode.EXPORTED_MESSAGE || FlatNodeGenFactory.substituteNodeWithSpecializationClass(specialization)) {
+                    if (!nodeBound) {
                         String nodeParameter = String.format("@%s Node node", getSimpleName(types.Bind));
                         String message = String.format(
                                         "For this specialization with inlined cache parameters a '%s' parameter must be declared. " + //
@@ -747,8 +706,8 @@ public final class NodeParser extends AbstractParser<NodeData> {
 
                         specialization.addSuppressableWarning(TruffleSuppressedWarnings.STATIC_METHOD, message);
                     }
-
                 }
+
             }
 
             if (specialization.hasMultipleInstances() && ElementUtils.getAnnotationValue(specialization.getMessageAnnotation(), "limit", false) == null) {
@@ -1222,7 +1181,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
         Map<SharableCache, Collection<CacheExpression>> groups = computeSharableCaches(nodes);
         // compute unnecessary sharing.
 
-        Map<String, List<SharableCache>> declaredGroups = new HashMap<>();
+        Set<String> disabledSharingGroups = new HashSet<>();
+
+        Map<String, List<SharableCache>> declaredGroups = new LinkedHashMap<>();
         for (NodeData node : nodes) {
             for (SpecializationData specialization : node.getSpecializations()) {
                 for (CacheExpression cache : specialization.getCaches()) {
@@ -1232,6 +1193,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     String group = cache.getSharedGroup();
                     if (group != null) {
                         declaredGroups.computeIfAbsent(group, (v) -> new ArrayList<>()).add(new SharableCache(specialization, cache));
+                    }
+                    if (cache.getDisabledSharingGroup() != null) {
+                        disabledSharingGroups.add(cache.getDisabledSharingGroup());
                     }
                 }
             }
@@ -1264,6 +1228,22 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     Collection<CacheExpression> expressions = groups.get(sharable);
                     List<SharableCache> declaredSharing = declaredGroups.get(group);
                     if (group != null) {
+                        if (disabledSharingGroups.contains(group) || (cache.getInlinedNode() != null)) {
+                            /*
+                             * No validation for disabled groups. This means we need to force them
+                             * to be @Shared even if there is no other sharing specialization. this
+                             * is fine because there should be at least another warning hinting that
+                             * sharing groups were disabled. Sharing groups are currently only
+                             * disabled if shared and exclusive inlined nodes are used in the same
+                             * specialization.
+                             *
+                             * If we weren't forcing the sharing here, it could happen that prior
+                             * shared and exclusive inlined caches could get mixed again.
+                             */
+                            sharedExpressions.put(sharable.expression, group);
+                            continue;
+                        }
+
                         if (declaredSharing.size() <= 1) {
                             if (!ElementUtils.elementEquals(templateType, declaringElement)) {
                                 // ignore errors for single declared sharing as its not in the same
@@ -1286,8 +1266,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
                                                 types.Cached_Shared.asElement().getSimpleName().toString());
                             }
                         } else {
-                            if (declaredSharing.size() <= 1) {
-
+                            if (declaredSharing.size() <= 1 && !disabledSharingGroups.contains(cache.getSharedGroup())) {
                                 String error = String.format("No other cached parameters are specified as shared with the group '%s'.", group);
                                 Set<String> similarGroups = new LinkedHashSet<>(declaredGroups.keySet());
                                 similarGroups.remove(group);
@@ -1302,6 +1281,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
                                     }
                                     error += appendix.toString() + "?";
                                 }
+
                                 cache.addError(cache.getSharedGroupMirror(), cache.getSharedGroupValue(), error);
                             } else {
                                 StringBuilder b = new StringBuilder();
@@ -1340,7 +1320,8 @@ public final class NodeParser extends AbstractParser<NodeData> {
                                     filteredExpressions.add(expression);
                                 }
                             }
-                            if (filteredExpressions.size() > 1 && findAnnotationMirror(cache.getParameter().getVariableElement(), types.Cached_Exclusive) == null) {
+                            if (filteredExpressions.size() > 1 && findAnnotationMirror(cache.getParameter().getVariableElement(), types.Cached_Exclusive) == null &&
+                                            findAnnotationMirror(cache.getParameter().getVariableElement(), types.Cached_Shared) == null) {
                                 StringBuilder sharedCaches = new StringBuilder();
                                 Set<String> recommendedGroups = new LinkedHashSet<>();
                                 for (CacheExpression cacheExpression : filteredExpressions) {
@@ -1365,7 +1346,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     }
                 }
             }
+
         }
+
         return sharedExpressions;
     }
 
@@ -1727,10 +1710,10 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     usedTypes.add(parameter.getType());
                 }
                 usedTypes = uniqueSortedTypes(usedTypes, false);
-
                 if (usedTypes.size() == 1) {
                     polymorphicType = usedTypes.iterator().next();
                 } else {
+                    // we cannot compute a common super type as it might be ambiguous
                     polymorphicType = getCommonSuperType(context, usedTypes);
                 }
 
@@ -2627,6 +2610,24 @@ public final class NodeParser extends AbstractParser<NodeData> {
         initializeSpecializationIdsWithMethodNames(node.getSpecializations());
     }
 
+    private static void initializeCacheUsedInCache(final NodeData node) {
+        for (SpecializationData specialization : node.getSpecializations()) {
+            for (CacheExpression cache : specialization.getCaches()) {
+                if (cache.isAlwaysInitialized()) {
+                    continue;
+                }
+                DSLExpression cacheExpression = cache.getDefaultExpression();
+                if (cacheExpression == null) {
+                    continue;
+                }
+                Set<CacheExpression> caches = specialization.getBoundCaches(cacheExpression, false);
+                for (CacheExpression boundCache : caches) {
+                    boundCache.setUsedInCache(true);
+                }
+            }
+        }
+    }
+
     private void initializeExcludeForUncached(NodeData node) {
         boolean allExcluded = true;
         for (SpecializationData s : node.getReachableSpecializations()) {
@@ -3218,7 +3219,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
             }
             DSLExpressionResolver resolver = originalResolver.copy(specializationMembers);
             SpecializationData uncached = initializeCaches(specialization, resolver);
+
             initializeGuards(specialization, resolver);
+            verifyExclusiveOrSharedInlinedCache(specialization);
             initializeLimit(specialization, resolver, false);
             initializeAssumptions(specialization, resolver);
 
@@ -3362,7 +3365,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     weakCache.setWeakReference(true);
                     weakCache.setNeverDefault(true);
 
-                    caches.add(0, weakCache);
+                    caches.add(caches.size() - 1, weakCache);
 
                     DSLExpressionResolver weakResolver = resolver.copy(Arrays.asList());
                     weakResolver.addVariable(weakName, weakVariable);
@@ -3509,6 +3512,44 @@ public final class NodeParser extends AbstractParser<NodeData> {
             }
         }
         return uncachedSpecialization;
+    }
+
+    private void verifyExclusiveOrSharedInlinedCache(SpecializationData specialization) {
+        boolean exclusiveInlined = false;
+        for (CacheExpression cache : specialization.getCaches()) {
+            if (cache.getInlinedNode() == null) {
+                continue;
+            }
+            if (cache.getSharedGroup() == null) {
+                exclusiveInlined = true;
+                break;
+            }
+        }
+        if (exclusiveInlined) {
+
+            for (CacheExpression cache : specialization.getCaches()) {
+                if (cache.getInlinedNode() == null) {
+                    continue;
+                }
+
+                if (cache.getSharedGroup() != null) {
+                    cache.addWarning(cache.getSharedGroupMirror(), cache.getSharedGroupValue(),
+                                    "Combining @%s and @%s for inlined caches within one @%s is not supported. The @%s annotation is ignored as a result. " +
+                                                    "This was supported in previous versions of the DSL, but it no longer supported for performance reasons. " +
+                                                    "To resolve this, make sure that all caches of this specialization are annotated with either @%s or @%s. " +
+                                                    "Note that this warning will be enforced as error in future versions of Truffle.",
+                                    getSimpleName(types.Cached_Shared),
+                                    getSimpleName(types.Cached_Exclusive),
+                                    getSimpleName(types.Specialization),
+                                    getSimpleName(types.Cached_Shared),
+                                    getSimpleName(types.Cached_Shared),
+                                    getSimpleName(types.Cached_Exclusive)
+
+                    );
+                    cache.disableSharing();
+                }
+            }
+        }
     }
 
     private boolean warnForThisVariable(CacheExpression cache, DSLExpression expression) {
@@ -4292,24 +4333,26 @@ public final class NodeParser extends AbstractParser<NodeData> {
                 return null;
             }
 
-            Map<String, ExecutableElement> inlineSignatureCache = context.getInlineSignatureCache();
-            String id = ElementUtils.getUniqueIdentifier(parameterType.asType());
-            ExecutableElement cachedInline;
-            if (inlineSignatureCache.containsKey(id)) {
-                cachedInline = inlineSignatureCache.get(id);
-            } else {
-                NodeData inlinedNode = lookupNodeData(node, type, errorTarget);
-                if (inlinedNode != null && inlinedNode.isGenerateInline()) {
-                    CodeExecutableElement method = NodeFactoryFactory.createInlineMethod(inlinedNode, null);
-                    method.setEnclosingElement(NodeCodeGenerator.nodeElement(inlinedNode));
-                    cachedInline = method;
+            if (inlineMethod == null) {
+                Map<String, ExecutableElement> inlineSignatureCache = context.getInlineSignatureCache();
+                String id = ElementUtils.getUniqueIdentifier(parameterType.asType());
+                ExecutableElement cachedInline;
+                if (inlineSignatureCache.containsKey(id)) {
+                    cachedInline = inlineSignatureCache.get(id);
                 } else {
-                    cachedInline = null;
+                    NodeData inlinedNode = lookupNodeData(node, type, errorTarget);
+                    if (inlinedNode != null && inlinedNode.isGenerateInline()) {
+                        CodeExecutableElement method = NodeFactoryFactory.createInlineMethod(inlinedNode, null);
+                        method.setEnclosingElement(NodeCodeGenerator.nodeElement(inlinedNode));
+                        cachedInline = method;
+                    } else {
+                        cachedInline = null;
+                    }
+                    inlineSignatureCache.put(id, cachedInline);
                 }
-                inlineSignatureCache.put(id, cachedInline);
-            }
-            if (cachedInline != null) {
-                inlineMethod = cachedInline;
+                if (cachedInline != null) {
+                    inlineMethod = cachedInline;
+                }
             }
         }
         return inlineMethod;
@@ -4320,8 +4363,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
         if (parameterType == null) {
             return false;
         }
-        ExecutableElement createMethod = ElementUtils.findStaticMethod(parameterType, "create");
-        if (createMethod != null) {
+        if (ElementUtils.hasStaticMethod(parameterType, "create")) {
             return true;
         }
         AnnotationMirror annotation = findGenerateAnnotation(parameterType.asType(), ProcessorContext.getInstance().getTypes().GenerateCached);
@@ -4394,7 +4436,7 @@ public final class NodeParser extends AbstractParser<NodeData> {
         NodeParser parser = NodeParser.createDefaultParser();
         parser.nodeOnly = true; // make sure we cannot have cycles
         TypeElement element = ElementUtils.castTypeElement(nodeType);
-        NodeData parsedNode = parser.parse(element);
+        NodeData parsedNode = parser.parse(element, false);
         List<CodeExecutableElement> executables = null;
         if (parsedNode != null) {
             executables = NodeFactoryFactory.createFactoryMethods(parsedNode, ElementFilter.constructorsIn(element.getEnclosedElements()));
@@ -4474,9 +4516,9 @@ public final class NodeParser extends AbstractParser<NodeData> {
                     }
                 }
             }
-
             newGuards.add(guard);
         }
+
         for (CacheExpression cache : specialization.getCaches()) {
             if (cache.isWeakReferenceGet()) {
                 if (handledCaches.contains(cache)) {

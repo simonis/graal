@@ -24,12 +24,10 @@
  */
 package com.oracle.svm.core;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
-import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
+import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
 
 import java.util.Arrays;
 
-import org.graalvm.collections.EconomicMap;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.IsolateThread;
@@ -40,10 +38,11 @@ import org.graalvm.nativeimage.c.struct.RawField;
 import org.graalvm.nativeimage.c.struct.RawStructure;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.CCharPointer;
-import org.graalvm.nativeimage.impl.ImageSingletonsSupport;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.ObjectAccess;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.SubstrateDiagnostics.DiagnosticThunkRegistry;
 import com.oracle.svm.core.SubstrateDiagnostics.DumpCodeCacheHistory;
@@ -57,30 +56,29 @@ import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoDecoder;
 import com.oracle.svm.core.code.CodeInfoTable;
 import com.oracle.svm.core.code.FrameInfoQueryResult;
+import com.oracle.svm.core.code.RuntimeCodeInstallation;
 import com.oracle.svm.core.code.RuntimeCodeInfoHistory;
 import com.oracle.svm.core.code.RuntimeCodeInfoMemory;
-import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.config.ObjectLayout;
 import com.oracle.svm.core.container.Container;
 import com.oracle.svm.core.container.OperatingSystem;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.core.deopt.Deoptimizer;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.RuntimeCompilation;
-import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
+import com.oracle.svm.guest.staging.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.heap.Heap;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.jdk.UninterruptibleUtils;
-import com.oracle.svm.core.jdk.UninterruptibleUtils.AtomicWord;
+import com.oracle.svm.guest.staging.core.jdk.UninterruptibleUtils;
+import com.oracle.svm.guest.staging.core.jdk.UninterruptibleUtils.AtomicWord;
 import com.oracle.svm.core.locks.VMLockSupport;
-import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.stack.JavaFrameAnchor;
 import com.oracle.svm.core.stack.JavaFrameAnchors;
 import com.oracle.svm.core.stack.JavaStackWalker;
@@ -91,20 +89,22 @@ import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMOperationControl;
 import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
-import com.oracle.svm.core.threadlocal.FastThreadLocalBytes;
-import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
+import com.oracle.svm.guest.staging.JavaMainSupport;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalBytes;
+import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
 import com.oracle.svm.core.threadlocal.VMThreadLocalInfos;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.AbstractImageHeapList;
+import com.oracle.svm.guest.staging.util.AbstractImageHeapList;
 import com.oracle.svm.core.util.CounterSupport;
-import com.oracle.svm.core.util.ImageHeapList;
-import com.oracle.svm.core.util.TimeUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.util.ImageHeapList;
+import com.oracle.svm.shared.util.TimeUtils;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -112,10 +112,7 @@ import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.nodes.PauseNode;
 import jdk.graal.compiler.nodes.java.ArrayLengthNode;
 import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
 
 public class SubstrateDiagnostics {
     private static final int MAX_THREADS_TO_PRINT = 100_000;
@@ -146,6 +143,11 @@ public class SubstrateDiagnostics {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean isFatalErrorHandlingThread() {
         return fatalErrorState().diagnosticThread.get() == CurrentIsolate.getCurrentThread();
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static boolean canUnsafelyWalkOtherThreadStacks() {
+        return Options.UnsafeDumpOtherThreadStacksOnFatalError.getValue() && isFatalErrorHandlingThread();
     }
 
     public static int maxInvocations() {
@@ -285,7 +287,7 @@ public class SubstrateDiagnostics {
          * In the debugger, it is possible to change the value of loopOnFatalError to false if
          * necessary.
          */
-        while (Options.shouldLoopOnFatalError()) {
+        while (Options.LoopOnFatalError.getValue()) {
             PauseNode.pause();
         }
 
@@ -503,7 +505,7 @@ public class SubstrateDiagnostics {
             stackBase = originalSp.add(32);
         }
 
-        int wordSize = ConfigurationValues.getTarget().wordSize;
+        int wordSize = SubstrateTarget.getWordSize();
         Pointer pos = originalSp;
         while (pos.belowThan(stackBase)) {
             CodePointer possibleIp = pos.readWord(0);
@@ -633,7 +635,7 @@ public class SubstrateDiagnostics {
                 hexDump(log, ip, bytesToPrint, bytesToPrint);
             } else if (invocationCount == 4) {
                 /* Just print one word starting at the ip. */
-                hexDump(log, ip, 0, ConfigurationValues.getTarget().wordSize);
+                hexDump(log, ip, 0, SubstrateTarget.getWordSize());
             }
             log.indent(false).newline();
         }
@@ -662,7 +664,7 @@ public class SubstrateDiagnostics {
             Pointer sp = context.getStackPointer();
             UnsignedWord stackEnd = VMThreads.StackEnd.get(); // low
             UnsignedWord stackBase = VMThreads.StackBase.get(); // high
-            int wordSize = ConfigurationValues.getTarget().wordSize;
+            int wordSize = SubstrateTarget.getWordSize();
 
             log.string("Top of stack (sp=").zhex(sp).string("):").indent(true);
             int bytesToPrintBelowSp = 32;
@@ -876,12 +878,11 @@ public class SubstrateDiagnostics {
             Platform platform = ImageSingletons.lookup(Platform.class);
             log.string("Platform: ").string(platform.getOS()).string("/").string(platform.getArchitecture()).newline();
             log.string("Page size: ").unsigned(SubstrateOptions.getPageSize()).newline();
-            log.string("Supports isolates: ").bool(SubstrateOptions.SpawnIsolates.getValue()).newline();
             if (RuntimeCompilation.isEnabled()) {
-                log.string("Supports isolated compilation: ").bool(SubstrateOptions.supportCompileInIsolates()).newline();
+                log.string("Supports isolated compilation: ").bool(SubstrateOptions.SupportCompileInIsolates.getValue()).newline();
             }
             log.string("Container support: ").bool(Container.isSupported()).newline();
-            log.string("Object reference size: ").signed(ConfigurationValues.getObjectLayout().getReferenceSize()).newline();
+            log.string("Object reference size: ").signed(ObjectLayout.singleton().getReferenceSize()).newline();
             log.string("CPU features used for AOT compiled code: ").string(getBuildTimeCpuFeatures()).newline();
             log.indent(false);
         }
@@ -1075,11 +1076,11 @@ public class SubstrateDiagnostics {
                  * If the stack pointer is not sufficiently aligned, then we might be in the middle
                  * of a call (i.e., only the arguments and the return address are on the stack).
                  */
-                int expectedStackAlignment = ConfigurationValues.getTarget().stackAlignment;
-                if (sp.unsignedRemainder(expectedStackAlignment).notEqual(0) && sp.unsignedRemainder(ConfigurationValues.getTarget().wordSize).equal(0)) {
+                SubstrateTarget target = SubstrateTarget.singleton();
+                if (sp.unsignedRemainder(target.stackAlignment).notEqual(0) && sp.unsignedRemainder(target.wordSize).equal(0)) {
                     log.newline();
                     // Checkstyle: Allow raw info or warning printing - begin
-                    log.string("Warning: stack pointer is not aligned to ").signed(expectedStackAlignment).string(" bytes.").newline();
+                    log.string("Warning: stack pointer is not aligned to ").signed(target.stackAlignment).string(" bytes.").newline();
                     // Checkstyle: Allow raw info or warning printing - end
                 }
 
@@ -1112,10 +1113,11 @@ public class SubstrateDiagnostics {
         @Override
         @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while printing diagnostics.")
         public void printDiagnostics(Log log, ErrorContext context, int maxDiagnosticLevel, int invocationCount) {
-            if (VMOperation.isInProgressAtSafepoint()) {
+            if (VMOperation.isInProgressAtSafepoint() || (canUnsafelyWalkOtherThreadStacks() && invocationCount == 1)) {
                 /*
                  * Iterate all threads without checking if current thread holds the ThreadsLock.
-                 * Most likely, we are at a safepoint anyway, but there is no guarantee.
+                 * This is safe at a safepoint. Otherwise, it is permitted only for fatal
+                 * diagnostics when DumpOtherThreadStacksOnFatalError is enabled.
                  */
                 int printed = 0;
                 for (IsolateThread vmThread = VMThreads.firstThreadUnsafe(); vmThread.isNonNull(); vmThread = VMThreads.nextThread(vmThread)) {
@@ -1162,7 +1164,7 @@ public class SubstrateDiagnostics {
         @Override
         @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while printing diagnostics.")
         public void printDiagnostics(Log log, ErrorContext context, int maxDiagnosticLevel, int invocationCount) {
-            String[] args = ImageSingletons.lookup(JavaMainWrapper.JavaMainSupport.class).mainArgs;
+            String[] args = ImageSingletons.lookup(JavaMainSupport.class).mainArgs;
             if (args != null) {
                 log.string("Command line: ");
                 for (String arg : args) {
@@ -1332,7 +1334,7 @@ public class SubstrateDiagnostics {
             thunks.add(new VMLockSupport.DumpVMMutexes());
             thunks.add(new DumpBuildTimeInfo());
             thunks.add(new DumpRuntimeInfo());
-            if (ImageSingletons.contains(JavaMainWrapper.JavaMainSupport.class)) {
+            if (ImageSingletons.contains(JavaMainSupport.class)) {
                 thunks.add(new DumpCommandLine());
             }
             if (CounterSupport.isEnabled()) {
@@ -1402,72 +1404,23 @@ public class SubstrateDiagnostics {
         }
     }
 
-    @SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
-    @AutomaticallyRegisteredImageSingleton
     public static class Options {
-        @Option(help = "Execute an endless loop before printing diagnostics for a fatal error.", type = OptionType.Debug)//
-        public static final RuntimeOptionKey<Boolean> LoopOnFatalError = new RuntimeOptionKey<>(false, RelevantForCompilationIsolates) {
-            @Override
-            protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
-                super.onValueUpdate(values, oldValue, newValue);
+        @Option(help = "Unsafely try to print stack traces of other threads after a fatal error. Stack traces can be entirely incorrect.", type = OptionType.Debug) //
+        public static final RuntimeOptionKey<Boolean> UnsafeDumpOtherThreadStacksOnFatalError = new RuntimeOptionKey<>(false);
 
-                /*
-                 * Copy the value to a field in the image heap so that it is safe to access. During
-                 * the image build, it can happen that the singleton does not exist yet. In that
-                 * case, the value will be copied to the image heap when executing the constructor
-                 * of the singleton. This is a bit cumbersome but necessary because we can't use a
-                 * static field. We also need to mark the option as used at run-time (see feature)
-                 * as the static analysis would otherwise remove the option from the image.
-                 */
-                if (wasConstructorExecuted()) {
-                    Options.singleton().loopOnFatalError = newValue;
-                }
-            }
-        };
+        @Option(help = "Execute an endless loop before printing diagnostics for a fatal error.", type = OptionType.Debug)//
+        public static final RuntimeOptionKey<Boolean> LoopOnFatalError = new RuntimeOptionKey<>(false, RelevantForCompilationIsolates);
 
         @Option(help = "Determines if implicit exceptions are fatal if they don't have a stack trace.", type = OptionType.Debug)//
-        public static final RuntimeOptionKey<Boolean> ImplicitExceptionWithoutStacktraceIsFatal = new RuntimeOptionKey<>(false, RelevantForCompilationIsolates) {
-            @Override
-            protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
-                super.onValueUpdate(values, oldValue, newValue);
-
-                /* See comment above. */
-                if (wasConstructorExecuted()) {
-                    Options.singleton().implicitExceptionWithoutStacktraceIsFatal = newValue;
-                }
-            }
-        };
-
-        private volatile boolean loopOnFatalError;
-        private boolean implicitExceptionWithoutStacktraceIsFatal;
-
-        @Platforms(Platform.HOSTED_ONLY.class)
-        public Options() {
-            this.loopOnFatalError = Options.LoopOnFatalError.getValue();
-            this.implicitExceptionWithoutStacktraceIsFatal = Options.ImplicitExceptionWithoutStacktraceIsFatal.getValue();
-        }
+        public static final RuntimeOptionKey<Boolean> ImplicitExceptionWithoutStacktraceIsFatal = new RuntimeOptionKey<>(false, RelevantForCompilationIsolates);
 
         @Fold
         static Options singleton() {
             return ImageSingletons.lookup(Options.class);
         }
-
-        public static boolean shouldLoopOnFatalError() {
-            return singleton().loopOnFatalError;
-        }
-
-        @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-        public static boolean implicitExceptionWithoutStacktraceIsFatal() {
-            return singleton().implicitExceptionWithoutStacktraceIsFatal;
-        }
-
-        private static boolean wasConstructorExecuted() {
-            return (!SubstrateUtil.HOSTED || ImageSingletonsSupport.isInstalled()) && ImageSingletons.contains(Options.class);
-        }
     }
 }
 
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = Independent.class)
 @AutomaticallyRegisteredFeature
 class SubstrateDiagnosticsFeature implements InternalFeature {
     @Override
@@ -1476,16 +1429,22 @@ class SubstrateDiagnosticsFeature implements InternalFeature {
     }
 
     /**
-     * {@link RuntimeCompilation#isEnabled()} can't be executed in the
-     * {@link DiagnosticThunkRegistry} constructor because the feature registration is not
-     * necessarily finished. So, we need to do it at a later point in time.
+     * Predicates such as {@link RuntimeCompilation#isEnabled()} can't be executed in the
+     * {@link DiagnosticThunkRegistry} constructor because feature registration is not necessarily
+     * finished. So, we need to do it at a later point in time.
      */
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
         DiagnosticThunkRegistry registry = DiagnosticThunkRegistry.singleton();
-        if (RuntimeCompilation.isEnabled()) {
-            int pos = registry.runtimeCompilationPosition;
-            SubstrateDiagnostics.DiagnosticThunk[] thunks = {new DumpCodeCacheHistory(), new DumpRuntimeCodeInfoMemory(), new DumpDeoptStubPointer(), new DumpRecentDeoptimizations()};
+        int pos = registry.runtimeCompilationPosition;
+
+        if (DeoptimizationSupport.enabled()) {
+            SubstrateDiagnostics.DiagnosticThunk[] thunks = {new DumpDeoptStubPointer(), new DumpRecentDeoptimizations()};
+            registry.add(pos, thunks);
+        }
+
+        if (RuntimeCodeInstallation.isEnabled()) {
+            SubstrateDiagnostics.DiagnosticThunk[] thunks = {new DumpCodeCacheHistory(), new DumpRuntimeCodeInfoMemory()};
             registry.add(pos, thunks);
         }
     }

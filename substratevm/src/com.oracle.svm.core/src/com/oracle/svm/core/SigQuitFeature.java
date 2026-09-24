@@ -29,10 +29,11 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.impl.InternalPlatform.WINDOWS_BASE;
 
 import com.oracle.svm.core.attach.AttachApiSupport;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.jdk.RuntimeSupport;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 import jdk.internal.misc.Signal;
 
@@ -40,7 +41,7 @@ import jdk.internal.misc.Signal;
 public class SigQuitFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
-        return VMInspectionOptions.hasThreadDumpSupport() || VMInspectionOptions.hasJCmdSupport();
+        return ImageLayerBuildingSupport.firstImageBuild() && (VMInspectionOptions.hasThreadDumpSupport() || VMInspectionOptions.hasJCmdSupport());
     }
 
     @Override
@@ -66,7 +67,7 @@ final class RegisterSigQuitHandlerStartupHook implements RuntimeSupport.Hook {
 
 class SigQuitHandler implements Signal.Handler {
     @Override
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+18/src/hotspot/share/runtime/os.cpp#L388-L433")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+18/src/hotspot/share/runtime/os.cpp#L388-L433")
     public void handle(Signal arg0) {
         if (VMInspectionOptions.hasJCmdSupport() && AttachApiSupport.singleton().isInitTrigger()) {
             AttachApiSupport.singleton().initialize();

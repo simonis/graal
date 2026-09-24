@@ -69,7 +69,7 @@ public class AArch64HotSpotShenandoahCardBarrierOp extends AArch64LIRInstruction
 
     @Override
     // @formatter:off
-    @SyncPort(from = "https://github.com/openjdk/jdk/blob/a2743bab4fd203b0791cf47e617c1a95b05ab3cc/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp#L373-L392",
+    @SyncPort(from = "https://github.com/openjdk/jdk25u/blob/b8aa130bab715f187476181acc5021b27958833f/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp#L374-L393",
               sha1 = "1c3e544b6fdec2f4ca0f07b2a1d5261d55754cb9")
     // @formatter:on
     protected void emitCode(CompilationResultBuilder crb, AArch64MacroAssembler masm) {
@@ -100,7 +100,8 @@ public class AArch64HotSpotShenandoahCardBarrierOp extends AArch64LIRInstruction
             if (HotSpotReplacementsUtil.useCondCardMark(config)) {
                 Label alreadyDirty = new Label();
                 masm.ldr(8, rscratch2, cardAddr);
-                masm.cbz(8, rscratch2, alreadyDirty);
+                // cbz only has 32-bit and 64-bit forms; the byte loaded above is zero extended.
+                masm.cbz(32, rscratch2, alreadyDirty);
                 masm.str(8, zr, cardAddr);
                 masm.bind(alreadyDirty);
             } else {

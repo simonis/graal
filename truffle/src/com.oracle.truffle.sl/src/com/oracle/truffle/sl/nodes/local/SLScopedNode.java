@@ -42,7 +42,6 @@ package com.oracle.truffle.sl.nodes.local;
 
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NeverDefault;
 import com.oracle.truffle.api.dsl.Cached.Exclusive;
@@ -80,7 +79,7 @@ import com.oracle.truffle.sl.runtime.SLStrings;
 public abstract class SLScopedNode extends Node {
 
     /**
-     * Index to the the {@link SLBlockNode#getDeclaredLocalVariables() block's variables} that
+     * Index to the {@link SLBlockNode#getDeclaredLocalVariables() block's variables} that
      * determine variables belonging into this scope (excluding parent scopes) on node enter. The
      * scope variables are in the interval &lt;0, visibleVariablesIndexOnEnter).
      */
@@ -183,7 +182,7 @@ public abstract class SLScopedNode extends Node {
     }
 
     /**
-     * Set the index to the the {@link SLBlockNode#getDeclaredLocalVariables() block's variables}
+     * Set the index to the {@link SLBlockNode#getDeclaredLocalVariables() block's variables}
      * that determine variables belonging into this scope (excluding parent scopes) on node enter.
      */
     public final void setVisibleVariablesIndexOnEnter(int index) {
@@ -257,14 +256,14 @@ public abstract class SLScopedNode extends Node {
          */
         @ExportMessage
         @SuppressWarnings("static-method")
-        boolean hasLanguage() {
+        boolean hasLanguageId() {
             return true;
         }
 
         @ExportMessage
         @SuppressWarnings("static-method")
-        Class<? extends TruffleLanguage<?>> getLanguage() {
-            return SLLanguage.class;
+        String getLanguageId() {
+            return SLLanguage.ID;
         }
 
         /**
@@ -529,14 +528,14 @@ public abstract class SLScopedNode extends Node {
          */
         @ExportMessage
         @SuppressWarnings("static-method")
-        boolean hasLanguage() {
+        boolean hasLanguageId() {
             return true;
         }
 
         @ExportMessage
         @SuppressWarnings("static-method")
-        Class<? extends TruffleLanguage<?>> getLanguage() {
-            return SLLanguage.class;
+        String getLanguageId() {
+            return SLLanguage.ID;
         }
 
         /**

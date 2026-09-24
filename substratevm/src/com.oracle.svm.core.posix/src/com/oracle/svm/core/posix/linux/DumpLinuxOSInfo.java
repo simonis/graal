@@ -27,26 +27,22 @@ package com.oracle.svm.core.posix.linux;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.SubstrateDiagnostics;
 import com.oracle.svm.core.SubstrateDiagnostics.DiagnosticThunkRegistry;
 import com.oracle.svm.core.SubstrateDiagnostics.ErrorContext;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.os.RawFileOperationSupport;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
 
 import jdk.graal.compiler.core.common.NumUtil;
-import jdk.graal.compiler.word.Word;
 
 class DumpLinuxOSInfo extends SubstrateDiagnostics.DiagnosticThunk {
     private static final CGlobalData<CCharPointer> MAX_THREADS_PATH = CGlobalDataFactory.createCString("/proc/sys/kernel/threads-max");
@@ -80,7 +76,7 @@ class DumpLinuxOSInfo extends SubstrateDiagnostics.DiagnosticThunk {
 
     private static void printFirstLine(Log log, CCharPointer filename) {
         RawFileOperationSupport fs = RawFileOperationSupport.nativeByteOrder();
-        RawFileOperationSupport.RawFileDescriptor fd = fs.open(filename, RawFileOperationSupport.FileAccessMode.READ);
+        RawFileOperationSupport.RawFileDescriptor fd = fs.open((RawFileOperationSupport.RawFilePath) filename, RawFileOperationSupport.FileAccessMode.READ);
         if (!fs.isValid(fd)) {
             log.string("unknown");
             return;
@@ -107,7 +103,6 @@ class DumpLinuxOSInfo extends SubstrateDiagnostics.DiagnosticThunk {
     }
 }
 
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = Independent.class)
 @AutomaticallyRegisteredFeature
 class DumpLinuxOSInfoFeature implements InternalFeature {
     @Override

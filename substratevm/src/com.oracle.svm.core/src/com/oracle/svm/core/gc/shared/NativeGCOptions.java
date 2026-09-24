@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.gc.shared;
 
-import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.IsolateCreationOnly;
+import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.IsolateCreationOnly;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -38,16 +38,25 @@ import java.util.function.Supplier;
 
 import org.graalvm.collections.UnmodifiableEconomicMap;
 import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platform.DARWIN_AARCH64;
+import org.graalvm.nativeimage.Platform.LINUX_AARCH64;
+import org.graalvm.nativeimage.Platform.LINUX_AMD64;
+import org.graalvm.nativeimage.Platform.WINDOWS_AMD64;
 import org.graalvm.nativeimage.Platforms;
 
+import com.oracle.svm.core.OS;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.option.RuntimeOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionKey;
+import com.oracle.svm.core.gc.shared.NativeGCOptions.HostedArgumentsSupplier;
+import com.oracle.svm.core.gc.shared.NativeGCOptions.NativeGCHostedOptionKey;
+import com.oracle.svm.core.gc.shared.NativeGCOptions.NativeGCRuntimeOptionKey;
+import com.oracle.svm.core.gc.shared.NativeGCOptions.RuntimeArgumentsSupplier;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValues;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionKey;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
@@ -92,7 +101,7 @@ public class NativeGCOptions {
     protected static final RuntimeOptionKey<Integer> ConcGCThreads = new NativeGCRuntimeOptionKey<>(0, IsolateCreationOnly);
 
     @Option(help = "Determines if System.gc() invokes a concurrent collection.", type = OptionType.Expert)//
-    protected static final RuntimeOptionKey<Boolean> ExplicitGCInvokesConcurrent = new NativeGCRuntimeOptionKey<>(false, IsolateCreationOnly);
+    public static final RuntimeOptionKey<Boolean> ExplicitGCInvokesConcurrent = new NativeGCRuntimeOptionKey<>(false, IsolateCreationOnly);
 
     @Option(help = "Wasted fraction of parallel allocation buffer.", type = OptionType.Expert)//
     protected static final RuntimeOptionKey<Integer> ParallelGCBufferWastePct = new NativeGCRuntimeOptionKey<>(10, IsolateCreationOnly);
@@ -163,15 +172,6 @@ public class NativeGCOptions {
     @Option(help = "How far ahead to prefetch scan area (<= 0 means off).", type = OptionType.Expert)//
     protected static final RuntimeOptionKey<Long> PrefetchScanIntervalInBytes = new NativeGCRuntimeOptionKey<>(-1L, IsolateCreationOnly);
 
-    @Option(help = "Verify memory system before GC.", type = OptionType.Debug)//
-    protected static final RuntimeOptionKey<Boolean> VerifyBeforeGC = new NativeGCRuntimeOptionKey<>(false, IsolateCreationOnly);
-
-    @Option(help = "Verify memory system after GC.", type = OptionType.Debug)//
-    protected static final RuntimeOptionKey<Boolean> VerifyAfterGC = new NativeGCRuntimeOptionKey<>(false, IsolateCreationOnly);
-
-    @Option(help = "Verify memory system during GC (between phases).", type = OptionType.Debug)//
-    protected static final RuntimeOptionKey<Boolean> VerifyDuringGC = new NativeGCRuntimeOptionKey<>(false, IsolateCreationOnly);
-
     @Option(help = "Initial heap size (in bytes); zero means use ergonomics.", type = OptionType.Expert)//
     protected static final RuntimeOptionKey<Long> InitialHeapSize = new NativeGCRuntimeOptionKey<>(0L, IsolateCreationOnly);
 
@@ -229,9 +229,6 @@ public class NativeGCOptions {
     @Option(help = "The minimum percentage of heap free after GC to avoid expansion.", type = OptionType.Expert)//
     protected static final RuntimeOptionKey<Long> MinHeapFreeRatio = new NativeGCRuntimeOptionKey<>(40L, IsolateCreationOnly);
 
-    @Option(help = "Number of milliseconds per MB of free space in the heap.", type = OptionType.Expert)//
-    protected static final RuntimeOptionKey<Long> SoftRefLRUPolicyMSPerMB = new NativeGCRuntimeOptionKey<>(1000L, IsolateCreationOnly);
-
     @Option(help = "The minimum change in heap space due to GC (in bytes).", type = OptionType.Expert)//
     protected static final RuntimeOptionKey<Long> MinHeapDeltaBytes = new NativeGCRuntimeOptionKey<>(168L * K, IsolateCreationOnly);
 
@@ -246,13 +243,25 @@ public class NativeGCOptions {
         ArrayList<Field> result = new ArrayList<>();
         for (Class<?> clazz : optionClasses) {
             for (Field field : clazz.getDeclaredFields()) {
-                if (Modifier.isStatic(field.getModifiers()) && OptionKey.class.isAssignableFrom(field.getType())) {
+                if (Modifier.isStatic(field.getModifiers()) && OptionKey.class.isAssignableFrom(field.getType()) && isOptionAvailable(field)) {
                     field.setAccessible(true);
                     result.add(field);
                 }
             }
         }
         return result;
+    }
+
+    /**
+     * Some options are platform-specific. We need to filter those to prevent that the C++ side
+     * complains that those options don't exist.
+     */
+    @Platforms(Platform.HOSTED_ONLY.class)
+    private static boolean isOptionAvailable(Field field) {
+        if (!OS.LINUX.isCurrent()) {
+            return !field.getName().equals(UseContainerSupport.getName());
+        }
+        return true;
     }
 
     private static void validatePowerOfTwo(HostedOptionKey<Integer> optionKey) {
@@ -267,27 +276,16 @@ public class NativeGCOptions {
             return;
         }
 
-        if (!Platform.includedIn(Platform.LINUX_AMD64.class) && !Platform.includedIn(Platform.LINUX_AARCH64.class)) {
-            throw UserError.abort("The option '%s' can only be used on linux/amd64 or linux/aarch64.", optionKey.getName());
+        if (!Platform.includedIn(LINUX_AMD64.class) && !Platform.includedIn(LINUX_AARCH64.class) && !Platform.includedIn(DARWIN_AARCH64.class) && !Platform.includedIn(WINDOWS_AMD64.class)) {
+            throw UserError.abort("The option '%s' can only be used on Linux/amd64, Linux/aarch64, macOS/aarch64, or Windows/amd64.", optionKey.getName());
         } else if (!SubstrateOptions.useG1GC() && !SubstrateOptions.useShenandoahGC()) {
             throw UserError.abort("The option '%s' can only be used with the G1 ('--gc=G1') or the Shenandoah ('--gc=shenandoah') garbage collector.", optionKey.getName());
         }
     }
 
     public static class NativeGCHostedOptionKey<T> extends HostedOptionKey<T> {
-        private final boolean passToCpp;
-
-        public NativeGCHostedOptionKey(T defaultValue, Consumer<HostedOptionKey<T>> validation) {
-            this(defaultValue, true, validation);
-        }
-
-        public NativeGCHostedOptionKey(T defaultValue, boolean passToCpp, Consumer<HostedOptionKey<T>> validation) {
-            super(defaultValue, validation);
-            this.passToCpp = passToCpp;
-        }
-
-        public boolean shouldPassToCpp() {
-            return passToCpp;
+        public NativeGCHostedOptionKey(T defaultValue, Consumer<HostedOptionKey<T>> validation, HostedOptionKeyFlag... flags) {
+            super(defaultValue, validation, flags);
         }
 
         @Override
@@ -321,19 +319,19 @@ public class NativeGCOptions {
         @Override
         public byte[] get() {
             NativeGCArgumentsBuffer buffer = new NativeGCArgumentsBuffer();
-            UnmodifiableEconomicMap<OptionKey<?>, Object> map = HostedOptionValues.singleton().getMap();
+            UnmodifiableEconomicMap<OptionKey<?>, Object> map = HostedOptionValues.singleton().get().getMap();
             for (Field field : optionFields) {
                 try {
                     Class<?> type = field.getType();
                     if (HostedOptionKey.class.isAssignableFrom(type)) {
                         HostedOptionKey<?> key = (HostedOptionKey<?>) field.get(null);
-                        if (shouldPassToCpp(key)) {
+                        Object value = key.getValue(new OptionValues(map));
+                        if (key.shouldPassToNativeGC() && value != null) {
                             buffer.putString(key.getName());
-                            Object val = key.getValueOrDefault(map);
-                            if (val instanceof String strVal) {
-                                buffer.putString(strVal);
+                            if (value instanceof String stringValue) {
+                                buffer.putString(stringValue);
                             } else {
-                                buffer.putPrimitive(val);
+                                buffer.putPrimitive(value);
                             }
                         }
                     }
@@ -343,13 +341,6 @@ public class NativeGCOptions {
             }
             buffer.putEnd();
             return buffer.toArray();
-        }
-
-        private static boolean shouldPassToCpp(HostedOptionKey<?> key) {
-            if (key instanceof NativeGCHostedOptionKey<?>) {
-                return ((NativeGCHostedOptionKey<?>) key).shouldPassToCpp();
-            }
-            return true;
         }
     }
 
@@ -365,7 +356,7 @@ public class NativeGCOptions {
         @Override
         public byte[] get() {
             NativeGCArgumentsBuffer buffer = new NativeGCArgumentsBuffer();
-            OptionValues optionValues = RuntimeOptionValues.singleton();
+            OptionValues optionValues = RuntimeOptionValues.singleton().get();
             for (Field field : optionFields) {
                 try {
                     Class<?> type = field.getType();
@@ -373,12 +364,7 @@ public class NativeGCOptions {
                         RuntimeOptionKey<?> key = (RuntimeOptionKey<?>) field.get(null);
                         if (key.hasBeenSet(optionValues)) {
                             buffer.putString(key.getName());
-                            Object val = key.getValue(optionValues);
-                            if (val instanceof String strVal) {
-                                buffer.putString(strVal);
-                            } else {
-                                buffer.putPrimitive(val);
-                            }
+                            buffer.putPrimitive(key.getValue(optionValues));
                         }
                     }
                 } catch (IllegalArgumentException | IllegalAccessException e) {
@@ -412,8 +398,6 @@ public class NativeGCOptions {
         }
 
         public void putPrimitive(Object value) {
-            ensureCapacity(8);
-
             long rawLong = switch (value) {
                 case Boolean _ -> ((boolean) value) ? 1L : 0L;
                 case Byte _ -> ((byte) value) & 0xFFL;
@@ -425,6 +409,7 @@ public class NativeGCOptions {
                 default -> throw VMError.shouldNotReachHere("Unexpected type: " + value.getClass());
             };
 
+            ensureCapacity(Long.BYTES);
             buffer.putLong(rawLong);
         }
 

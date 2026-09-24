@@ -27,21 +27,21 @@ package com.oracle.svm.core.jdk;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.impl.InternalPlatform;
 
-import com.oracle.svm.core.NeverInline;
+import com.oracle.svm.shared.NeverInline;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 
 @TargetClass(value = jdk.internal.reflect.Reflection.class)
-final class Target_jdk_internal_reflect_Reflection {
+public final class Target_jdk_internal_reflect_Reflection {
 
     @Substitute
     @NeverInline("Starting a stack walk in the caller frame")
     @Platforms(InternalPlatform.NATIVE_ONLY.class)
     private static Class<?> getCallerClass() {
-        return StackTraceUtils.getCallerClass(KnownIntrinsics.readCallerStackPointer(), true);
+        return StackTraceUtils.getCallerClass(KnownIntrinsics.readCallerStackPointer());
     }
 
     @Substitute
@@ -56,4 +56,7 @@ final class Target_jdk_internal_reflect_Reflection {
 
     @Alias
     public static native void ensureNativeAccess(Class<?> currentClass, Class<?> owner, String methodName, boolean jni);
+
+    @Alias
+    public static native boolean verifyModuleAccess(Module currentModule, Class<?> memberClass);
 }

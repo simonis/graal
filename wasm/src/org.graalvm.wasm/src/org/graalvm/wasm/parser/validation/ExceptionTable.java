@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,36 +41,47 @@
 
 package org.graalvm.wasm.parser.validation;
 
+import java.util.Arrays;
+
 import org.graalvm.wasm.parser.bytecode.RuntimeBytecodeGen;
 
 /**
  * Represents exception handlers in the same range during parsing.
  */
 public final class ExceptionTable {
+    /** First bytecode offset protected by this table. */
     private final int from;
-    private int to;
+    /** First bytecode offset after the protected range. */
+    private final int to;
     private final ExceptionHandler[] handlers;
 
-    ExceptionTable(int from, ExceptionHandler[] handlers) {
+    ExceptionTable(int from, int to, ExceptionHandler[] handlers) {
         this.from = from;
-        this.to = 0;
+        this.to = to;
         this.handlers = handlers;
     }
 
-    void setTo(int to) {
-        this.to = to;
+    int handlerCount() {
+        return handlers.length;
     }
 
     void generateExceptionTable(RuntimeBytecodeGen bytecode) {
-        assert to != 0 && to >= from : "Invalid exception table range";
+        assert to >= from : "Invalid exception table range " + from + ":" + to;
         for (ExceptionHandler handler : handlers) {
+            final int target = handler.target();
+            assert target != -1 : "Exception handler target has not been assigned";
             if (handler.tag() == -1) {
                 // from (4 byte) | to (4 byte) | type (1 byte) | 0x0000_0000 | target (4 byte)
-                bytecode.addExceptionHandler(from, to, handler.type(), 0, handler.target());
+                bytecode.addExceptionHandler(from, to, handler.type(), 0, target);
             } else {
                 // from (4 byte) | to (4 byte) | type (1 byte) | tag (4 byte) | target (4 byte)
-                bytecode.addExceptionHandler(from, to, handler.type(), handler.tag(), handler.target());
+                bytecode.addExceptionHandler(from, to, handler.type(), handler.tag(), target);
             }
         }
+    }
+
+    @Override
+    public String toString() {
+        return from + ":" + to + " -> " + Arrays.toString(handlers);
     }
 }

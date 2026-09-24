@@ -24,17 +24,23 @@
  */
 package com.oracle.svm.core.heap;
 
-import com.oracle.svm.core.SubstrateGCOptions;
+import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.headers.LibC;
+import com.oracle.svm.core.heap.dump.HeapDumpMetadata;
 import com.oracle.svm.core.heap.dump.HeapDumping;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jdk.JDKUtils;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.core.jfr.HasJfrSupport;
+import com.oracle.svm.core.jfr.SubstrateJVM;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.VMOperation;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * This class must be used for {@link OutOfMemoryError}s that are thrown because the VM is out of
@@ -49,7 +55,8 @@ public class OutOfMemoryUtil {
         return reportOutOfMemoryError(OUT_OF_MEMORY_ERROR);
     }
 
-    @Uninterruptible(reason = "Not uninterruptible but it doesn't matter for the callers.", calleeMustBe = false)
+    @NeverInline("Error reporting is always a slowpath.")
+    @Uninterruptible(reason = "Not fully uninterruptible but it doesn't matter for the callers.")
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Can't allocate while out of memory.")
     public static OutOfMemoryError reportOutOfMemoryError(OutOfMemoryError error) {
         StackOverflowCheck.singleton().makeYellowZoneAvailable();
@@ -68,10 +75,10 @@ public class OutOfMemoryUtil {
             return;
         }
 
-        if (VMInspectionOptions.hasHeapDumpSupport() && SubstrateOptions.HeapDumpOnOutOfMemoryError.getValue()) {
+        if (VMInspectionOptions.hasHeapDumpSupport() && SubstrateOptions.HeapDumpOnOutOfMemoryError.getValue() &&
+                        (!ImageLayerBuildingSupport.buildingImageLayer() || HeapDumpMetadata.isLayeredMetadataAvailable())) {
             HeapDumping.singleton().dumpHeapOnOutOfMemoryError();
         }
-
         if (SubstrateGCOptions.ExitOnOutOfMemoryError.getValue()) {
             if (LibC.isSupported()) {
                 Log.log().string("Terminating due to java.lang.OutOfMemoryError: ").string(JDKUtils.getRawMessage(error)).newline();
@@ -82,7 +89,15 @@ public class OutOfMemoryUtil {
         }
 
         if (SubstrateGCOptions.ReportFatalErrorOnOutOfMemoryError.getValue()) {
+            dumpJfrOnOutOfMemoryError();
             throw VMError.shouldNotReachHere("reporting due to java.lang.OutOfMemoryError");
+        }
+    }
+
+    @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Can't allocate while out of memory.")
+    private static void dumpJfrOnOutOfMemoryError() {
+        if (HasJfrSupport.get()) {
+            SubstrateJVM.get().dumpOnOutOfMemoryError();
         }
     }
 }

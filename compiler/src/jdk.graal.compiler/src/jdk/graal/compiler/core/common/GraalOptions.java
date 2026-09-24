@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -87,6 +87,10 @@ public final class GraalOptions {
 
     @Option(help = "Performs partial escape analysis and scalar replacement optimization.", type = OptionType.Expert)
     public static final OptionKey<Boolean> PartialEscapeAnalysis = new OptionKey<>(true);
+
+    @Option(help = "Performs statement level code duplication at control flow merges to " +
+                   "specialize code to branch values where possible.", type = OptionType.Expert)
+    public static final OptionKey<Boolean> OptDuplication = new OptionKey<>(true);
 
     @Option(help = "", type = OptionType.Debug)
     public static final OptionKey<Integer> EscapeAnalysisIterations = new OptionKey<>(2);
@@ -307,9 +311,6 @@ public final class GraalOptions {
 
     @Option(help = "Enable inlining decision tracing in stubs and snippets.", type = OptionType.Debug)
     public static final OptionKey<Boolean> TraceInliningForStubsAndSnippets = new OptionKey<>(false);
-
-    @Option(help = "Embeds all the emitted code for Graal-generated stubs.", type = OptionType.Expert)
-    public static final OptionKey<Boolean> InlineGraalStubs = new OptionKey<>(false);
 
     @Option(help = "If applicable, uses bulk zeroing instructions when the zeroing size in bytes exceeds this threshold.", type = OptionType.Expert)
     public static final OptionKey<Integer> MinimalBulkZeroingSize = new OptionKey<>(2048);

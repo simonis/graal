@@ -23,10 +23,8 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
     packages+: if (self.os == 'windows') then graal_common.devkits[std.join('', ["windows-jdk", if (self.jdk_name == 'jdk-latest') then 'Latest' else std.toString(self.jdk_version)])].packages else {} // we can remove self.jdk_version == 23 and add a hidden field isLatest and use it
   }),
   local sulong = task_spec(graal_common.deps.sulong),
-  local truffleruby = task_spec(graal_common.deps.truffleruby),
   local graalpy = task_spec(graal_common.deps.graalpy),
   local graalnodejs = task_spec(graal_common.deps.graalnodejs),
-  local fastr = task_spec(graal_common.deps.fastr),
 
   local timelimit(t) = evaluate_late('999_time_limit', { // the key starts with 999 to be the last one evaluated
     timelimit: t
@@ -73,34 +71,33 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
     local common_vm = graal_common.build_base + vm.vm_setup + vm.custom_vm + {
       python_version: "3",
       logs+: [
-        '*/mxbuild/dists/stripped/*.map',
         '**/install.packages.R.log',
       ],
     },
 
-    local common_vm_linux = common_vm + {
+    local common_vm_linux_amd64 = common_vm + {
       capabilities+: ['manycores'],
     },
+
+    local common_vm_linux_aarch64 = common_vm,
 
     local common_vm_darwin = common_vm + {
       environment+: {
         LANG: 'en_US.UTF-8',
-        MACOSX_DEPLOYMENT_TARGET: '11.0',  # for compatibility with macOS BigSur
+        MACOSX_DEPLOYMENT_TARGET: '14.0',  # for compatibility with macOS Sonoma
       },
-      capabilities+: ['ram16gb'],
     },
 
     local common_vm_windows = common_vm + graal_common.windows_server_2016_amd64,
 
     "linux": {
-      "amd64": graal_common.linux_amd64 + common_vm_linux,
-      "aarch64": graal_common.linux_aarch64 + common_vm_linux,
+      "amd64": graal_common.linux_amd64 + common_vm_linux_amd64,
+      "aarch64": graal_common.linux_aarch64 + common_vm_linux_aarch64,
     },
     "ubuntu": {
-      "amd64": graal_common.linux_amd64_ubuntu + common_vm_linux,
+      "amd64": graal_common.linux_amd64_ubuntu + common_vm_linux_amd64,
     },
     "darwin": {
-      "amd64": graal_common.darwin_amd64 + common_vm_darwin,
       "aarch64": graal_common.darwin_aarch64 + common_vm_darwin,
     },
     "windows": {
@@ -137,7 +134,8 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
       else error "arch not found: " + self.arch
     # darwin
     else if (self.os == 'darwin') then
-      if (self.arch == 'amd64') then vm.edition + '-darwin'
+      if (self.arch == 'amd64') then
+       error 'os/arch not supported: ' + self.os + '/' + self.arch
       else if (self.arch == 'aarch64') then
       # GR-34811: `ce-darwin-aarch64` can be removed once svml builds
         vm.edition + '-darwin-aarch64'
@@ -157,9 +155,14 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
     ['--suite', suite, 'deploy-artifacts', '--uploader', (if os == 'windows' then 'artifact_uploader.cmd' else 'artifact_uploader'), '--tags', std.join(',', tags)],
   local build_base_graalvm_image(with_profiles=true) = task_spec({ run +: [
     self.mx_vm_common + (if with_profiles then vm.vm_profiles else []) + ['graalvm-show'],
+    ['git', '-C', vm.graal_repo_root, 'fetch', '--quiet', '--no-tags', 'origin', '+refs/tags/*:refs/tags/*'],
     self.mx_vm_common + (if with_profiles then vm.vm_profiles else []) + ['build', '--targets=GRAALVM'],
     ['set-export', 'GRAALVM_HOME', self.mx_vm_common + (if with_profiles then vm.vm_profiles else []) + ['--quiet', '--no-warning', 'graalvm-home']],
   ]}),
+
+  local mx_env_next = mx_env + task_spec({
+    mx_env:: vm.edition + '-next',
+  }),
 
   local deploy_sdk_base = task_spec({
     run +: [
@@ -182,7 +185,7 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
       ],
       notify_groups:: ['deploy'],
     },
-  ) + deploy_sdk_base + check_base_graalvm_image + timelimit("1:00:00"),
+  ) + deploy_sdk_base + timelimit("1:00:00"),
 
   local espresso_java_home(major_version, with_llvm=false) = task_spec({
     espresso_java_version:: major_version,
@@ -198,7 +201,7 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
   local deploy_graalvm_espresso(major_version, with_g1=false) = svm_common + common_os_deploy + espresso_name + task_spec({
     notify_groups:: ['deploy'],
   }) + build_base_graalvm_image(with_profiles=false) + task_spec({
-    espresso_standalone_dist:: (if vm.edition == 'ce' then 'GRAALVM_ESPRESSO_COMMUNITY_JAVA' + major_version else 'GRAALVM_ESPRESSO_JAVA' + major_version) +
+    espresso_standalone_dist:: (if vm.edition == 'ce' then 'GRAALVM_ESPRESSO_COMMUNITY' + major_version else 'GRAALVM_ESPRESSO' + major_version) +
       (if with_g1 then '_G1' else ''),
     mx_vm_espresso:: vm.mx_cmd_base_no_env + ['--env', self.mx_env_espresso] + self.mx_vm_cmd_suffix,
     run +: (if with_g1 then [['set-export', 'ESPRESSO_DELIVERABLE_VARIANT', 'G1']] else []) + [
@@ -223,11 +226,22 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
     # Deploy GraalVM Base
     # NOTE: After adding or removing deploy jobs, please make sure you modify ce-release-artifacts.json accordingly.
     #
-    "vm-base": mx_env + deploy_graalvm_base + default_os_arch_jdk_mixin + platform_spec(no_jobs) + platform_spec({
+    "vm-base": mx_env + deploy_graalvm_base + check_base_graalvm_image + default_os_arch_jdk_mixin + platform_spec(no_jobs) + platform_spec({
       "linux:amd64:jdk-latest": post_merge,
       "linux:aarch64:jdk-latest": daily + capabilities('!xgene3') + timelimit('1:30:00'),
-      "darwin:amd64:jdk-latest": daily + capabilities('darwin_bigsur'),
-      "darwin:aarch64:jdk-latest": daily + capabilities('darwin_bigsur') + timelimit('1:45:00') + notify_emails('bernhard.urban-forster@oracle.com'),
+      "darwin:aarch64:jdk-latest": daily + capabilities('darwin_sonoma') + timelimit('1:45:00') + notify_emails('bernhard.urban-forster@oracle.com'),
+      "windows:amd64:jdk-latest": daily + timelimit('1:30:00'),
+    }),
+  },
+
+  local deploy_vm_next_base_task_dict = {
+    #
+    # Deploy GraalVM "next" Base
+    #
+    "vm-next-base": mx_env_next + deploy_graalvm_base + default_os_arch_jdk_mixin + platform_spec(no_jobs) + platform_spec({
+      "linux:amd64:jdk-latest": post_merge,
+      "linux:aarch64:jdk-latest": daily + capabilities('!xgene3') + timelimit('1:30:00'),
+      "darwin:aarch64:jdk-latest": daily + capabilities('darwin_sonoma') + timelimit('1:45:00') + notify_emails('bernhard.urban-forster@oracle.com'),
       "windows:amd64:jdk-latest": daily + timelimit('1:30:00'),
     }),
   },
@@ -240,8 +254,7 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
     if vm.deploy_espress_standalone then platform_spec({
       "linux:amd64:jdk-latest": daily,
       "linux:aarch64:jdk-latest": weekly,
-      "darwin:amd64:jdk-latest": weekly + capabilities('darwin_bigsur'),
-      "darwin:aarch64:jdk-latest": weekly + capabilities('darwin_bigsur'),
+      "darwin:aarch64:jdk-latest": weekly + capabilities('darwin_sonoma'),
       "windows:amd64:jdk-latest": weekly,
     }) else {}),
     "vm-espresso-g1": mx_env + deploy_graalvm_espresso(25, with_g1=true) + espresso_java_home(25) + default_os_arch_jdk_mixin + platform_spec(no_jobs) + (
@@ -253,6 +266,7 @@ local evaluate_late(key, object) = task_spec(run_spec.evaluate_late({key:object}
 
   builds: utils.add_defined_in(std.flattenArrays([run_spec.process(task_dict).list for task_dict in [
     deploy_vm_base_task_dict,
+    deploy_vm_next_base_task_dict,
     deploy_vm_espresso_task_dict,
   ]]), std.thisFile),
 }

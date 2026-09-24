@@ -42,7 +42,7 @@ import com.oracle.graal.pointsto.typestate.TypeState;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.AtomicUtils;
 import com.oracle.graal.pointsto.util.ConcurrentLightHashSet;
-import com.oracle.svm.util.ClassUtil;
+import com.oracle.svm.shared.util.ClassUtil;
 
 import jdk.graal.compiler.graph.Node;
 import jdk.vm.ci.code.BytecodePosition;
@@ -536,16 +536,15 @@ public abstract class TypeFlow<T> {
     }
 
     /**
-     * Mark this flow as saturated. Each flow starts with isSaturated as false and once it is set to
-     * true it cannot be changed.
+     * Atomically marks this flow as saturated. On return, this flow is saturated.
+     *
+     * @return true if this invocation transitioned the flow to saturated; false only if the flow
+     *         was already saturated
      */
     public boolean setSaturated() {
         assert isFlowEnabled() : "A flow cannot saturate before it is enabled: " + this;
-        var previous = FLOW_STATE_UPDATER.get(this);
-        if (previous == FlowState.SATURATED) {
-            return false;
-        }
-        return FLOW_STATE_UPDATER.compareAndSet(this, previous, FlowState.SATURATED);
+        var previous = FLOW_STATE_UPDATER.getAndSet(this, FlowState.SATURATED);
+        return previous != FlowState.SATURATED;
     }
 
     public boolean addState(PointsToAnalysis bb, TypeState add) {

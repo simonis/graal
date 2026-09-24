@@ -35,6 +35,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 
@@ -77,13 +78,17 @@ public class ELFObjectFile extends ObjectFile {
     private final SectionHeaderTable sht;
     protected ELFSection interp;
 
+    /*
+     * These defaults capture the currently supported native ELF targets. Revisit them if support
+     * for non-little-endian, non-SYSV, or 32-bit ELF targets is added.
+     */
     private ELFEncoding dataEncoding = ELFEncoding.getSystemNativeValue();
     private char version;
     private ELFOsAbi osabi = ELFOsAbi.getSystemNativeValue();
     private char abiVersion;
     private ELFClass fileClass = ELFClass.getSystemNativeValue();
     private ELFMachine machine;
-    private long processorFlags; // FIXME: to encapsulate (EF_* in elf.h)
+    private long processorFlags;
     private final boolean runtimeDebugInfoGeneration;
 
     private ELFObjectFile(int pageSize, ELFMachine machine, boolean runtimeDebugInfoGeneration) {
@@ -184,9 +189,9 @@ public class ELFObjectFile extends ObjectFile {
     }
 
     @Override
-    public Symbol createDefinedSymbol(String name, Element baseSection, long position, int size, boolean isCode, boolean isGlobal) {
+    public Symbol createDefinedSymbol(String name, Element baseSection, long position, int size, boolean isCode, boolean isGlobal, boolean isExported) {
         ELFSymtab symtab = createSymbolTable();
-        return symtab.newDefinedEntry(name, (Section) baseSection, position, size, isGlobal, isCode);
+        return symtab.newDefinedEntry(name, (Section) baseSection, position, size, isGlobal, isCode, isExported);
     }
 
     @Override
@@ -211,6 +216,15 @@ public class ELFObjectFile extends ObjectFile {
             impl.setElement(userDefined);
         }
         return userDefined;
+    }
+
+    public ELFUserDefinedSection newNoteSection(String name, int alignment, ElementImpl impl) {
+        ELFUserDefinedSection note = new ELFUserDefinedSection(this, name, alignment, SectionType.NOTE, impl);
+        assert note.getImpl() == impl;
+        if (impl != null) {
+            impl.setElement(note);
+        }
+        return note;
     }
 
     @Override
@@ -413,7 +427,7 @@ public class ELFObjectFile extends ObjectFile {
         }
 
         public static ELFEncoding getSystemNativeValue() {
-            return ELFDATA2LSB; // FIXME: query
+            return ELFDATA2LSB;
         }
     }
 
@@ -436,7 +450,7 @@ public class ELFObjectFile extends ObjectFile {
         }
 
         public static ELFOsAbi getSystemNativeValue() {
-            return ELFOSABI_SYSV; // FIXME: query system
+            return ELFOSABI_SYSV;
         }
     }
 
@@ -458,7 +472,7 @@ public class ELFObjectFile extends ObjectFile {
         }
 
         public static ELFClass getSystemNativeValue() {
-            return ELFCLASS64; // FIXME: query system
+            return ELFCLASS64;
         }
     }
 
@@ -550,7 +564,6 @@ public class ELFObjectFile extends ObjectFile {
 
             public void write(OutputAssembler out) {
                 ident.write(out);
-                // FIXME: the following is specific to 64-bit ELF files
                 out.write2Byte(type.toShort());
                 out.write2Byte(machine.toShort());
                 out.write4Byte(version);
@@ -605,7 +618,7 @@ public class ELFObjectFile extends ObjectFile {
             // (e.g. SHT, PHT) must be decided before content, and we need to give a size so that
             // that nextAvailableOffset remains defined.
             // So, our size comes first.
-            HashSet<BuildDependency> dependencies = new HashSet<>();
+            EconomicSet<BuildDependency> dependencies = EconomicSet.create();
 
             LayoutDecision ourContent = decisions.get(this).getDecision(LayoutDecision.Kind.CONTENT);
             LayoutDecision ourOffset = decisions.get(this).getDecision(LayoutDecision.Kind.OFFSET);
@@ -659,12 +672,6 @@ public class ELFObjectFile extends ObjectFile {
             }
             contents.shstrndx = sawShStrTab ? index : 0;
             contents.write(oa);
-
-            if (contentHint != null) {
-                // FIXME: (for roundtripping) now we've written our own content,
-                // if we were passed a hint,
-                // check it's equal (verbatim) to the hint content
-            }
             return oa.getBlob();
         }
 
@@ -944,7 +951,7 @@ public class ELFObjectFile extends ObjectFile {
              *
              * - the vaddrs of every allocated section
              */
-            HashSet<BuildDependency> deps = ObjectFile.defaultDependencies(decisions, this);
+            EconomicSet<BuildDependency> deps = ObjectFile.defaultDependencies(decisions, this);
 
             LayoutDecision ourContent = decisions.get(this).getDecision(LayoutDecision.Kind.CONTENT);
 
@@ -983,11 +990,6 @@ public class ELFObjectFile extends ObjectFile {
             // we get our content by writing EntryStructs to a bytebuffer
             OutputAssembler oa = AssemblyBuffer.createOutputAssembler(getDataEncoding().toByteOrder());
             write(oa, alreadyDecided);
-            if (contentHint != null) {
-                // FIXME: (for roundtripping) now we've written our own content,
-                // if we were passed a hint,
-                // check it's equal (verbatim) to the hint content
-            }
             return oa.getBlob();
         }
 
@@ -1083,7 +1085,7 @@ public class ELFObjectFile extends ObjectFile {
 
     @Override
     public Set<Segment> getSegments() {
-        return new HashSet<>();
+        return new HashSet<>(); // noEconomicSet(streaming)
     }
 
     public ELFEncoding getDataEncoding() {
@@ -1202,13 +1204,13 @@ public class ELFObjectFile extends ObjectFile {
          * that they get updated if the section is merged with DWARF content from other ELF objects
          * during image linking.
          */
-        createDefinedSymbol(elfAbbrevSectionImpl.getSectionName(), elfAbbrevSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfInfoSectionImpl.getSectionName(), elfInfoSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfLineSectionImpl.getSectionName(), elfLineSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfStrSectionImpl.getSectionName(), elfStrSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfLineStrSectionImpl.getSectionName(), elfLineStrSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfRangesSectionImpl.getSectionName(), elfRangesSectionImpl.getElement(), 0, 0, false, false);
-        createDefinedSymbol(elfLocSectionImpl.getSectionName(), elfLocSectionImpl.getElement(), 0, 0, false, false);
+        createDefinedSymbol(elfAbbrevSectionImpl.getSectionName(), elfAbbrevSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfInfoSectionImpl.getSectionName(), elfInfoSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfLineSectionImpl.getSectionName(), elfLineSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfStrSectionImpl.getSectionName(), elfStrSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfLineStrSectionImpl.getSectionName(), elfLineStrSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfRangesSectionImpl.getSectionName(), elfRangesSectionImpl.getElement(), 0, 0, false, false, false);
+        createDefinedSymbol(elfLocSectionImpl.getSectionName(), elfLocSectionImpl.getElement(), 0, 0, false, false, false);
         /*
          * The byte[] for each implementation's content are created and written under
          * getOrDecideContent. Doing that ensures that all dependent sections are filled in and then

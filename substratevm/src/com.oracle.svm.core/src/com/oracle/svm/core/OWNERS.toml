@@ -6,12 +6,32 @@ all = [
 ]
 any = [
 ]
+
 [[rule]]
 files = "ClassLoaderSupport.java"
 all = [
-    "david.nestorovic@oracle.com",
-    "ivan.ristovic@oracle.com",
-    "paul.woegerer@oracle.com"
+    "paul.woegerer@oracle.com",
+    "vojin.jovanovic@oracle.com",
+    "christian.wirth@oracle.com"
 ]
 any = [
+]
+
+[[rule]]
+files = ["SubstrateDiagnostics.java", "GCRelatedMXBeans.java", "*MemoryUtil*", "*FrameAccess*", "*MainWrapper*", "*Register*", "SubstrateSegfaultHandler.java", "SubstrateGCOptions.java"]
+all = [
+    "christian.haeubl@oracle.com",
+]
+
+[[rule]]
+files = ["*Isolate*"]
+all = [
+    "peter.hofer@oracle.com",
+    "christian.haeubl@oracle.com",
+]
+
+[[rule]]
+files = ["*Foreign*"]
+all = [
+    "peter.hofer@oracle.com",
 ]

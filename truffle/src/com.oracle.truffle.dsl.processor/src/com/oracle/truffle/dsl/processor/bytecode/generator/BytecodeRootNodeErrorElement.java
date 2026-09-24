@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,7 @@ package com.oracle.truffle.dsl.processor.bytecode.generator;
 
 import static com.oracle.truffle.dsl.processor.bytecode.generator.ElementHelpers.generic;
 import static com.oracle.truffle.dsl.processor.generator.GeneratorUtils.mergeSuppressWarnings;
+import static javax.lang.model.element.Modifier.ABSTRACT;
 import static javax.lang.model.element.Modifier.FINAL;
 import static javax.lang.model.element.Modifier.PRIVATE;
 import static javax.lang.model.element.Modifier.PUBLIC;
@@ -61,13 +62,14 @@ import com.oracle.truffle.dsl.processor.ProcessorContext;
 import com.oracle.truffle.dsl.processor.TruffleTypes;
 import com.oracle.truffle.dsl.processor.bytecode.model.BytecodeDSLModel;
 import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel;
+import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationArgument;
+import com.oracle.truffle.dsl.processor.bytecode.model.OperationModel.OperationKind;
 import com.oracle.truffle.dsl.processor.generator.GeneratorUtils;
 import com.oracle.truffle.dsl.processor.java.ElementUtils;
 import com.oracle.truffle.dsl.processor.java.model.CodeExecutableElement;
 import com.oracle.truffle.dsl.processor.java.model.CodeTreeBuilder;
 import com.oracle.truffle.dsl.processor.java.model.CodeTypeElement;
 import com.oracle.truffle.dsl.processor.java.model.CodeVariableElement;
-import com.oracle.truffle.dsl.processor.java.model.GeneratedTypeMirror;
 
 /**
  * User code directly references some generated types and methods, like builder methods. When there
@@ -81,18 +83,23 @@ final class BytecodeRootNodeErrorElement extends CodeTypeElement {
     private final BytecodeDSLModel model;
     private final DeclaredType languageClass;
     private final BuilderElement builder;
-    private final DeclaredType builderType;
+    private final BytecodeDescriptorElement bytecodeDescriptorElement;
     private final TypeMirror parserType;
+    private final TypeMirror abstractBuilderType;
 
-    BytecodeRootNodeErrorElement(BytecodeDSLModel model) {
+    BytecodeRootNodeErrorElement(BytecodeDSLModel model, TypeMirror abstractBuilderType) {
         super(Set.of(PUBLIC, FINAL), ElementKind.CLASS, ElementUtils.findPackageElement(model.getTemplateType()), model.getName());
         this.model = model;
         this.languageClass = model.languageClass == null ? generic(types.TruffleLanguage) : model.languageClass;
+        this.abstractBuilderType = abstractBuilderType;
         this.setSuperClass(model.templateType.asType());
         GeneratorUtils.addGeneratedBy(context, this, model.templateType);
         this.builder = this.add(new BuilderElement());
-        this.builderType = new GeneratedTypeMirror("", builder.getSimpleName().toString(), builder.asType());
-        this.parserType = generic(types.BytecodeParser, builderType);
+        this.parserType = generic(types.BytecodeParser, abstractBuilderType == null ? builder.asType() : abstractBuilderType);
+        this.bytecodeDescriptorElement = this.add(new BytecodeDescriptorElement());
+        CodeVariableElement descriptor = new CodeVariableElement(Set.of(PUBLIC, STATIC, FINAL), bytecodeDescriptorElement.asType(), "BYTECODE");
+        descriptor.createInitBuilder().string("null").end();
+        this.getEnclosedElements().add(0, descriptor);
 
         this.add(createExecute());
         this.add(createConstructor());
@@ -101,7 +108,10 @@ final class BytecodeRootNodeErrorElement extends CodeTypeElement {
             this.add(createSerialize());
             this.add(createDeserialize());
         }
-
+        this.add(createGetSourceSection());
+        this.add(createIsInstrumentable());
+        this.addOptional(createFindInstrumentableCallNode());
+        this.addOptional(createPrepareForInstrumentation());
         this.add(createNewConfigBuilder());
     }
 
@@ -170,6 +180,40 @@ final class BytecodeRootNodeErrorElement extends CodeTypeElement {
         return method;
     }
 
+    private CodeExecutableElement createGetSourceSection() {
+        CodeExecutableElement ex = GeneratorUtils.override(types.Node, "getSourceSection");
+        CodeTreeBuilder b = ex.createBuilder();
+        emitThrowNotImplemented(b);
+        return ex;
+    }
+
+    private CodeExecutableElement createIsInstrumentable() {
+        CodeExecutableElement ex = BytecodeRootNodeElement.overrideImplementRootNodeMethod(model, "isInstrumentable");
+        CodeTreeBuilder b = ex.createBuilder();
+        emitThrowNotImplemented(b);
+        return ex;
+    }
+
+    private CodeExecutableElement createFindInstrumentableCallNode() {
+        if (!model.enableTagInstrumentation) {
+            return null;
+        }
+        CodeExecutableElement ex = BytecodeRootNodeElement.overrideImplementRootNodeMethod(model, "findInstrumentableCallNode", new String[]{"callNode", "frame", "bytecodeIndex"});
+        CodeTreeBuilder b = ex.createBuilder();
+        emitThrowNotImplemented(b);
+        return ex;
+    }
+
+    private CodeExecutableElement createPrepareForInstrumentation() {
+        if (!model.enableTagInstrumentation) {
+            return null;
+        }
+        CodeExecutableElement ex = BytecodeRootNodeElement.overrideImplementRootNodeMethod(model, "prepareForInstrumentation", new String[]{"materializedTags"});
+        CodeTreeBuilder b = ex.createBuilder();
+        emitThrowNotImplemented(b);
+        return ex;
+    }
+
     private void emitThrowNotImplemented(CodeTreeBuilder b) {
         b.startThrow().startNew(type(AbstractMethodError.class));
         b.string("\"There are error(s) with the operation node specification. Please resolve the error(s) and recompile.\"");
@@ -180,59 +224,43 @@ final class BytecodeRootNodeErrorElement extends CodeTypeElement {
         return context.getType(c);
     }
 
+    final class BytecodeDescriptorElement extends CodeTypeElement {
+        BytecodeDescriptorElement() {
+            super(Set.of(PUBLIC, STATIC, ABSTRACT), ElementKind.CLASS, null, "Bytecode");
+
+            TypeMirror superType = abstractBuilderType == null ? null : BytecodeDSLCodeGenerator.findBytecodeVariantType(abstractBuilderType);
+            if (superType == null) {
+                // regular case
+                superType = generic(types.BytecodeDescriptor, model.getTemplateType().asType(), model.languageClass, builder.asType());
+            }
+            setSuperClass(superType);
+
+            CodeExecutableElement ctor = this.add(new CodeExecutableElement(Set.of(PRIVATE), null, "Bytecode"));
+            ctor.createBuilder().startStatement().startSuperCall().string("null").end().end();
+        }
+    }
+
     private final class BuilderElement extends CodeTypeElement {
         BuilderElement() {
             super(Set.of(PUBLIC, STATIC, FINAL), ElementKind.CLASS, null, "Builder");
-            this.setSuperClass(types.BytecodeBuilder);
+            this.setSuperClass(abstractBuilderType == null ? types.BytecodeBuilder : abstractBuilderType);
             mergeSuppressWarnings(this, "all");
 
             this.add(createMethodStub("createLocal", types.BytecodeLocal));
             this.add(createMethodStub("createLabel", types.BytecodeLabel));
             this.add(createMethodStub("beginSourceSectionUnavailable", type(void.class)));
             this.add(createMethodStub("endSourceSectionUnavailable", type(void.class)));
+            this.add(createMethodStub("beginSourceSection", type(void.class)));
+            this.add(createMethodStub("endSourceSection", type(void.class)));
 
             for (OperationModel operation : model.getOperations()) {
                 switch (operation.kind) {
                     case ROOT: {
-                        this.add(createBegin(operation));
-                        // endRoot should return the root node.
-                        CodeExecutableElement end = createEnd(operation);
-                        end.setReturnType(model.templateType.asType());
-                        this.add(end);
-                        break;
-                    }
-                    case TRY_FINALLY, TRY_CATCH_OTHERWISE: {
-                        /**
-                         * Java type inference does not accept a lambda (e.g. "() -> {...}") as an
-                         * argument to Object..., so special-case the parameter type.
-                         */
-                        CodeExecutableElement begin = createBegin(operation);
-                        begin.getParameters().set(0, new CodeVariableElement(context.getDeclaredType(Runnable.class), "finallyParser"));
-                        begin.setVarArgs(false);
-                        this.add(begin);
-                        this.add(createEnd(operation));
-                        break;
-                    }
-                    case TAG: {
-                        /**
-                         * Passing an explicit Class<?>[] to beginTag/endTag causes a compiler
-                         * warning with the Object... signature.
-                         */
-                        TypeMirror tagsType = ElementHelpers.arrayOf(context.getDeclaredType(Class.class));
-                        CodeExecutableElement begin = createBegin(operation);
-                        begin.getParameters().set(0, new CodeVariableElement(tagsType, "tags"));
-                        this.add(begin);
-                        CodeExecutableElement end = createEnd(operation);
-                        end.getParameters().set(0, new CodeVariableElement(tagsType, "tags"));
-                        this.add(end);
+                        this.add(createBeginRoot());
+                        this.add(createEndRoot());
                         break;
                     }
                     default:
-                        /**
-                         * If parsing fails, we may not know if the operation takes dynamic operands
-                         * (e.g., it could have only constant operands). Conservatively generate
-                         * stubs for all three builder methods.
-                         */
                         this.add(createBegin(operation));
                         this.add(createEnd(operation));
                         this.add(createEmit(operation));
@@ -251,15 +279,53 @@ final class BytecodeRootNodeErrorElement extends CodeTypeElement {
             return ex;
         }
 
+        private CodeExecutableElement createTypedMethodStub(String name, TypeMirror returnType, OperationArgument[] args, boolean varArgs) {
+            CodeExecutableElement ex = new CodeExecutableElement(Set.of(PUBLIC), returnType, name);
+            for (OperationArgument arg : args) {
+                ex.addParameter(arg.toVariableElement());
+            }
+            ex.setVarArgs(varArgs);
+            emitThrowNotImplemented(ex.createBuilder());
+            return ex;
+        }
+
+        private boolean hasTypedSignature(OperationArgument[] args) {
+            return args.length > 0;
+        }
+
         private CodeExecutableElement createBegin(OperationModel operation) {
+            if (hasTypedSignature(operation.operationBeginArguments)) {
+                return createTypedMethodStub("begin" + operation.name, type(void.class), operation.operationBeginArguments, operation.kind == OperationModel.OperationKind.TAG);
+            }
             return createMethodStub("begin" + operation.name, type(void.class));
         }
 
+        private CodeExecutableElement createBeginRoot() {
+            if (model.prolog != null && hasTypedSignature(model.prolog.operation.operationBeginArguments)) {
+                return createTypedMethodStub("beginRoot", type(void.class), model.prolog.operation.operationBeginArguments, false);
+            }
+            return createMethodStub("beginRoot", type(void.class));
+        }
+
         private CodeExecutableElement createEnd(OperationModel operation) {
-            return createMethodStub("end" + operation.name, type(void.class));
+            TypeMirror returnType = operation.kind == OperationKind.BIND_STACKVALUE ? types.StackValue : type(void.class);
+            if (hasTypedSignature(operation.operationEndArguments)) {
+                return createTypedMethodStub("end" + operation.name, returnType, operation.operationEndArguments, operation.kind == OperationModel.OperationKind.TAG);
+            }
+            return createMethodStub("end" + operation.name, returnType);
+        }
+
+        private CodeExecutableElement createEndRoot() {
+            if (model.prolog != null && hasTypedSignature(model.prolog.operation.operationEndArguments)) {
+                return createTypedMethodStub("endRoot", model.templateType.asType(), model.prolog.operation.operationEndArguments, false);
+            }
+            return createMethodStub("endRoot", model.templateType.asType());
         }
 
         private CodeExecutableElement createEmit(OperationModel operation) {
+            if (hasTypedSignature(operation.operationBeginArguments)) {
+                return createTypedMethodStub("emit" + operation.name, type(void.class), operation.operationBeginArguments, false);
+            }
             return createMethodStub("emit" + operation.name, type(void.class));
         }
 

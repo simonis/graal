@@ -97,14 +97,14 @@ public final class IntegerSwitchNode extends SwitchNode implements LIRLowerable,
         assert keySuccessors.length == profileData.getKeyProbabilities().length : Assertions.errorMessageContext("keySucc", keySuccessors, "profiles", profileData.getKeyProbabilities());
         this.keys = keys;
         areKeysContiguous = keys.length > 0 && keys[keys.length - 1] - keys[0] + 1 == keys.length;
-        assert value.stamp(NodeView.DEFAULT) instanceof PrimitiveStamp && value.stamp(NodeView.DEFAULT).getStackKind().isNumericInteger() : Assertions.errorMessageContext("value", value);
+        assert value.stamp(NodeView.DEFAULT) instanceof PrimitiveStamp && value.stamp(NodeView.DEFAULT).getStackKind() == JavaKind.Int : Assertions.errorMessageContext("value", value);
         assert assertSorted();
         assert assertNoUntargettedSuccessor();
         this.mayEmitThreadedCode = mayEmitThreadedCode;
     }
 
-    public IntegerSwitchNode(ValueNode value, int successorCount, int[] keys, int[] keySuccessors, SwitchProbabilityData profileData) {
-        this(value, new AbstractBeginNode[successorCount], keys, keySuccessors, profileData, false);
+    public IntegerSwitchNode(ValueNode value, int successorCount, int[] keys, int[] keySuccessors, SwitchProbabilityData profileData, boolean mayEmitThreadedCode) {
+        this(value, new AbstractBeginNode[successorCount], keys, keySuccessors, profileData, mayEmitThreadedCode);
     }
 
     private boolean assertSorted() {

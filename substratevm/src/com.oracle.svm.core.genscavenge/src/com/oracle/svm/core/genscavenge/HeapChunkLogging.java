@@ -24,12 +24,12 @@
  */
 package com.oracle.svm.core.genscavenge;
 
-import static com.oracle.svm.core.log.Log.RIGHT_ALIGN;
+import static com.oracle.svm.guest.staging.log.Log.RIGHT_ALIGN;
 
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 
 class HeapChunkLogging {
     private static final int MAX_CHUNKS_TO_PRINT = 64 * 1024;
@@ -86,7 +86,13 @@ class HeapChunkLogging {
         log.string("|").string(shortSpaceName, 3, RIGHT_ALIGN);
         log.string("|").string(isAligned ? "A" : "U");
         log.string("|").string(isToSpace ? "T" : " ");
-        log.string("|").signed(chunk.getPinnedObjectCount());
+        log.string("|");
+        if (isAligned) {
+            AlignedHeapChunk.AlignedHeader aChunk = (AlignedHeapChunk.AlignedHeader) chunk;
+            if (aChunk.getObjectPinCount() != 0) {
+                log.signed(aChunk.getObjectPinCount());
+            }
+        }
         log.newline();
     }
 }

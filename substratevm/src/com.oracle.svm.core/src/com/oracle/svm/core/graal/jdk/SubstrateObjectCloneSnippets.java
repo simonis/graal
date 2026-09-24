@@ -30,12 +30,12 @@ import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.FAST_PATH_
 
 import java.util.Map;
 
+import com.oracle.svm.core.config.ObjectLayout;
 import org.graalvm.word.LocationIdentity;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.JavaMemoryUtil;
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.graal.snippets.SubstrateTemplates;
@@ -47,13 +47,14 @@ import com.oracle.svm.core.hub.DynamicHubSupport;
 import com.oracle.svm.core.hub.HubType;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.core.hub.DynamicHubIntrinsics;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
 import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.UnsignedUtils;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.UnsignedUtils;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Snippet;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
@@ -78,10 +79,10 @@ import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
 import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
 import jdk.graal.compiler.replacements.Snippets;
 import jdk.graal.compiler.replacements.nodes.ObjectClone;
-import jdk.graal.compiler.word.BarrieredAccess;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import org.graalvm.word.impl.Word;
 
 public final class SubstrateObjectCloneSnippets extends SubstrateTemplates implements Snippets {
     private static final SubstrateForeignCallDescriptor CLONE = SnippetRuntime.findForeignCall(SubstrateObjectCloneSnippets.class, "doClone", NO_SIDE_EFFECT, LocationIdentity.any());
@@ -92,7 +93,7 @@ public final class SubstrateObjectCloneSnippets extends SubstrateTemplates imple
     }
 
     @SubstrateForeignCallTarget(stubCallingConvention = false)
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+13/src/hotspot/share/prims/jvm.cpp#L645-L694")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+13/src/hotspot/share/prims/jvm.cpp#L645-L694")
     private static Object doClone(Object original) throws CloneNotSupportedException {
         if (original == null) {
             throw new NullPointerException();
@@ -100,7 +101,7 @@ public final class SubstrateObjectCloneSnippets extends SubstrateTemplates imple
             throw new CloneNotSupportedException("Object is no instance of Cloneable: " + original.getClass().getName());
         }
 
-        DynamicHub hub = KnownIntrinsics.readHub(original);
+        DynamicHub hub = DynamicHubIntrinsics.readHub(original);
         if (hub.getHubType() == HubType.REFERENCE_INSTANCE) {
             throw new CloneNotSupportedException("Subclasses of java.lang.ref.Reference are not cloneable: " + hub.getName());
         }
@@ -137,13 +138,13 @@ public final class SubstrateObjectCloneSnippets extends SubstrateTemplates imple
         int entryCount = refMapPos.readInt(0);
         refMapPos = refMapPos.add(4);
 
-        int referenceSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int referenceSize = ObjectLayout.singleton().getReferenceSize();
 
         assert entryCount >= 0;
         UnsignedWord sizeOfEntries = Word.unsigned(InstanceReferenceMapEncoder.MAP_ENTRY_SIZE).multiply(entryCount);
         Pointer refMapEnd = refMapPos.add(sizeOfEntries);
 
-        long curOffset = ConfigurationValues.getObjectLayout().getFirstFieldOffset();
+        long curOffset = ObjectLayout.singleton().getFirstFieldOffset();
         while (refMapPos.belowThan(refMapEnd)) {
             int objectOffset = refMapPos.readInt(0);
             refMapPos = refMapPos.add(4);
@@ -182,7 +183,7 @@ public final class SubstrateObjectCloneSnippets extends SubstrateTemplates imple
         }
 
         /* Reset identity hashcode if it is outside the object header. */
-        if (ConfigurationValues.getObjectLayout().isIdentityHashFieldAtTypeSpecificOffset()) {
+        if (ObjectLayout.singleton().isIdentityHashFieldAtTypeSpecificOffset()) {
             int offset = LayoutEncoding.getIdentityHashOffset(result);
             ObjectAccess.writeInt(result, offset, 0);
         }

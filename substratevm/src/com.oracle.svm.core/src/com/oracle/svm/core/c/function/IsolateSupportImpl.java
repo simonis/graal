@@ -35,28 +35,25 @@ import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.impl.IsolateSupport;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.c.function.CEntryPointNativeFunctions.IsolateThreadPointer;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.guest.staging.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.memory.NativeMemory;
 import com.oracle.svm.core.nmt.NmtCategory;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.os.MemoryProtectionProvider;
 import com.oracle.svm.core.os.MemoryProtectionProvider.UnsupportedDomainException;
-import com.oracle.svm.core.traits.BuiltinTraits.RuntimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
-import com.oracle.svm.core.traits.SingletonTraits;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.guest.staging.c.function.CEntryPointCreateIsolateParameters;
+import com.oracle.svm.guest.staging.c.function.CEntryPointErrors;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.RuntimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @AutomaticallyRegisteredImageSingleton(IsolateSupport.class)
 @SingletonTraits(access = RuntimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public final class IsolateSupportImpl implements IsolateSupport {
-    private static final String ISOLATES_DISABLED_MESSAGE = "Spawning of multiple isolates is disabled, use " +
-                    SubstrateOptionsParser.commandArgument(SubstrateOptions.SpawnIsolates, "+") + " option.";
     private static final String PROTECTION_DOMAIN_UNSUPPORTED_MESSAGE = "Protection domains are unavailable";
 
     IsolateSupportImpl() {
@@ -68,10 +65,6 @@ public final class IsolateSupportImpl implements IsolateSupport {
     }
 
     public static IsolateThread createIsolate(CreateIsolateParameters parameters, boolean compilationIsolate) throws IsolateException {
-        if (!SubstrateOptions.SpawnIsolates.getValue()) {
-            throw new IsolateException(ISOLATES_DISABLED_MESSAGE);
-        }
-
         try (CTypeConversion.CCharPointerHolder auxImagePath = CTypeConversion.toCString(parameters.getAuxiliaryImagePath())) {
             int pkey = 0;
             if (MemoryProtectionProvider.isAvailable()) {
@@ -112,8 +105,8 @@ public final class IsolateSupportImpl implements IsolateSupport {
             params.setAuxiliaryImagePath(auxImagePath.get());
             params.setAuxiliaryImageReservedSpaceSize(parameters.getAuxiliaryImageReservedSpaceSize());
             params.setVersion(5);
-            params.setIgnoreUnrecognizedArguments(false);
-            params.setExitWhenArgumentParsingFails(false);
+            params.setIgnoreUnrecognizedArgs(false);
+            params.setForJavaMainCall(false);
             params.setArgc(argc);
             params.setArgv(argv);
             params.setIsCompilationIsolate(compilationIsolate);
@@ -160,11 +153,7 @@ public final class IsolateSupportImpl implements IsolateSupport {
 
     @Override
     public void tearDownIsolate(IsolateThread thread) throws IsolateException {
-        if (SubstrateOptions.SpawnIsolates.getValue()) {
-            throwOnError(CEntryPointNativeFunctions.tearDownIsolate(thread));
-        } else {
-            throw new IsolateException(ISOLATES_DISABLED_MESSAGE);
-        }
+        throwOnError(CEntryPointNativeFunctions.tearDownIsolate(thread));
     }
 
     private static void throwOnError(int code) {

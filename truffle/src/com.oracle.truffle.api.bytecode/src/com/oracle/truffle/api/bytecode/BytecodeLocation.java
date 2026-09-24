@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -131,7 +131,7 @@ public final class BytecodeLocation {
      */
     @Override
     public String toString() {
-        return String.format("BytecodeLocation [bytecode=%s, bci=%d]", bytecodes, bytecodeIndex);
+        return String.format("BytecodeLocation[bytecode=%s, bci=%d]@%s", bytecodes, bytecodeIndex, getInstruction().toString());
     }
 
     /**
@@ -165,15 +165,34 @@ public final class BytecodeLocation {
     }
 
     /**
-     * Ensures source information available for this location and {@link #update() updates} this
-     * location to a new location of the bytecode node with source information. Materialization of
-     * source information may be an expensive operation if the source information was not yet
-     * materialized yet.
+     * Ensures source information is available. If the current location already has source
+     * information, it is returned; otherwise, returns an {@link #update() updated} location that
+     * has source information. This may be an expensive operation if the source information was not
+     * yet materialized.
      *
      * @since 24.2
      */
     public BytecodeLocation ensureSourceInformation() {
         BytecodeNode thisNode = this.bytecodes.ensureSourceInformation();
+        if (thisNode != this.bytecodes) {
+            return update();
+        }
+        return this;
+    }
+
+    /**
+     * Ensures source information with content is available. If the current location already has
+     * source information with content, it is returned; otherwise, returns an {@link #update()
+     * updated} location that has source information with content. This may be an expensive
+     * operation if the source information with content was not yet materialized
+     * <p>
+     * If the interpreter does not declare a {@link GenerateBytecode#sourceContentSupplier() source
+     * content supplier}, this method is equivalent to {@link #ensureSourceInformation}.
+     *
+     * @since 25.1
+     */
+    public BytecodeLocation ensureSourceInformationWithContent() {
+        BytecodeNode thisNode = this.bytecodes.ensureSourceInformationWithContent();
         if (thisNode != this.bytecodes) {
             return update();
         }
@@ -278,14 +297,7 @@ public final class BytecodeLocation {
          * into the frame before any operation that might call another node. This incurs a bit of
          * overhead during regular execution (but just for the uncached interpreter).
          */
-        Node location = frameInstance.getCallNode();
-        BytecodeNode foundBytecodeNode = null;
-        for (Node current = location; current != null; current = current.getParent()) {
-            if (current instanceof BytecodeNode bytecodeNode) {
-                foundBytecodeNode = bytecodeNode;
-                break;
-            }
-        }
+        BytecodeNode foundBytecodeNode = BytecodeNode.get(frameInstance);
         if (foundBytecodeNode == null) {
             return null;
         }
@@ -322,6 +334,8 @@ public final class BytecodeLocation {
      *
      * @return the {@link BytecodeLocation} or {@code null} if no bytecode interpreter can be found
      *         in the stack trace element.
+     * @throws IllegalArgumentException if the element has an invalid bytecode index.
+     * 
      * @since 24.2
      */
     public static BytecodeLocation get(TruffleStackTraceElement element) {
@@ -329,7 +343,11 @@ public final class BytecodeLocation {
         if (location == null) {
             return null;
         }
-        return get(location, element.getBytecodeIndex());
+        int bytecodeIndex = element.getBytecodeIndex();
+        if (bytecodeIndex < 0) {
+            throw new IllegalArgumentException("Bytecode index of TruffleStackTraceElement cannot be negative.");
+        }
+        return get(location, bytecodeIndex);
     }
 
 }

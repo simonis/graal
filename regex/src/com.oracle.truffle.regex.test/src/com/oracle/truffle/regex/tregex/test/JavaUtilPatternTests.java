@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -60,7 +60,7 @@ import org.junit.Test;
 import com.oracle.truffle.regex.charset.Range;
 import com.oracle.truffle.regex.flavor.java.JavaFlags;
 import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
-import com.oracle.truffle.regex.tregex.string.Encodings;
+import com.oracle.truffle.regex.tregex.string.Encoding;
 import com.oracle.truffle.regex.tregex.test.generated.JavaGeneratedTests;
 import com.oracle.truffle.regex.util.EmptyArrays;
 
@@ -74,8 +74,15 @@ public class JavaUtilPatternTests extends RegexTestBase {
     }
 
     @Override
-    Encodings.Encoding getTRegexEncoding() {
-        return Encodings.UTF_16;
+    Encoding getTRegexEncoding() {
+        return Encoding.UTF_16;
+    }
+
+    @Test
+    public void characterClassNestingLimit() {
+        int depth = 10_000;
+        String pattern = "[".repeat(depth) + "a" + "]".repeat(depth);
+        expectUnsupported(pattern, "");
     }
 
     @Test

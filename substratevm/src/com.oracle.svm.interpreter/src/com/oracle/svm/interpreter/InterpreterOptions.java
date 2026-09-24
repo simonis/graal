@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,11 +25,18 @@
 package com.oracle.svm.interpreter;
 
 import org.graalvm.collections.EconomicMap;
+import org.graalvm.nativeimage.Platform.HOSTED_ONLY;
+import org.graalvm.nativeimage.Platforms;
 
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidationSupport;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidationSupport.RuntimeOptionValidation;
+import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.pltgot.PLTGOTOptions;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
 
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
@@ -37,7 +44,7 @@ import jdk.graal.compiler.options.OptionType;
 
 public class InterpreterOptions {
     @Option(help = "Adds support to divert execution from AOT compiled methods to the interpreter at run-time.", type = OptionType.Expert) //
-    public static final HostedOptionKey<Boolean> DebuggerWithInterpreter = new HostedOptionKey<>(false) {
+    public static final HostedOptionKey<Boolean> DebuggerWithInterpreter = new HostedOptionKey<>(false, InterpreterOptions::validateDebuggerWithInterpreter) {
         @Override
         protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
             super.onValueUpdate(values, oldValue, newValue);
@@ -53,14 +60,48 @@ public class InterpreterOptions {
     @Option(help = "Path to dump interpreter universe metadata as .class files", type = OptionType.Expert)//
     public static final HostedOptionKey<String> InterpreterDumpClassFiles = new HostedOptionKey<>("");
 
-    // GR-54939: Switch default to false, as this has roughly a 2x perf impact on interpreter
-    // performance.
-    @Option(help = "Include interpreter tracing code in image") public static final HostedOptionKey<Boolean> InterpreterTraceSupport = new HostedOptionKey<>(true);
+    // Defaults to false as this has roughly a 2x impact on interpreter dispatch performance.
+    @Option(help = "Include interpreter tracing code in image")//
+    public static final HostedOptionKey<Boolean> InterpreterTraceSupport = new HostedOptionKey<>(false);
 
-    @Option(help = "Trace Interpreter execution")//
-    public static final RuntimeOptionKey<Boolean> InterpreterTrace = new RuntimeOptionKey<>(false);
+    @Option(help = "Trace interpreter execution")//
+    public static final RuntimeOptionKey<Boolean> InterpreterTrace = new RuntimeOptionKey<>(false, InterpreterOptions::validateTraceFlagBuildtime);
+
+    @Option(help = "Enables backdoors in interpreter for testing", type = OptionType.Debug)//
+    public static final HostedOptionKey<Boolean> InterpreterBackdoor = new HostedOptionKey<>(false);
 
     public static boolean interpreterEnabled() {
         return DebuggerWithInterpreter.getValue() || RuntimeClassLoading.isSupported();
+    }
+
+    private static void validateDebuggerWithInterpreter(HostedOptionKey<Boolean> optionKey) {
+        if (optionKey.getValue() && SubstrateOptions.useRistretto()) {
+            throw UserError.abort("Cannot enable DebuggerWithInterpreter or -H:+JDWP together with Ristretto compilation in the same image.");
+        }
+    }
+
+    @Platforms(HOSTED_ONLY.class)
+    public static void registerInterpreterTraceOptionValidation() {
+        RuntimeOptionValidationSupport.singleton().register(new RuntimeOptionValidation<>(InterpreterOptions::validateTraceFlagRuntime, InterpreterTrace));
+    }
+
+    @Platforms(HOSTED_ONLY.class)
+    private static void validateTraceFlagBuildtime(RuntimeOptionKey<Boolean> optionKey) {
+        if (optionKey.getValue() && !InterpreterTraceSupport.getValue()) {
+            throw UserError.abort("Option '%s' requires trace support to be enabled via '%s'.", optionKey.getName(), Holder.TRACE_SUPPORT_OPTION);
+        }
+    }
+
+    private static void validateTraceFlagRuntime(RuntimeOptionKey<Boolean> optionKey) {
+        if (InterpreterTraceSupport.getValue()) {
+            return;
+        }
+        if (optionKey.getValue()) {
+            throw new IllegalArgumentException("Option '" + optionKey.getName() + "' requires '" + Holder.TRACE_SUPPORT_OPTION + "' to be enabled at build-time.");
+        }
+    }
+
+    private static final class Holder {
+        static final String TRACE_SUPPORT_OPTION = SubstrateOptionsParser.commandArgument(InterpreterTraceSupport, "+");
     }
 }

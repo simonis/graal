@@ -24,13 +24,12 @@
  */
 package com.oracle.svm.core.graal.snippets;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHereUnexpectedInput;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHereUnexpectedInput;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.SLOW_PATH_PROBABILITY;
 import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
 import java.util.Map;
 
-import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.config.ObjectLayout;
 
 import jdk.graal.compiler.api.replacements.Snippet;
@@ -212,7 +211,7 @@ public abstract class ArithmeticSnippets extends SubstrateTemplates implements S
     protected ArithmeticSnippets(OptionValues options, Providers providers,
                     Map<Class<? extends Node>, NodeLoweringProvider<?>> lowerings, boolean divRemNeedsSignedBoundsCheck) {
         super(options, providers);
-        this.layout = ConfigurationValues.getObjectLayout();
+        this.layout = ObjectLayout.singleton();
 
         idiv = snippet(providers, ArithmeticSnippets.class, "idivSnippet");
         ldiv = snippet(providers, ArithmeticSnippets.class, "ldivSnippet");

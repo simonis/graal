@@ -24,12 +24,12 @@
  */
 package com.oracle.svm.core;
 
-import com.oracle.svm.core.option.APIOption;
-import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.LayerVerifiedOption;
-import com.oracle.svm.core.option.LayerVerifiedOption.Kind;
-import com.oracle.svm.core.option.LayerVerifiedOption.Severity;
+import com.oracle.svm.shared.option.APIOption;
+import com.oracle.svm.shared.option.AccumulatingLocatableMultiOptionValue;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.LayerVerifiedOption;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Kind;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Severity;
 
 import jdk.graal.compiler.options.Option;
 
@@ -58,7 +58,8 @@ public class NativeImageClassLoaderOptions {
     @APIOption(name = "enable-native-access", launcherOption = true, valueSeparator = {APIOption.WHITESPACE_SEPARATOR, '='})//
     @Option(help = "A comma-separated list of modules that are permitted to perform restricted native operations." +
                     " The module name can also be ALL-UNNAMED.")//
-    public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> EnableNativeAccess = new HostedOptionKey<>(AccumulatingLocatableMultiOptionValue.Strings.build());
+    public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> EnableNativeAccess = new HostedOptionKey<>(
+                    AccumulatingLocatableMultiOptionValue.Strings.buildWithCommaDelimiter());
 
     @APIOption(name = "list-modules")//
     @Option(help = "List observable modules and exit.")//

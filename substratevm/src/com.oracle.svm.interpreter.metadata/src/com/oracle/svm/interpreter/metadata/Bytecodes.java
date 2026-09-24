@@ -31,14 +31,18 @@ import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.COMMUTATIVE;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.FALL_THROUGH;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.FIELD_READ;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.FIELD_WRITE;
+import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.IF_BRANCH_PROFILED;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.INVOKE;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.LOAD;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.STOP;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.STORE;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.TRAP;
+import static com.oracle.svm.interpreter.metadata.Bytecodes.Flags.TYPE_PROFILED;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+
+import jdk.internal.vm.annotation.Stable;
 
 /**
  * Definitions of the standard Java bytecodes defined by
@@ -251,6 +255,14 @@ public class Bytecodes {
     public static final int GOTO_W               = 200; // 0xC8
     public static final int JSR_W                = 201; // 0xC9
     public static final int BREAKPOINT           = 202; // 0xCA
+    public static final int QUICK_GETSTATIC      = 203; // 0xCB
+    public static final int QUICK_PUTSTATIC      = 204; // 0xCC
+    public static final int QUICK_GETFIELD       = 205; // 0xCD
+    public static final int QUICK_PUTFIELD       = 206; // 0xCE
+    public static final int QUICK_BALOAD         = 207; // 0xCF
+    public static final int QUICK_ZALOAD         = 208; // 0xD0
+    public static final int QUICK_BASTORE        = 209; // 0xD1
+    public static final int QUICK_ZASTORE        = 210; // 0xD2
 
     public static final int ILLEGAL = 255;
     public static final int END = 256;
@@ -325,6 +337,14 @@ public class Bytecodes {
          * Denotes the 4 INVOKE* instructions.
          */
         static final int INVOKE = 0x00001000;
+        /**
+         * Denotes all binary branches that are subject to branch profiling.
+         */
+        static final int IF_BRANCH_PROFILED = 0x00002000;
+        /**
+         * Denotes all instructions that are subject to type profiling.
+         */
+        static final int TYPE_PROFILED = 0x00004000;
     }
 
     // Performs a sanity check that none of the flags overlap.
@@ -362,13 +382,13 @@ public class Bytecodes {
      * An array that maps from a bytecode value to the length in bytes for the corresponding
      * instruction.
      */
-    private static final int[] lengthArray = new int[256];
+    @Stable private static final int[] lengthArray = new int[256];
 
     /**
      * An array that maps from a bytecode value to the number of slots pushed on the stack by the
      * corresponding instruction.
      */
-    private static final int[] stackEffectArray = new int[256];
+    @Stable private static final int[] stackEffectArray = new int[256];
 
     // Checkstyle: stop
     // @formatter:off
@@ -423,7 +443,7 @@ public class Bytecodes {
         def(LALOAD              , "laload"          , "b"    ,  0, TRAP);
         def(FALOAD              , "faload"          , "b"    , -1, TRAP);
         def(DALOAD              , "daload"          , "b"    ,  0, TRAP);
-        def(AALOAD              , "aaload"          , "b"    , -1, TRAP);
+        def(AALOAD              , "aaload"          , "b"    , -1, TRAP | TYPE_PROFILED);
         def(BALOAD              , "baload"          , "b"    , -1, TRAP);
         def(CALOAD              , "caload"          , "b"    , -1, TRAP);
         def(SALOAD              , "saload"          , "b"    , -1, TRAP);
@@ -456,7 +476,7 @@ public class Bytecodes {
         def(LASTORE             , "lastore"         , "b"    , -4, TRAP);
         def(FASTORE             , "fastore"         , "b"    , -3, TRAP);
         def(DASTORE             , "dastore"         , "b"    , -4, TRAP);
-        def(AASTORE             , "aastore"         , "b"    , -3, TRAP);
+        def(AASTORE             , "aastore"         , "b"    , -3, TRAP | TYPE_PROFILED);
         def(BASTORE             , "bastore"         , "b"    , -3, TRAP);
         def(CASTORE             , "castore"         , "b"    , -3, TRAP);
         def(SASTORE             , "sastore"         , "b"    , -3, TRAP);
@@ -526,20 +546,20 @@ public class Bytecodes {
         def(FCMPG               , "fcmpg"           , "b"    , -1);
         def(DCMPL               , "dcmpl"           , "b"    , -3);
         def(DCMPG               , "dcmpg"           , "b"    , -3);
-        def(IFEQ                , "ifeq"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFNE                , "ifne"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFLT                , "iflt"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFGE                , "ifge"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFGT                , "ifgt"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFLE                , "ifle"            , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IF_ICMPEQ           , "if_icmpeq"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH);
-        def(IF_ICMPNE           , "if_icmpne"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH);
-        def(IF_ICMPLT           , "if_icmplt"       , "boo"  , -2, FALL_THROUGH | BRANCH);
-        def(IF_ICMPGE           , "if_icmpge"       , "boo"  , -2, FALL_THROUGH | BRANCH);
-        def(IF_ICMPGT           , "if_icmpgt"       , "boo"  , -2, FALL_THROUGH | BRANCH);
-        def(IF_ICMPLE           , "if_icmple"       , "boo"  , -2, FALL_THROUGH | BRANCH);
-        def(IF_ACMPEQ           , "if_acmpeq"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH);
-        def(IF_ACMPNE           , "if_acmpne"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH);
+        def(IFEQ                , "ifeq"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFNE                , "ifne"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFLT                , "iflt"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFGE                , "ifge"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFGT                , "ifgt"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFLE                , "ifle"            , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPEQ           , "if_icmpeq"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPNE           , "if_icmpne"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPLT           , "if_icmplt"       , "boo"  , -2, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPGE           , "if_icmpge"       , "boo"  , -2, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPGT           , "if_icmpgt"       , "boo"  , -2, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ICMPLE           , "if_icmple"       , "boo"  , -2, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ACMPEQ           , "if_acmpeq"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IF_ACMPNE           , "if_acmpne"       , "boo"  , -2, COMMUTATIVE | FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
         def(GOTO                , "goto"            , "boo"  ,  0, STOP | BRANCH);
         def(JSR                 , "jsr"             , "boo"  ,  0, STOP | BRANCH);
         def(RET                 , "ret"             , "bi"   ,  0, STOP);
@@ -555,27 +575,35 @@ public class Bytecodes {
         def(PUTSTATIC           , "putstatic"       , "bjj"  , -1, TRAP | FIELD_WRITE);
         def(GETFIELD            , "getfield"        , "bjj"  ,  0, TRAP | FIELD_READ);
         def(PUTFIELD            , "putfield"        , "bjj"  , -2, TRAP | FIELD_WRITE);
-        def(INVOKEVIRTUAL       , "invokevirtual"   , "bjj"  , -1, TRAP | INVOKE);
-        def(INVOKESPECIAL       , "invokespecial"   , "bjj"  , -1, TRAP | INVOKE);
-        def(INVOKESTATIC        , "invokestatic"    , "bjj"  ,  0, TRAP | INVOKE);
-        def(INVOKEINTERFACE     , "invokeinterface" , "bjja_", -1, TRAP | INVOKE);
-        def(INVOKEDYNAMIC       , "invokedynamic"   , "bjjjj",  0, TRAP | INVOKE);
+        def(INVOKEVIRTUAL       , "invokevirtual"   , "bjj"  , -1, TRAP | INVOKE | TYPE_PROFILED);
+        def(INVOKESPECIAL       , "invokespecial"   , "bjj"  , -1, TRAP | INVOKE | TYPE_PROFILED);
+        def(INVOKESTATIC        , "invokestatic"    , "bjj"  ,  0, TRAP | INVOKE | TYPE_PROFILED);
+        def(INVOKEINTERFACE     , "invokeinterface" , "bjja_", -1, TRAP | INVOKE | TYPE_PROFILED);
+        def(INVOKEDYNAMIC       , "invokedynamic"   , "bjjjj",  0, TRAP | INVOKE | TYPE_PROFILED);
         def(NEW                 , "new"             , "bii"  ,  1, TRAP);
         def(NEWARRAY            , "newarray"        , "bc"   ,  0, TRAP);
         def(ANEWARRAY           , "anewarray"       , "bii"  ,  0, TRAP);
         def(ARRAYLENGTH         , "arraylength"     , "b"    ,  0, TRAP);
         def(ATHROW              , "athrow"          , "b"    , -1, TRAP | STOP);
-        def(CHECKCAST           , "checkcast"       , "bii"  ,  0, TRAP);
-        def(INSTANCEOF          , "instanceof"      , "bii"  ,  0, TRAP);
+        def(CHECKCAST           , "checkcast"       , "bii"  ,  0, TRAP | TYPE_PROFILED);
+        def(INSTANCEOF          , "instanceof"      , "bii"  ,  0, TRAP | TYPE_PROFILED);
         def(MONITORENTER        , "monitorenter"    , "b"    , -1, TRAP);
         def(MONITOREXIT         , "monitorexit"     , "b"    , -1, TRAP);
         def(WIDE                , "wide"            , ""     ,  0);
         def(MULTIANEWARRAY      , "multianewarray"  , "biic" ,  1, TRAP);
-        def(IFNULL              , "ifnull"          , "boo"  , -1, FALL_THROUGH | BRANCH);
-        def(IFNONNULL           , "ifnonnull"       , "boo"  , -1, FALL_THROUGH | BRANCH);
+        def(IFNULL              , "ifnull"          , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
+        def(IFNONNULL           , "ifnonnull"       , "boo"  , -1, FALL_THROUGH | BRANCH | IF_BRANCH_PROFILED);
         def(GOTO_W              , "goto_w"          , "boooo",  0, STOP | BRANCH);
         def(JSR_W               , "jsr_w"           , "boooo",  0, STOP | BRANCH);
         def(BREAKPOINT          , "breakpoint"      , "b"    ,  0, TRAP);
+        def(QUICK_GETSTATIC     , "quick_getstatic" , "bjj"  ,  1, TRAP | FIELD_READ);
+        def(QUICK_PUTSTATIC     , "quick_putstatic" , "bjj"  , -1, TRAP | FIELD_WRITE);
+        def(QUICK_GETFIELD      , "quick_getfield"  , "bjj"  ,  0, TRAP | FIELD_READ);
+        def(QUICK_PUTFIELD      , "quick_putfield"  , "bjj"  , -2, TRAP | FIELD_WRITE);
+        def(QUICK_BALOAD        , "quick_baload"    , "b"    , -1, TRAP);
+        def(QUICK_ZALOAD        , "quick_zaload"    , "b"    , -1, TRAP);
+        def(QUICK_BASTORE       , "quick_bastore"   , "b"    , -3, TRAP);
+        def(QUICK_ZASTORE       , "quick_zastore"   , "b"    , -3, TRAP);
     }
     // @formatter:on
     // Checkstyle: resume
@@ -649,6 +677,31 @@ public class Bytecodes {
     }
 
     /**
+     * Determines if a given opcode is an instruction that is subject to binary branch profiling in
+     * the interpreter. Binary branches are instructions that have 2 successors - the taken and not
+     * taken successor.
+     *
+     * Note that {@link #GOTO} and {@link #JSR} are not considered a profiled if branch
+     *
+     * @param opcode an opcode to test
+     * @return {@code true} iff {@code opcode} is a binary branch instruction that is profiled
+     */
+    public static boolean isProfiledIfBranch(int opcode) {
+        return (flagsArray[opcode & 0xff] & IF_BRANCH_PROFILED) != 0;
+    }
+
+    /**
+     * Determines if a given opcode is an instruction that is subject to type profiling. This covers
+     * all instructions that deal with objects of a dynamic type.
+     *
+     * @param opcode an opcode to test
+     * @return {@code true} iff {@code opcode} is a type profiled branch instruction
+     */
+    public static boolean isTypeProfiled(int opcode) {
+        return (flagsArray[opcode & 0xff] & TYPE_PROFILED) != 0;
+    }
+
+    /**
      * Determines if a given opcode denotes a conditional branch.
      *
      * @param opcode
@@ -666,6 +719,48 @@ public class Bytecodes {
      */
     public static boolean isInvoke(int opcode) {
         return (flagsArray[opcode & 0xff] & INVOKE) != 0;
+    }
+
+    /**
+     * Identifies field bytecodes, including interpreter-private quickened variants.
+     */
+    public static boolean isFieldAccess(int opcode) {
+        return (flagsArray[opcode & 0xff] & (FIELD_READ | FIELD_WRITE)) != 0;
+    }
+
+    /**
+     * Maps a JVM field bytecode to its interpreter-private quickened variant.
+     */
+    public static int quickenedFieldAccess(int opcode) {
+        return switch (opcode) {
+            case GETSTATIC -> QUICK_GETSTATIC;
+            case PUTSTATIC -> QUICK_PUTSTATIC;
+            case GETFIELD -> QUICK_GETFIELD;
+            case PUTFIELD -> QUICK_PUTFIELD;
+            default -> throw new IllegalArgumentException("Not a quickenable field opcode: " + opcode);
+        };
+    }
+
+    /**
+     * Identifies all interpreter-private quickened bytecodes.
+     */
+    public static boolean isQuickened(int opcode) {
+        return QUICK_GETSTATIC <= opcode && opcode <= QUICK_ZASTORE;
+    }
+
+    /**
+     * Maps interpreter-private quickened bytecodes back to their JVM bytecodes.
+     */
+    public static int unquickened(int opcode) {
+        return switch (opcode) {
+            case QUICK_GETSTATIC -> GETSTATIC;
+            case QUICK_PUTSTATIC -> PUTSTATIC;
+            case QUICK_GETFIELD -> GETFIELD;
+            case QUICK_PUTFIELD -> PUTFIELD;
+            case QUICK_BALOAD, QUICK_ZALOAD -> BALOAD;
+            case QUICK_BASTORE, QUICK_ZASTORE -> BASTORE;
+            default -> opcode;
+        };
     }
 
     /**

@@ -27,7 +27,7 @@ package com.oracle.svm.core.foreign;
 import java.io.FileDescriptor;
 import java.lang.ref.Reference;
 
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.ArenaIntrinsics;
 import com.oracle.svm.core.ForeignSupport;
 import com.oracle.svm.core.annotate.Substitute;
@@ -36,7 +36,7 @@ import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.foreign.ForeignAPIPredicates.SharedArenasDisabled;
 import com.oracle.svm.core.foreign.ForeignAPIPredicates.SharedArenasEnabled;
 import com.oracle.svm.core.nodes.foreign.MemoryArenaValidInScopeNode;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 import jdk.internal.access.foreign.MappedMemoryUtilsProxy;
 import jdk.internal.foreign.AbstractMemorySegmentImpl;
@@ -88,8 +88,8 @@ import jdk.internal.vm.vector.VectorSupport;
  * @noinspection CaughtExceptionImmediatelyRethrown
  */
 @SuppressWarnings("javadoc")
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+15/src/java.base/share/classes/jdk/internal/misc/X-ScopedMemoryAccess-bin.java.template")
-@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+13/src/java.base/share/classes/jdk/internal/misc/X-ScopedMemoryAccess.java.template")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-24+15/src/java.base/share/classes/jdk/internal/misc/X-ScopedMemoryAccess-bin.java.template")
+@BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+13/src/java.base/share/classes/jdk/internal/misc/X-ScopedMemoryAccess.java.template")
 @TargetClass(className = "jdk.internal.misc.ScopedMemoryAccess", onlyWith = ForeignAPIPredicates.Enabled.class)
 public final class Target_jdk_internal_misc_ScopedMemoryAccess {
 
@@ -97,7 +97,7 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
     static void registerNatives() {
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L50-L77")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L50-L77")
     @SuppressWarnings("static-method")
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)
@@ -118,7 +118,7 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L182-L185")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L182-L185")
     @SuppressWarnings("static-method")
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)
@@ -140,7 +140,7 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L192-L195")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L192-L195")
     @SuppressWarnings("static-method")
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)
@@ -163,7 +163,7 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
         }
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L197-L200")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+14/src/java.base/share/classes/java/nio/MappedMemoryUtils.java#L197-L200")
     @SuppressWarnings("static-method")
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)
@@ -226,8 +226,32 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)
     @AlwaysInline("Safepoints must be visible in caller")
+    private static <V extends VectorSupport.Vector<E>, E> void storeIntoMemorySegmentScopedInternal(MemorySessionImpl session,
+                    Class<? extends V> vmClass, Class<E> e, int length,
+                    V v,
+                    AbstractMemorySegmentImpl msp, long offset,
+                    VectorSupport.StoreVectorOperation<AbstractMemorySegmentImpl, V> defaultImpl) {
+        throw SharedArenasEnabled.vectorAPIUnsupported();
+    }
+
+    @SuppressWarnings("unused")
+    @Substitute
+    @TargetElement(onlyWith = SharedArenasEnabled.class)
+    @AlwaysInline("Safepoints must be visible in caller")
     public static <V extends VectorSupport.Vector<E>, E, M extends VectorSupport.VectorMask<E>> void storeIntoMemorySegmentMasked(Class<? extends V> vmClass, Class<M> maskClass, Class<E> e,
                     int length, V v, M m,
+                    AbstractMemorySegmentImpl msp, long offset,
+                    VectorSupport.StoreVectorMaskedOperation<AbstractMemorySegmentImpl, V, M> defaultImpl) {
+        throw SharedArenasEnabled.vectorAPIUnsupported();
+    }
+
+    @SuppressWarnings("unused")
+    @Substitute
+    @TargetElement(onlyWith = SharedArenasEnabled.class)
+    @AlwaysInline("Safepoints must be visible in caller")
+    private static <V extends VectorSupport.Vector<E>, E, M extends VectorSupport.VectorMask<E>> void storeIntoMemorySegmentMaskedScopedInternal(MemorySessionImpl session,
+                    Class<? extends V> vmClass, Class<M> maskClass,
+                    Class<E> e, int length, V v, M m,
                     AbstractMemorySegmentImpl msp, long offset,
                     VectorSupport.StoreVectorMaskedOperation<AbstractMemorySegmentImpl, V, M> defaultImpl) {
         throw SharedArenasEnabled.vectorAPIUnsupported();
@@ -248,7 +272,7 @@ public final class Target_jdk_internal_misc_ScopedMemoryAccess {
      * {@link SyncCloseScopeOperation}) is essentially an empty operation but kills the field
      * location of {@link Target_jdk_internal_foreign_MemorySessionImpl#state}.
      */
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/hotspot/share/prims/scopedMemoryAccess.cpp#L215-L218")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/hotspot/share/prims/scopedMemoryAccess.cpp#L215-L218")
     @SuppressWarnings("static-method")
     @Substitute
     @TargetElement(onlyWith = SharedArenasEnabled.class)

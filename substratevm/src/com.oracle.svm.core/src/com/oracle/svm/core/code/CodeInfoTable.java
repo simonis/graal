@@ -31,36 +31,40 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
 import com.oracle.svm.core.heap.CodeReferenceMapDecoder;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
 import com.oracle.svm.core.heap.ReferenceMapIndex;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
-import com.oracle.svm.core.heap.RestrictHeapAccess.Access;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess.Access;
 import com.oracle.svm.core.heap.VMOperationInfos;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonSupport;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.core.meta.SharedMethod;
-import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.thread.JavaVMOperation;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.util.Counter;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.LayeredImageSingletonSupport;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.code.InstalledCode;
 
 /**
  * Provides the main entry points to look up metadata for code, either
  * {@link #getImageCodeCacheForLayer(int) ahead-of-time compiled code in the native image} or
- * {@link CodeInfoTable#getRuntimeCodeCache() code compiled at runtime}.
+ * {@link CodeInfoTable#getRuntimeCodeCache() code installed at runtime}.
  * <p>
  * Users of this class must take special care because code can be invalidated at arbitrary times and
  * their metadata can be freed, see notes on {@link CodeInfoAccess}.
@@ -121,10 +125,9 @@ public class CodeInfoTable {
     }
 
     public static CodeInfoQueryResult lookupCodeInfoQueryResult(CodeInfo info, CodePointer absoluteIP) {
+        assert info.isNonNull();
+
         counters().lookupCodeInfoCount.inc();
-        if (info.isNull()) {
-            return null;
-        }
         CodeInfoQueryResult result = new CodeInfoQueryResult();
         result.ip = absoluteIP;
         CodeInfoAccess.lookupCodeInfo(info, absoluteIP, result);
@@ -167,14 +170,19 @@ public class CodeInfoTable {
 
     @Uninterruptible(reason = "Not really uninterruptible, but we are about to fail.", calleeMustBe = false)
     public static RuntimeException fatalErrorNoReferenceMap(Pointer sp, CodePointer ip, CodeInfo info) {
-        Log.log().string("ip: ").hex(ip).string("  sp: ").hex(sp).string("  info:");
-        CodeInfoAccess.log(info, Log.log()).newline();
+        Log.log().string("ip: ").zhex(ip).string(", sp: ").zhex(sp).string(", code info: ");
+        if (info.isNull()) {
+            Log.log().string("null");
+        } else {
+            CodeInfoAccess.printCodeInfo(Log.log(), info, true);
+        }
         throw VMError.shouldNotReachHere("No reference map information found");
     }
 
     /**
      * Retrieves the {@link InstalledCode} that contains the provided instruction pointer. Returns
-     * {@code null} if the instruction pointer is not within a runtime compile method.
+     * {@code null} if the instruction pointer is not within a runtime compiled method, for example
+     * for AOT/native image code such as deoptimization-testing {@code @DeoptTest} frames.
      */
     @Uninterruptible(reason = "Prevent the GC from freeing the CodeInfo object.")
     public static SubstrateInstalledCode lookupInstalledCode(CodePointer ip) {
@@ -276,7 +284,7 @@ public class CodeInfoTable {
         return info;
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Tear-down in progress.")
     public static void tearDown() {
         getRuntimeCodeCache().tearDown();
     }
@@ -303,6 +311,7 @@ public class CodeInfoTable {
     }
 }
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 final class CodeInfoTableCounters {
     private final Counter.Group counters = new Counter.Group(CodeInfoTable.Options.CodeCacheCounters, "CodeInfoTable");
     final Counter lookupCodeInfoCount = new Counter(counters, "lookupCodeInfo", "");

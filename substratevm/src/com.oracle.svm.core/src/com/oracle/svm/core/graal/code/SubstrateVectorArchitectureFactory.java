@@ -24,7 +24,7 @@
  */
 package com.oracle.svm.core.graal.code;
 
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.vector.architecture.VectorArchitecture;
 import jdk.vm.ci.code.Architecture;
@@ -41,7 +41,7 @@ public abstract class SubstrateVectorArchitectureFactory {
 
     @FunctionalInterface
     public interface VectorArchitectureFactory<VectorArch extends VectorArchitecture, Arch extends Architecture> {
-        VectorArch create(Arch arch, boolean vectorArchEnabled, int referenceSize, boolean haveCompressedReferences, int alignment);
+        VectorArch create(Arch arch, boolean vectorArchEnabled, int referenceSize, boolean compressedReferences, int alignment);
     }
 
     /**
@@ -51,8 +51,8 @@ public abstract class SubstrateVectorArchitectureFactory {
      * singleton instance.
      */
     protected <VectorArch extends VectorArchitecture, Arch extends Architecture> VectorArchitecture getSingletonVectorArchitecture(VectorArchitectureFactory<VectorArch, Arch> factory,
-                    Arch arch, boolean vectorArchEnabled, int referenceSize, boolean haveCompressedReferences, int alignment) {
-        VectorArch newVectorArchitecture = factory.create(arch, vectorArchEnabled, referenceSize, haveCompressedReferences, alignment);
+                    Arch arch, boolean vectorArchEnabled, int referenceSize, int alignment) {
+        VectorArch newVectorArchitecture = factory.create(arch, vectorArchEnabled, referenceSize, true, alignment);
         if (vectorArchitecture == null) {
             synchronized (SubstrateVectorArchitectureFactory.class) {
                 if (vectorArchitecture == null) {

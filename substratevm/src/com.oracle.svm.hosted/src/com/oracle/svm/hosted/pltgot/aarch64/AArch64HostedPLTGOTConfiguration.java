@@ -31,13 +31,18 @@ import com.oracle.svm.core.pltgot.aarch64.AArch64ExitMethodAddressResolutionOp;
 import com.oracle.svm.core.pltgot.aarch64.AArch64MethodAddressResolutionDispatcher;
 import com.oracle.svm.hosted.pltgot.HostedPLTGOTConfiguration;
 import com.oracle.svm.hosted.pltgot.PLTStubGenerator;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterConfig;
 import jdk.vm.ci.code.RegisterValue;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public final class AArch64HostedPLTGOTConfiguration extends HostedPLTGOTConfiguration {
 
     @Override
@@ -46,7 +51,7 @@ public final class AArch64HostedPLTGOTConfiguration extends HostedPLTGOTConfigur
     }
 
     @Override
-    public PLTStubGenerator getArchSpecificPLTStubGenerator() {
+    public PLTStubGenerator createArchSpecificPLTStubGenerator() {
         return new AArch64PLTStubGenerator();
     }
 
@@ -62,6 +67,6 @@ public final class AArch64HostedPLTGOTConfiguration extends HostedPLTGOTConfigur
 
     @Override
     public Register getGOTPassingRegister(RegisterConfig registerConfig) {
-        throw new UnsupportedOperationException("AArch64 passes got entries via (unused) deopt frame handle slot.");
+        throw new UnsupportedOperationException("AArch64 passes GOT entries via (unused) deopt frame handle slot.");
     }
 }

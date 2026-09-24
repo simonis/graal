@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -48,10 +48,11 @@ import static org.graalvm.wasm.constants.Sizes.MEMORY_PAGE_SIZE;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
-import org.graalvm.wasm.api.Vector128;
-import org.graalvm.wasm.api.Vector128Ops;
+import org.graalvm.wasm.vector.Vector128;
+import org.graalvm.wasm.vector.Vector128Ops;
 import org.graalvm.wasm.exception.Failure;
 import org.graalvm.wasm.exception.WasmException;
 
@@ -76,7 +77,7 @@ final class ByteArrayWasmMemory extends WasmMemory {
 
     @TruffleBoundary
     ByteArrayWasmMemory(long declaredMinSize, long declaredMaxSize, boolean indexType64) {
-        this(declaredMinSize, declaredMaxSize, declaredMinSize, Math.min(declaredMaxSize, MAX_ALLOWED_SIZE), indexType64);
+        this(declaredMinSize, declaredMaxSize, declaredMinSize, Math.min(effectiveDeclaredMaxSize(declaredMaxSize, indexType64), MAX_ALLOWED_SIZE), indexType64);
     }
 
     private byte[] buffer() {
@@ -137,6 +138,7 @@ final class ByteArrayWasmMemory extends WasmMemory {
     }
 
     private WasmException trapOutOfBounds(Node node, long address, long length) {
+        CompilerDirectives.transferToInterpreterAndInvalidate();
         return trapOutOfBounds(node, address, length, byteSize());
     }
 
@@ -1070,6 +1072,12 @@ final class ByteArrayWasmMemory extends WasmMemory {
     @ExportMessage
     public void close() {
         dynamicBuffer = null;
+    }
+
+    @ExportMessage
+    @TruffleBoundary
+    public ByteBuffer asByteBuffer() {
+        return ByteBuffer.wrap(dynamicBuffer, 0, (int) byteSize());
     }
 
     @ExportMessage

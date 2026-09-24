@@ -24,14 +24,16 @@
  */
 package com.oracle.svm.core.genscavenge.metaspace;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CORE_GC_CODE;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.SubstrateDiagnostics;
 import com.oracle.svm.core.genscavenge.AddressRangeCommittedMemoryProvider;
 import com.oracle.svm.core.genscavenge.HeapVerifier;
 import com.oracle.svm.core.genscavenge.OldGeneration;
@@ -42,12 +44,19 @@ import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.heap.UninterruptibleObjectReferenceVisitor;
 import com.oracle.svm.core.heap.UninterruptibleObjectVisitor;
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.metaspace.Metaspace;
 import com.oracle.svm.core.thread.VMOperation;
+import com.oracle.svm.guest.staging.core.heap.RestrictHeapAccess;
+import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
+import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.Word;
 
 /**
  * {@link Metaspace} implementation for serial and epsilon GC. The metaspace uses the same address
@@ -56,7 +65,11 @@ import jdk.graal.compiler.word.Word;
  * {@link FirstObjectTable}, similar to the writable part of the image heap. The chunks are managed
  * in a single "To"-{@link Space}, which ensures that the GC doesn't try to move or promote the
  * objects.
+ * <p>
+ * This singleton is not fully layer aware because the {@link MetaspaceImpl#space} should be either
+ * always relinked or properly duplicated for each layer.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class MetaspaceImpl implements Metaspace {
     private final Space space = new Space("Metaspace", "M", true, getAge());
     private final ChunkedMetaspaceMemory memory = new ChunkedMetaspaceMemory(space);
@@ -64,6 +77,9 @@ public class MetaspaceImpl implements Metaspace {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public MetaspaceImpl() {
+        if (ImageLayerBuildingSupport.firstImageBuild() && MetaspaceObjectAllocator.collectsStats()) {
+            SubstrateDiagnostics.DiagnosticThunkRegistry.singleton().add(new DumpMetaspaceInfo());
+        }
     }
 
     @Fold
@@ -79,7 +95,7 @@ public class MetaspaceImpl implements Metaspace {
     @Override
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public boolean isInAllocatedMemory(Object obj) {
-        return isInAllocatedMemory(Word.objectToTrackedPointer(obj));
+        return isInAllocatedMemory(Word.objectToUntrackedPointer(obj));
     }
 
     @Override
@@ -91,7 +107,7 @@ public class MetaspaceImpl implements Metaspace {
     @Override
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public boolean isInAddressSpace(Object obj) {
-        return isInAddressSpace(Word.objectToTrackedPointer(obj));
+        return isInAddressSpace(Word.objectToUntrackedPointer(obj));
     }
 
     @Override
@@ -117,6 +133,11 @@ public class MetaspaceImpl implements Metaspace {
     }
 
     @Override
+    public <T> T allocateObject(Class<T> clazz) {
+        return allocator.allocateObject(clazz);
+    }
+
+    @Override
     public void walkObjects(ObjectVisitor visitor) {
         assert VMOperation.isInProgressAtSafepoint() : "prevent other threads from manipulating the metaspace";
         space.walkObjects(visitor);
@@ -128,7 +149,7 @@ public class MetaspaceImpl implements Metaspace {
         space.walkObjects(objectVisitor);
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = CORE_GC_CODE)
     public void walkDirtyObjects(UninterruptibleObjectVisitor objectVisitor, UninterruptibleObjectReferenceVisitor refVisitor, boolean clean) {
         assert VMOperation.isInProgressAtSafepoint() : "prevent other threads from manipulating the metaspace";
         RememberedSet.get().walkDirtyObjects(space.getFirstAlignedHeapChunk(), space.getFirstUnalignedHeapChunk(), Word.nullPointer(), objectVisitor, refVisitor, clean);
@@ -154,8 +175,46 @@ public class MetaspaceImpl implements Metaspace {
         return HeapVerifier.verifyRememberedSet(space);
     }
 
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    @Uninterruptible(reason = "Tear-down in progress.")
     public void tearDown() {
         space.tearDown();
+    }
+
+    private void logUsageAndStats() {
+        Log log = Log.log();
+        logUsage(log);
+        logStats(log);
+    }
+
+    private void logStats(Log log) {
+        log.string("Metaspace allocation stats:").indent(true);
+        allocator.logStats(log);
+        log.indent(false);
+    }
+
+    public static final class TeardownHook implements RuntimeSupport.Hook {
+        private final MetaspaceImpl metaspace;
+
+        public TeardownHook(MetaspaceImpl metaspace) {
+            this.metaspace = metaspace;
+        }
+
+        @Override
+        public void execute(boolean isFirstIsolate) {
+            metaspace.logUsageAndStats();
+        }
+    }
+
+    private static final class DumpMetaspaceInfo extends SubstrateDiagnostics.DiagnosticThunk {
+        @Override
+        public int maxInvocationCount() {
+            return 1;
+        }
+
+        @Override
+        @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while printing diagnostics.")
+        public void printDiagnostics(Log log, SubstrateDiagnostics.ErrorContext context, int maxDiagnosticLevel, int invocationCount) {
+            ((MetaspaceImpl) Metaspace.singleton()).logStats(log);
+        }
     }
 }

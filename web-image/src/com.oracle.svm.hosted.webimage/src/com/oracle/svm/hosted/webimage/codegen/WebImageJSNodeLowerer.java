@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,6 @@ package com.oracle.svm.hosted.webimage.codegen;
 
 import static jdk.graal.compiler.core.common.calc.CanonicalCondition.BT;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -48,10 +47,10 @@ import com.oracle.svm.core.graal.stackvalue.StackValueNode;
 import com.oracle.svm.core.graal.thread.LoadVMThreadLocalNode;
 import com.oracle.svm.core.graal.thread.StoreVMThreadLocalNode;
 import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.meta.SubstrateMethodRefStamp;
 import com.oracle.svm.core.nodes.CFunctionEpilogueNode;
 import com.oracle.svm.core.nodes.CFunctionPrologueNode;
 import com.oracle.svm.core.snippets.SnippetRuntime;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.meta.HostedArrayClass;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
@@ -76,10 +75,11 @@ import com.oracle.svm.hosted.webimage.codegen.wrappers.JSEmitter;
 import com.oracle.svm.hosted.webimage.js.JSBody;
 import com.oracle.svm.hosted.webimage.js.JSKeyword;
 import com.oracle.svm.hosted.webimage.snippets.JSSnippets;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.functionintrinsics.ImplicitExceptions;
 import com.oracle.svm.webimage.functionintrinsics.JSCallNode;
 import com.oracle.svm.webimage.functionintrinsics.JSFunctionDefinition;
-import com.oracle.svm.webimage.functionintrinsics.JSSystemFunction;
 import com.oracle.svm.webimage.hightiercodegen.CodeBuffer;
 import com.oracle.svm.webimage.hightiercodegen.Emitter;
 import com.oracle.svm.webimage.hightiercodegen.IEmitter;
@@ -212,8 +212,10 @@ import jdk.graal.compiler.nodes.virtual.VirtualObjectNode;
 import jdk.graal.compiler.replacements.nodes.ArrayEqualsNode;
 import jdk.graal.compiler.replacements.nodes.ArrayFillNode;
 import jdk.graal.compiler.replacements.nodes.BasicArrayCopyNode;
+import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicGenerationNode;
 import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicNode;
 import jdk.graal.compiler.replacements.nodes.ObjectClone;
+import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicGenerationNode;
 import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicNode;
 import jdk.graal.compiler.word.WordCastNode;
 import jdk.vm.ci.code.CodeUtil;
@@ -303,28 +305,20 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
 
     @Override
     protected void dispatch(Node node) {
-        if (node instanceof LoweredDeadEndNode) {
-            lowerLoweredDeadEndNode();
-        } else if (node instanceof ThrowBytecodeExceptionNode throwBytecodeExceptionNode) {
-            lower(throwBytecodeExceptionNode);
-        } else if (node instanceof DeoptimizeNode) {
-            lower((DeoptimizeNode) node);
-        } else if (node instanceof JSCallNode) {
-            lower((JSCallNode) node);
-        } else if (node instanceof CompoundConditionNode) {
-            lower((CompoundConditionNode) node);
-        } else if (node instanceof JSBody jsBody) {
-            lower(jsBody);
-        } else if (node instanceof StaticFieldsSupport.StaticFieldResolvedBaseNode resolvedBaseNode) {
-            lower(resolvedBaseNode);
-        } else if (node instanceof ReadIdentityHashCodeNode readIdentityHashCodeNode) {
-            lower(readIdentityHashCodeNode);
-        } else if (node instanceof WriteIdentityHashCodeNode writeIdentityHashCodeNode) {
-            lower(writeIdentityHashCodeNode);
-        } else if (node instanceof FloatingWordCastNode floatingWordCastNode) {
-            lower(floatingWordCastNode);
-        } else {
-            super.dispatch(node);
+        switch (node) {
+            case LoweredDeadEndNode loweredDeadEndNode -> lowerLoweredDeadEndNode();
+            case ThrowBytecodeExceptionNode throwBytecodeExceptionNode -> lower(throwBytecodeExceptionNode);
+            case DeoptimizeNode deoptimizeNode -> lower(deoptimizeNode);
+            case JSCallNode jsCallNode -> lower(jsCallNode);
+            case CompoundConditionNode compoundConditionNode -> lower(compoundConditionNode);
+            case JSBody jsBody -> lower(jsBody);
+            case StaticFieldsSupport.StaticFieldResolvedBaseNode resolvedBaseNode -> lower(resolvedBaseNode);
+            case ReadIdentityHashCodeNode readIdentityHashCodeNode -> lower(readIdentityHashCodeNode);
+            case WriteIdentityHashCodeNode writeIdentityHashCodeNode -> lower(writeIdentityHashCodeNode);
+            case FloatingWordCastNode floatingWordCastNode -> lower(floatingWordCastNode);
+            case UnaryMathIntrinsicGenerationNode unaryMathIntrinsicGenerationNode -> lower(unaryMathIntrinsicGenerationNode);
+            case BinaryMathIntrinsicGenerationNode binaryMathIntrinsicGenerationNode -> lower(binaryMathIntrinsicGenerationNode);
+            default -> super.dispatch(node);
         }
     }
 
@@ -535,7 +529,7 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
 
     @Override
     protected void lower(BoxNode node) {
-        HostedMetaAccess metaAccess = (HostedMetaAccess) codeGenTool.getProviders().getMetaAccess();
+        HostedMetaAccess metaAccess = codeGenTool.getProviders().getMetaAccess();
 
         ResolvedVar resolvedVar = codeGenTool.getAllocatedVariable(node);
         if (resolvedVar == null) {
@@ -865,7 +859,7 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
 
     @Override
     protected void lower(UnboxNode node) {
-        HostedMetaAccess metaAccess = (HostedMetaAccess) codeGenTool.getProviders().getMetaAccess();
+        HostedMetaAccess metaAccess = codeGenTool.getProviders().getMetaAccess();
         Class<?> boxing = node.getBoxingKind().toBoxedJavaClass();
         ResolvedJavaField valueField = AbstractBoxingNode.getValueField(metaAccess.lookupJavaType(boxing));
 
@@ -1047,12 +1041,9 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
 
     @Override
     protected void lower(LoadArrayComponentHubNode node) {
-        try {
-            ResolvedJavaField f = codeGenTool.getProviders().getMetaAccess().lookupJavaField(DynamicHub.class.getDeclaredField("componentType"));
-            codeGenTool.genPropertyAccess(Emitter.of(node.getValue()), Emitter.of(f));
-        } catch (NoSuchFieldException t) {
-            throw GraalError.shouldNotReachHere(t);
-        }
+        HostedType dynamicHubType = codeGenTool.getProviders().getMetaAccess().lookupJavaType(DynamicHub.class);
+        ResolvedJavaField f = JVMCIReflectionUtil.getUniqueDeclaredField(dynamicHubType, "componentType");
+        codeGenTool.genPropertyAccess(Emitter.of(node.getValue()), Emitter.of(f));
     }
 
     @Override
@@ -1111,40 +1102,26 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
     @Override
     protected void lower(ReadNode node) {
         AddressNode location = node.getAddress();
-        CodeBuffer masm = codeGenTool.getCodeBuffer();
 
-        if (location instanceof AMD64AddressNode) {
-            ValueNode object = location.getBase();
-
-            HostedType objectType = (HostedType) object.stamp(NodeView.DEFAULT).javaType(codeGenTool.getProviders().getMetaAccess());
-
-            if (objectType.isArray()) {
-                codeGenTool.genArrayLoad(location, object);
-            } else {
-                //
-                // We have a read on an object, this read can be modelled as accessing the field of
-                // the object at the given index, where the index accesses the field offset table to
-                // query the field name for a given type.
-                // The table maps offsets to lambdas that perform the field reads.
-                codeGenTool.genPropertyAccess(Emitter.of(object), Emitter.of("constructor[CM]." + ClassMetadataLowerer.FIELD_TABLE_NAME));
-                masm.emitKeyword(JSKeyword.LBRACK);
-                lowerValue(location);
-                masm.emitKeyword(JSKeyword.RBRACK);
-                masm.emitKeyword(JSKeyword.LPAR);
-                lowerValue(object);
-                masm.emitKeyword(JSKeyword.RPAR);
-            }
-        } else if (location instanceof OffsetAddressNode) {
+        if (location instanceof OffsetAddressNode) {
             OffsetAddressNode address = (OffsetAddressNode) node.getAddress();
             Emitter base = Emitter.of(node.getAddress().getBase());
             Emitter offset = Emitter.of(address.getOffset());
-            MetaAccessProvider metaAccess = codeGenTool.getProviders().getMetaAccess();
-            JavaKind kind = node.getAccessStamp(NodeView.DEFAULT).javaType(metaAccess).getJavaKind();
+            JavaKind kind = getMemoryKind(node.getAccessStamp(NodeView.DEFAULT));
             Emitter type = Emitter.of(JSBootImageHeapLowerer.getKindNum(kind));
             Runtime.UNSAFE_LOAD_RUNTIME.emitCall(codeGenTool, base, offset, type);
         } else {
             JVMCIError.shouldNotReachHere("Method " + location.graph().method().toString() + " contains node " + location);
         }
+    }
+
+    private JavaKind getMemoryKind(Stamp accessStamp) {
+        if (accessStamp instanceof SubstrateMethodRefStamp) {
+            return codeGenTool.getProviders().getWordTypes().getWordKind();
+        }
+
+        MetaAccessProvider metaAccess = codeGenTool.getProviders().getMetaAccess();
+        return accessStamp.javaType(metaAccess).getJavaKind();
     }
 
     @Override
@@ -1304,43 +1281,43 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
 
     @Override
     protected void lower(UnaryMathIntrinsicNode node) {
-        JSFunctionDefinition fun;
-        switch (node.getOperation()) {
-            case COS:
-                fun = Runtime.MATH_COS;
-                break;
-            case LOG:
-                fun = Runtime.MATH_LOG;
-                break;
-            case LOG10:
-                fun = Runtime.MATH_LOG10;
-                break;
-            case SIN:
-                fun = Runtime.MATH_SIN;
-                break;
-            case TAN:
-                fun = Runtime.MATH_TAN;
-                break;
-            case EXP:
-                fun = Runtime.MATH_EXP;
-                break;
-            default:
-                throw JVMCIError.shouldNotReachHere("Uknown operation " + node.getOperation());
-        }
+        lowerUnaryMath(node.getValue(), node.getOperation());
+    }
 
-        fun.emitCall(codeGenTool, Emitter.of(node.getValue()));
+    protected void lower(UnaryMathIntrinsicGenerationNode node) {
+        lowerUnaryMath(node.getValue(), node.getOperation());
+    }
+
+    protected void lowerUnaryMath(ValueNode value, UnaryMathIntrinsicNode.UnaryOperation operation) {
+        JSFunctionDefinition fun = switch (operation) {
+            case COS -> Runtime.MATH_COS;
+            case LOG -> Runtime.MATH_LOG;
+            case LOG10 -> Runtime.MATH_LOG10;
+            case SIN -> Runtime.MATH_SIN;
+            case TAN -> Runtime.MATH_TAN;
+            case TANH -> Runtime.MATH_TANH;
+            case EXP -> Runtime.MATH_EXP;
+            case CBRT -> Runtime.MATH_CBRT;
+        };
+
+        fun.emitCall(codeGenTool, Emitter.of(value));
     }
 
     @Override
     protected void lower(BinaryMathIntrinsicNode node) {
-        switch (node.getOperation()) {
-            case POW:
-                JSSystemFunction strictMathPow = JSCallNode.STRICT_MATH_POW;
-                strictMathPow.emitCall(codeGenTool, Emitter.of(node.getX()), Emitter.of(node.getY()));
-                break;
-            default:
-                throw GraalError.shouldNotReachHere("Uknown operation " + node.getOperation());
-        }
+        lowerBinaryMath(node.getX(), node.getY(), node.getOperation());
+    }
+
+    protected void lower(BinaryMathIntrinsicGenerationNode node) {
+        lowerBinaryMath(node.getX(), node.getY(), node.getOperation());
+    }
+
+    protected void lowerBinaryMath(ValueNode x, ValueNode y, BinaryMathIntrinsicNode.BinaryOperation operation) {
+        JSFunctionDefinition fun = switch (operation) {
+            case POW -> JSCallNode.STRICT_MATH_POW;
+        };
+
+        fun.emitCall(codeGenTool, Emitter.of(x), Emitter.of(y));
     }
 
     @Override
@@ -1405,7 +1382,7 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
      * @see WebImageImplicitExceptionsFeature#getSupportMethodName(BytecodeExceptionNode.BytecodeExceptionKind)
      */
     protected void lowerBytecodeException(BytecodeExceptionNode.BytecodeExceptionKind exceptionKind, List<ValueNode> args) {
-        HostedType exceptionsType = (HostedType) codeGenTool.getProviders().getMetaAccess().lookupJavaType(ImplicitExceptions.class);
+        HostedType exceptionsType = codeGenTool.getProviders().getMetaAccess().lookupJavaType(ImplicitExceptions.class);
         HostedMethod meth = WebImageProviders.findMethod(exceptionsType, WebImageImplicitExceptionsFeature.getSupportMethodName(exceptionKind));
         codeGenTool.genStaticCall(meth, Emitter.of(args));
     }
@@ -1568,14 +1545,6 @@ public class WebImageJSNodeLowerer extends NodeLowerer {
                         ((actualUsageCount(node) == 0) ||
                                         codeGenTool.declared(node) ||
                                         node instanceof EndNode);
-    }
-
-    public static Method getMethod(Class<?> clazz, String name, Class<?>... parameterTypes) {
-        try {
-            return clazz.getMethod(name, parameterTypes);
-        } catch (NoSuchMethodException e) {
-            throw JVMCIError.shouldNotReachHere(e);
-        }
     }
 
     public static void lowerConstant(PrimitiveConstant c, JSCodeGenTool jsLTools) {

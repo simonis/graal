@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -65,16 +65,11 @@ public class Graph implements EventCounter {
         @Option(help = "Verify graphs often during compilation when assertions are turned on", type = OptionType.Debug)//
         public static final OptionKey<Boolean> VerifyGraalGraphs = new OptionKey<>(true) {
             @Override
-            public Boolean getValueOrDefault(UnmodifiableEconomicMap<OptionKey<?>, Object> values) {
+            public Boolean getValue(OptionValues values) {
                 if (!Assertions.assertionsEnabled()) {
                     return false;
                 }
-                return super.getValueOrDefault(values);
-            }
-
-            @Override
-            public Boolean getValue(OptionValues values) {
-                return getValueOrDefault(values.getMap());
+                return super.getValue(values);
             }
         };
         @Option(help = "Perform expensive verification of graph inputs, usages, successors and predecessors", type = OptionType.Debug)//
@@ -1061,6 +1056,7 @@ public class Graph implements EventCounter {
     }
 
     public boolean isNew(Mark mark, Node node) {
+        assert mark.verifyIdsAreStable();
         return node.id >= mark.getValue();
     }
 
@@ -1078,7 +1074,7 @@ public class Graph implements EventCounter {
         @Override
         public boolean equals(Object obj) {
             if (obj instanceof Mark other) {
-                return other.getValue() == getValue() && other.getGraph() == getGraph();
+                return other.getValue() == getValue() && other.getGraph() == getGraph() && other.epoch == epoch;
             }
             return false;
         }
@@ -1098,10 +1094,10 @@ public class Graph implements EventCounter {
 
         /**
          * Determines if this mark still represents the {@linkplain Graph#getNodeCount() live node
-         * count} of the graph.
+         * count} of the graph and node ids have not been reassigned by graph compression.
          */
         public boolean isCurrent() {
-            return value == graph.nodeIdCount();
+            return value == graph.nodeIdCount() && epoch == graph.compressions;
         }
     }
 
@@ -1117,6 +1113,7 @@ public class Graph implements EventCounter {
      * mark}.
      */
     public NodeIterable<Node> getNewNodes(Mark mark) {
+        assert mark == null || mark.verifyIdsAreStable();
         final int index = mark == null ? 0 : mark.getValue();
         return () -> new GraphNodeIterator(Graph.this, index);
     }

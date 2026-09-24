@@ -25,12 +25,12 @@
 package com.oracle.svm.core;
 
 import static com.oracle.svm.core.IsolateArgumentAccess.readCCharPointer;
-import static com.oracle.svm.core.IsolateArgumentAccess.readLong;
 import static com.oracle.svm.core.IsolateArgumentAccess.writeBoolean;
 import static com.oracle.svm.core.IsolateArgumentAccess.writeCCharPointer;
 import static com.oracle.svm.core.IsolateArgumentAccess.writeLong;
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -47,44 +47,55 @@ import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.nativeimage.c.type.CLongPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
+import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.c.function.CEntryPointCreateIsolateParameters;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.imagelayer.BuildingImageLayerPredicate;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
-import com.oracle.svm.core.memory.UntrackedNullableNativeMemory;
-import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.SingleLayer;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.ImageHeapList;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.guest.staging.ArgsSupport;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
+import com.oracle.svm.guest.staging.c.CGlobalData;
+import com.oracle.svm.guest.staging.c.CGlobalDataFactory;
+import com.oracle.svm.guest.staging.c.function.CEntryPointCreateIsolateParameters;
+import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
+import com.oracle.svm.guest.staging.core.memory.UntrackedNullableNativeMemory;
+import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionParser;
+import com.oracle.svm.guest.staging.util.ImageHeapList;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.NumUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.OptionKey;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Parses a small subset of the runtime arguments before the image heap is mapped and before the
- * isolate is fully started.
- *
- * If options are specified in {@link CEntryPointCreateIsolateParameters} and {@code argv} the value
- * stored in {@code argv} is used.
+ * isolate is fully started. If options are specified in {@link CEntryPointCreateIsolateParameters}
+ * and {@code argv}, the value stored in {@code argv} is used.
+ * <p>
+ * Non-null string defaults are stored as {@link #encodeDefaultStringOffset encoded offsets} into a
+ * static table of null-terminated ASCII strings (see {@link #getDefaultStrings()}). During startup,
+ * strings are resolved to regular {@link CCharPointer} values. If command line argument parsing is
+ * enabled, strings are copied to native memory and owned by this parser. Otherwise, string values
+ * point directly into the static default string table. String default values are restricted to
+ * ASCII to avoid issues ({@code argv} values use the runtime platform encoding).
  */
 @AutomaticallyRegisteredImageSingleton
 @SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
@@ -94,13 +105,20 @@ public class IsolateArgumentParser {
     private static final CGlobalData<CCharPointer> OPTION_NAMES = CGlobalDataFactory.createBytes(IsolateArgumentParser::createOptionNames);
     private static final CGlobalData<CIntPointer> OPTION_NAME_POSITIONS = CGlobalDataFactory.createBytes(IsolateArgumentParser::createOptionNamePosition);
     private static final CGlobalData<CCharPointer> OPTION_TYPES = CGlobalDataFactory.createBytes(IsolateArgumentParser::createOptionTypes);
-    protected static final CGlobalData<CLongPointer> DEFAULT_VALUES = CGlobalDataFactory.createBytes(IsolateArgumentParser::createDefaultValues);
+
+    /** The default values are created in {@code RuntimeOptionsFeature}. */
+    public interface DefaultValuesProvider {
+        CGlobalData<CLongPointer> getDefaultValues();
+
+        CGlobalData<CCharPointer> getDefaultStrings();
+    }
 
     /**
      * All values (regardless of their type) are stored as 8 byte values. See
      * {@link IsolateArguments#setParsedArgs(CLongPointer)} for more information.
      */
     private long[] parsedOptionValues;
+    private boolean[] parsedOptionNullFlags;
 
     private static final long K = 1024;
     private static final long M = K * K;
@@ -108,6 +126,7 @@ public class IsolateArgumentParser {
     private static final long T = K * G;
 
     private boolean isCompilationIsolate;
+    private boolean ownsStringArguments;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public IsolateArgumentParser() {
@@ -116,6 +135,16 @@ public class IsolateArgumentParser {
     @Fold
     public static IsolateArgumentParser singleton() {
         return ImageSingletons.lookup(IsolateArgumentParser.class);
+    }
+
+    @Fold
+    protected static CGlobalData<CLongPointer> getDefaultValues() {
+        return ImageSingletons.lookup(DefaultValuesProvider.class).getDefaultValues();
+    }
+
+    @Fold
+    protected static CGlobalData<CCharPointer> getDefaultStrings() {
+        return ImageSingletons.lookup(DefaultValuesProvider.class).getDefaultStrings();
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -129,6 +158,7 @@ public class IsolateArgumentParser {
     @Platforms(Platform.HOSTED_ONLY.class)
     public synchronized void sealOptions() {
         singleton().parsedOptionValues = new long[getOptionCount()];
+        singleton().parsedOptionNullFlags = new boolean[getOptionCount()];
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -168,31 +198,75 @@ public class IsolateArgumentParser {
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    private static byte[] createDefaultValues() {
-        byte[] result = new byte[Long.BYTES * getOptionCount()];
+    public static byte[] createDefaultValues() {
+        assert !ImageLayerBuildingSupport.buildingImageLayer();
+        return createDefaultValuesArray(getOptions());
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public static byte[] createDefaultValuesArray(List<RuntimeOptionKey<?>> options) {
+        assert options.size() == getOptionCount();
+        byte[] result = new byte[getParsedArgsSize()];
         ByteBuffer buffer = ByteBuffer.wrap(result).order(ByteOrder.nativeOrder());
-        for (int i = 0; i < getOptionCount(); i++) {
-            RuntimeOptionKey<?> option = getOptions().get(i);
+        int stringOffset = 0;
+        for (int i = 0; i < options.size(); i++) {
+            var option = options.get(i);
             VMError.guarantee(option.isIsolateCreationOnly(), "Options parsed by IsolateArgumentParser should all have the IsolateCreationOnly flag. %s doesn't", option);
-            long value = toLong(option.getHostedValue(), option.getDescriptor().getOptionValueType());
-            buffer.putLong(value);
+            Object value = option.getHostedValue();
+            if (value instanceof String string) {
+                buffer.putLong(Long.BYTES * i, encodeDefaultStringOffset(stringOffset));
+                stringOffset += getCStringSize(string);
+            } else {
+                buffer.putLong(Long.BYTES * i, toLong(value));
+            }
+            buffer.putLong(Long.BYTES * (options.size() + i), value == null ? 1L : 0L);
         }
         return result;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    private static long toLong(Object value, Class<?> clazz) {
-        if (value == null && String.class.equals(clazz)) {
-            return 0L;
-        } else if (value instanceof Boolean) {
-            return ((Boolean) value) ? 1L : 0L;
-        } else if (value instanceof Integer) {
-            return (Integer) value;
-        } else if (value instanceof Long) {
-            return (Long) value;
-        } else {
-            throw VMError.shouldNotReachHere("Unexpected option value: " + value);
+    public static byte[] createDefaultStrings() {
+        assert !ImageLayerBuildingSupport.buildingImageLayer();
+        return createDefaultStringsArray(getOptions());
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public static byte[] createDefaultStringsArray(List<RuntimeOptionKey<?>> options) {
+        var result = new ByteArrayOutputStream();
+        for (RuntimeOptionKey<?> option : options) {
+            Object value = option.getHostedValue();
+            if (value instanceof String string) {
+                writeCStringBytes(result, string);
+            }
         }
+        return result.toByteArray();
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    private static long toLong(Object value) {
+        return switch (value) {
+            case null -> 0L;
+            case Boolean b -> b ? 1 : 0;
+            case Integer i -> i;
+            case Long l -> l;
+            default -> throw VMError.shouldNotReachHere("Unexpected option value: " + value);
+        };
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    private static int getCStringSize(String value) {
+        return value.length() + 1;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    private static void writeCStringBytes(ByteArrayOutputStream result, String string) {
+        for (int i = 0; i < string.length(); i++) {
+            char ch = string.charAt(i);
+            VMError.guarantee(ch != 0, "String defaults for isolate argument parser options must not contain embedded NUL characters.");
+            VMError.guarantee(ch <= 0x7F, "String defaults for isolate argument parser options must be ASCII.");
+            result.write((byte) ch);
+        }
+        result.write('\0');
     }
 
     @Fold
@@ -212,75 +286,113 @@ public class IsolateArgumentParser {
     @Uninterruptible(reason = "Still being initialized.")
     public void parse(CEntryPointCreateIsolateParameters parameters, IsolateArguments arguments) {
         initialize(arguments, parameters);
-        if (!LibC.isSupported() || !shouldParseArguments(arguments)) {
-            // Without LibC support, argument parsing is disabled. So, we just use the build-time
-            // values of the runtime options.
-            return;
-        }
 
-        CLongPointer value = StackValue.get(Long.BYTES);
-        // Ignore the first argument as it represents the executable file name.
-        for (int i = 1; i < arguments.getArgc(); i++) {
-            CCharPointer arg = arguments.getArgv().read(i);
-            if (arg.isNonNull()) {
-                CCharPointer tail = matchPrefix(arg);
-                if (tail.isNonNull()) {
-                    CCharPointer xOptionTail = matchXOption(tail);
-                    if (xOptionTail.isNonNull()) {
-                        parseXOption(arguments, value, xOptionTail);
-                    } else {
-                        CCharPointer xxOptionTail = matchXXOption(tail);
-                        if (xxOptionTail.isNonNull()) {
-                            parseXXOption(arguments, value, xxOptionTail);
+        boolean parseArguments = LibC.isSupported() && shouldParseArguments(arguments);
+        arguments.setOwnsStringArguments(parseArguments);
+
+        if (parseArguments) {
+            CLongPointer value = StackValue.get(Long.BYTES);
+            // Ignore the first argument as it represents the executable file name.
+            int parseLimit = isolateArgumentParseLimit(parameters, arguments);
+            for (int i = 1; i < parseLimit; i++) {
+                CCharPointer arg = arguments.getArgv().read(i);
+                if (arg.isNonNull()) {
+                    CCharPointer tail = matchPrefix(arg);
+                    if (tail.isNonNull()) {
+                        CCharPointer xOptionTail = matchXOption(tail);
+                        if (xOptionTail.isNonNull()) {
+                            parseXOption(arguments, value, xOptionTail);
+                        } else {
+                            CCharPointer xxOptionTail = matchXXOption(tail);
+                            if (xxOptionTail.isNonNull()) {
+                                parseXXOption(arguments, value, xxOptionTail);
+                            }
                         }
                     }
                 }
             }
         }
 
-        copyStringArguments(arguments);
+        materializeStringArguments(arguments);
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static int isolateArgumentParseLimit(CEntryPointCreateIsolateParameters parameters, IsolateArguments arguments) {
+        if (!SubstrateOptions.StrictRuntimeJavaOptions.getValue() || parameters.isNull() || parameters.version() < 4 || !parameters.getForJavaMainCall()) {
+            return arguments.getArgc();
+        }
+
+        for (int i = 1; i < arguments.getArgc(); i++) {
+            CCharPointer arg = arguments.getArgv().read(i);
+            if (arg.isNonNull() && ArgsSupport.isEndOfOptionsMarker(arg)) {
+                return i;
+            }
+        }
+        return arguments.getArgc();
     }
 
     @Uninterruptible(reason = "Tear-down in progress.")
     public boolean tearDown(IsolateArguments arguments) {
-        for (int i = 0; i < getOptionCount(); i++) {
-            if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
-                UntrackedNullableNativeMemory.free(readCCharPointer(arguments, i));
-                writeCCharPointer(arguments, i, Word.nullPointer());
-            }
+        if (arguments.getOwnsStringArguments()) {
+            freeStringArguments(arguments);
         }
         return true;
     }
 
     @Uninterruptible(reason = "Tear-down in progress.")
     public boolean tearDown() {
-        for (int i = 0; i < getOptionCount(); i++) {
-            if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
-                UntrackedNullableNativeMemory.free(Word.pointer(parsedOptionValues[i]));
-                parsedOptionValues[i] = 0;
-            }
+        if (ownsStringArguments) {
+            freeStringArguments();
         }
         return true;
     }
 
+    @Uninterruptible(reason = "Tear-down in progress.")
+    private static void freeStringArguments(IsolateArguments arguments) {
+        for (int i = 0; i < getOptionCount(); i++) {
+            if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
+                UntrackedNullableNativeMemory.free(readCCharPointer(arguments, i));
+                writeCCharPointer(arguments, i, Word.nullPointer());
+            }
+        }
+    }
+
+    @Uninterruptible(reason = "Tear-down in progress.")
+    private void freeStringArguments() {
+        for (int i = 0; i < getOptionCount(); i++) {
+            if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
+                UntrackedNullableNativeMemory.free(Word.pointer(parsedOptionValues[i]));
+                parsedOptionValues[i] = 0;
+                parsedOptionNullFlags[i] = true;
+            }
+        }
+    }
+
+    /**
+     * Some runtime options can be set via the {@link CEntryPointCreateIsolateParameters}. Such
+     * values won't be seen by {@link RuntimeOptionParser#parseAndConsumeAllOptions}, so we need to
+     * explicitly copy those values to the corresponding {@link RuntimeOptionKey}s so that they have
+     * consistent values as well.
+     */
     public void copyToRuntimeOptions() {
-        int index = getOptionIndex(SubstrateGCOptions.ReservedAddressSpaceSize);
-        long value = getLongOptionValue(index);
-        if (DEFAULT_VALUES.get().read(index) != value) {
+        int optionIndex = getOptionIndex(SubstrateGCOptions.ReservedAddressSpaceSize);
+        long value = getLongOptionValue(optionIndex);
+        if (getDefaultValues().get().read(optionIndex) != value) {
             SubstrateGCOptions.ReservedAddressSpaceSize.update(value);
         }
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    private static void copyStringArguments(IsolateArguments arguments) {
+    private static void materializeStringArguments(IsolateArguments arguments) {
         for (int i = 0; i < getOptionCount(); i++) {
             if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
-                CCharPointer string = readCCharPointer(arguments, i);
-
-                if (string.isNonNull()) {
-                    CCharPointer copy = LibC.strdup(string);
-                    VMError.guarantee(copy.isNonNull(), "Copying of string argument failed.");
-                    writeCCharPointer(arguments, i, copy);
+                if (!IsolateArgumentAccess.isNull(arguments, i)) {
+                    CCharPointer string = getStringArgument(arguments, i);
+                    if (arguments.getOwnsStringArguments()) {
+                        string = duplicateCString(string);
+                        VMError.guarantee(string.isNonNull(), "Copying of string argument failed.");
+                    }
+                    writeCCharPointer(arguments, i, string);
                 } else {
                     writeCCharPointer(arguments, i, Word.nullPointer());
                 }
@@ -288,49 +400,78 @@ public class IsolateArgumentParser {
         }
     }
 
-    /**
-     * Note that this logic must be in sync with
-     * {@link com.oracle.svm.core.option.RuntimeOptionParser#parseAndConsumeAllOptions}.
-     */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static CCharPointer duplicateCString(CCharPointer source) {
+        UnsignedWord length = SubstrateUtil.strlen(source).add(1);
+        CCharPointer copy = UntrackedNullableNativeMemory.malloc(length);
+        if (copy.isNull()) {
+            return Word.nullPointer();
+        }
+
+        UnmanagedMemoryUtil.copy((Pointer) source, (Pointer) copy, length);
+        return copy;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static CCharPointer getStringArgument(IsolateArguments arguments, int optionIndex) {
+        long value = IsolateArgumentAccess.readLong(arguments, optionIndex);
+        if (isEncodedDefaultStringOffset(value)) {
+            return getDefaultStringPointer(value);
+        }
+        return Word.pointer(value);
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static CCharPointer getDefaultStringPointer(long encodedOffset) {
+        long offset = decodeDefaultStringOffset(encodedOffset);
+        return getDefaultStrings().get().addressOf(NumUtil.safeToInt(offset));
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static int encodeDefaultStringOffset(int offset) {
+        return -(offset + 1);
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static long decodeDefaultStringOffset(long value) {
+        assert isEncodedDefaultStringOffset(value);
+        return -value - 1;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    private static boolean isEncodedDefaultStringOffset(long value) {
+        return value < 0;
+    }
+
+    /// Note that the logic of whether to parse options must be in sync with
+    /// [RuntimeOptionParser#parseAndConsumeAllOptions].
     @Uninterruptible(reason = "Thread state not yet set up.")
     public static boolean shouldParseArguments(IsolateArguments arguments) {
-        if (SubstrateOptions.ParseRuntimeOptions.getValue()) {
-            return true;
-        } else if (RuntimeCompilation.isEnabled() && SubstrateOptions.supportCompileInIsolates()) {
-            return isCompilationIsolate(arguments);
-        }
-        return false;
+        return SubstrateOptions.ParseRuntimeOptions.getValue() ||
+                        RuntimeCompilation.isEnabled() && SubstrateOptions.SupportCompileInIsolates.getValue() && arguments.getIsCompilationIsolate();
     }
 
-    @Uninterruptible(reason = "Thread state not yet set up.")
-    private static boolean isCompilationIsolate(IsolateArguments arguments) {
-        return arguments.getIsCompilationIsolate();
-    }
-
+    /**
+     * Persists the options in the image heap. Note that the {@link RuntimeOptionKey}s will still
+     * contain the wrong values until {@link RuntimeOptionParser#parseAndConsumeAllOptions} was
+     * called.
+     */
     @Uninterruptible(reason = "Thread state not yet set up.")
     public void persistOptions(IsolateArguments arguments) {
-        isCompilationIsolate = isCompilationIsolate(arguments);
+        isCompilationIsolate = arguments.getIsCompilationIsolate();
+        ownsStringArguments = arguments.getOwnsStringArguments();
 
         for (int i = 0; i < getOptionCount(); i++) {
-            parsedOptionValues[i] = readLong(arguments, i);
+            parsedOptionValues[i] = IsolateArgumentAccess.readRawUnchecked(arguments, i);
+            parsedOptionNullFlags[i] = IsolateArgumentAccess.isNull(arguments, i);
         }
     }
 
     public void verifyOptionValues() {
         for (int i = 0; i < getOptionCount(); i++) {
             RuntimeOptionKey<?> option = getOptions().get(i);
-            if (shouldValidate(option)) {
-                validate(option, getOptionValue(i));
-            }
+            validate(option, getOptionValue(i));
         }
-    }
-
-    private static boolean shouldValidate(RuntimeOptionKey<?> option) {
-        if (SubstrateOptions.useSerialGC()) {
-            /* The serial GC supports changing the heap size at run-time to some degree. */
-            return option != SubstrateGCOptions.MinHeapSize && option != SubstrateGCOptions.MaxHeapSize && option != SubstrateGCOptions.MaxNewSize;
-        }
-        return true;
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
@@ -339,40 +480,66 @@ public class IsolateArgumentParser {
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public boolean getBooleanOptionValue(int index) {
-        return parsedOptionValues[index] == 1L;
+    public boolean isNull(int optionIndex) {
+        return parsedOptionNullFlags[optionIndex];
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public int getIntOptionValue(int index) {
-        return (int) parsedOptionValues[index];
+    public boolean getBooleanOptionValue(int optionIndex) {
+        long value = getLongOptionValue(optionIndex);
+        assert value == 1 || value == 0;
+        return value == 1;
     }
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public long getLongOptionValue(int index) {
-        return parsedOptionValues[index];
+    public void setBooleanOptionValue(int optionIndex, boolean newValue) {
+        setLongOptionValue(optionIndex, newValue ? 1L : 0L);
     }
 
-    protected CCharPointer getCCharPointerOptionValue(int index) {
-        return Word.pointer(parsedOptionValues[index]);
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public int getIntOptionValue(int optionIndex) {
+        long value = getLongOptionValue(optionIndex);
+        return NumUtil.safeToInt(value);
     }
 
-    protected Object getOptionValue(int index) {
-        Class<?> optionValueType = getOptions().get(index).getDescriptor().getOptionValueType();
-        long value = parsedOptionValues[index];
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public long getLongOptionValue(int optionIndex) {
+        assert !SubstrateUtil.HOSTED;
+        assert !isNull(optionIndex);
+        return parsedOptionValues[optionIndex];
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public void setLongOptionValue(int optionIndex, long newValue) {
+        assert !SubstrateUtil.HOSTED;
+        parsedOptionValues[optionIndex] = newValue;
+        parsedOptionNullFlags[optionIndex] = false;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public CCharPointer getCCharPointerOptionValue(int optionIndex) {
+        assert !SubstrateUtil.HOSTED;
+        return Word.pointer(parsedOptionValues[optionIndex]);
+    }
+
+    protected Object getOptionValue(int optionIndex) {
+        assert !SubstrateUtil.HOSTED;
+
+        Class<?> optionValueType = getOptions().get(optionIndex).getDescriptor().getOptionValueType();
+        if (isNull(optionIndex)) {
+            assert parsedOptionValues[optionIndex] == 0;
+            return null;
+        }
+
         if (optionValueType == Boolean.class) {
-            assert value == 0L || value == 1L : value;
-            return value == 1L;
+            return getBooleanOptionValue(optionIndex);
         } else if (optionValueType == Integer.class) {
-            return (int) value;
+            return getIntOptionValue(optionIndex);
         } else if (optionValueType == Long.class) {
-            return value;
+            return getLongOptionValue(optionIndex);
         } else if (optionValueType == String.class) {
-            if (value == 0L) {
-                return null;
-            }
-
-            return CTypeConversion.toJavaString(Word.pointer(value));
+            CCharPointer value = getCCharPointerOptionValue(optionIndex);
+            return CTypeConversion.toJavaString(value);
         } else {
             throw VMError.shouldNotReachHere("Option value has unexpected type: " + optionValueType);
         }
@@ -392,9 +559,8 @@ public class IsolateArgumentParser {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     protected void initialize(IsolateArguments arguments, CEntryPointCreateIsolateParameters parameters) {
-        for (int i = 0; i < getOptionCount(); i++) {
-            writeLong(arguments, i, DEFAULT_VALUES.get().read(i));
-        }
+        /* Initialize the options with their default values. */
+        UnmanagedMemoryUtil.copy((Pointer) getDefaultValues().get(), (Pointer) arguments.getParsedArgs(), Word.unsigned(getParsedArgsSize()));
 
         if (parameters.isNonNull() && parameters.version() >= 3) {
             arguments.setArgc(parameters.getArgc());
@@ -418,7 +584,7 @@ public class IsolateArgumentParser {
          */
         UnsignedWord reservedAddressSpaceSize = parameters.reservedSpaceSize();
         if (reservedAddressSpaceSize.notEqual(0)) {
-            writeLong(arguments, getOptionIndex(SubstrateGCOptions.ReservedAddressSpaceSize), reservedAddressSpaceSize.rawValue());
+            writeLong(arguments, getOptionIndex(SubstrateGCOptions.ReservedAddressSpaceSize), reservedAddressSpaceSize.rawValue(), false);
         }
     }
 
@@ -450,11 +616,11 @@ public class IsolateArgumentParser {
     private static void parseXOption(IsolateArguments arguments, CLongPointer value, CCharPointer tail) {
         byte kind = tail.read();
         if (kind == 's' && parseNumericXOption(tail.addressOf(1), value)) {
-            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MinHeapSize), value.read());
+            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MinHeapSize), value.read(), false);
         } else if (kind == 'x' && parseNumericXOption(tail.addressOf(1), value)) {
-            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MaxHeapSize), value.read());
+            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MaxHeapSize), value.read(), false);
         } else if (kind == 'n' && parseNumericXOption(tail.addressOf(1), value)) {
-            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MaxNewSize), value.read());
+            writeLong(arguments, getOptionIndex(SubstrateGCOptions.MaxNewSize), value.read(), false);
         }
     }
 
@@ -467,7 +633,7 @@ public class IsolateArgumentParser {
                 int pos = OPTION_NAME_POSITIONS.get().read(i);
                 CCharPointer optionName = OPTION_NAMES.get().addressOf(pos);
                 if (OPTION_TYPES.get().read(i) == OptionValueType.BOOLEAN && matches(tail.addressOf(1), optionName)) {
-                    writeBoolean(arguments, i, booleanValue);
+                    writeBoolean(arguments, i, booleanValue, false);
                     break;
                 }
             }
@@ -480,7 +646,7 @@ public class IsolateArgumentParser {
                 if (valueStart.isNonNull() && valueStart.read() == '=') {
                     if (OptionValueType.isNumeric(OPTION_TYPES.get().read(i))) {
                         parseNumericXOption(valueStart.addressOf(1), value);
-                        writeLong(arguments, i, value.read());
+                        writeLong(arguments, i, value.read(), false);
                         break;
                     } else if (OPTION_TYPES.get().read(i) == OptionValueType.C_CHAR_POINTER) {
                         writeCCharPointer(arguments, i, valueStart.addressOf(1));
@@ -604,7 +770,8 @@ public class IsolateArgumentParser {
 
     @Fold
     public static int getParsedArgsSize() {
-        return Long.BYTES * getOptionCount();
+        int slotCount = 2;
+        return Long.BYTES * slotCount * getOptionCount();
     }
 
     protected static class OptionValueType {
@@ -639,7 +806,7 @@ public class IsolateArgumentParser {
      */
     @Platforms(Platform.HOSTED_ONLY.class)
     @AutomaticallyRegisteredImageSingleton(onlyWith = BuildingImageLayerPredicate.class)
-    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = LayeredCallbacks.class, layeredInstallationKind = Independent.class)
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = LayeredOptionInfo.LayeredCallbacks.class)
     static class LayeredOptionInfo {
         private static final int UNSET = -1;
         final int numOptions;
@@ -669,33 +836,34 @@ public class IsolateArgumentParser {
             Objects.requireNonNull(optionNames);
             return optionNames;
         }
-    }
 
-    static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
+        static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
 
-        @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<LayeredOptionInfo>() {
-                @Override
-                public LayeredImageSingleton.PersistFlags doPersist(ImageSingletonWriter writer, LayeredOptionInfo singleton) {
-                    if (ImageLayerBuildingSupport.firstImageBuild()) {
-                        writer.writeInt("numOptions", IsolateArgumentParser.getOptionCount());
-                        writer.writeStringList("optionNames", IsolateArgumentParser.getOptions().stream().map(OptionKey::getName).toList());
-                    } else {
-                        writer.writeInt("numOptions", singleton.getNumOptions());
-                        writer.writeStringList("optionNames", singleton.optionNames);
+            @Override
+            public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+                return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<LayeredOptionInfo>() {
+                    @Override
+                    public LayeredPersistFlags doPersist(ImageSingletonWriter writer, LayeredOptionInfo singleton) {
+                        if (ImageLayerBuildingSupport.firstImageBuild()) {
+                            writer.writeInt("numOptions", IsolateArgumentParser.getOptionCount());
+                            writer.writeStringList("optionNames", IsolateArgumentParser.getOptions().stream().map(OptionKey::getName).toList());
+                        } else {
+                            writer.writeInt("numOptions", singleton.getNumOptions());
+                            writer.writeStringList("optionNames", singleton.optionNames);
+                        }
+                        return LayeredPersistFlags.CREATE;
                     }
-                    return LayeredImageSingleton.PersistFlags.CREATE;
-                }
 
-                @Override
-                public Class<? extends SingletonLayeredCallbacks.LayeredSingletonInstantiator<?>> getSingletonInstantiator() {
-                    return SingletonInstantiator.class;
-                }
-            });
+                    @Override
+                    public Class<? extends SingletonLayeredCallbacks.LayeredSingletonInstantiator<?>> getSingletonInstantiator() {
+                        return SingletonInstantiator.class;
+                    }
+                });
+            }
         }
     }
 
+    @Platforms(Platform.HOSTED_ONLY.class)
     static class SingletonInstantiator implements SingletonLayeredCallbacks.LayeredSingletonInstantiator<LayeredOptionInfo> {
         @Override
         public LayeredOptionInfo createFromLoader(ImageSingletonLoader loader) {

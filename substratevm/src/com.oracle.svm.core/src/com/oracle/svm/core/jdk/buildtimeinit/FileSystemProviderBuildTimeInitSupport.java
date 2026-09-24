@@ -45,16 +45,20 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.FileSystemProvidersInitializedAtBuildTime;
 import com.oracle.svm.core.jdk.JRTSupport;
 import com.oracle.svm.core.jdk.SystemPropertiesSupport;
 import com.oracle.svm.core.jdk.UserSystemProperty;
 import com.oracle.svm.core.jdk.runtimeinit.FileSystemProviderRunTimeInitSupport;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.options.Option;
 import jdk.internal.util.StaticProperty;
@@ -64,6 +68,7 @@ import jdk.internal.util.StaticProperty;
  * image {@linkplain FileSystemProvidersInitializedAtBuildTime build time}. Run-time initialization
  * related functionality can be found in {@link FileSystemProviderRunTimeInitSupport}.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 public final class FileSystemProviderBuildTimeInitSupport {
 
     public static class Options {
@@ -314,10 +319,10 @@ class UnixFileSystemAccessors {
         that.injectedRootDirectory = value;
     }
 
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/java.base/linux/classes/sun/nio/fs/LinuxFileSystem.java#L44-L46")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/java.base/linux/classes/sun/nio/fs/LinuxFileSystemProvider.java#L45-L47")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/java.base/unix/classes/sun/nio/fs/UnixFileSystemProvider.java#L75-L77")
-    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+20/src/java.base/unix/classes/sun/nio/fs/UnixFileSystem.java#L78-L108")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/java.base/linux/classes/sun/nio/fs/LinuxFileSystem.java#L44-L46")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/java.base/linux/classes/sun/nio/fs/LinuxFileSystemProvider.java#L45-L47")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/java.base/unix/classes/sun/nio/fs/UnixFileSystemProvider.java#L75-L77")
+    @BasedOnJDKFile("https://github.com/graalvm/labs-openjdk/blob/jdk-25+20/src/java.base/unix/classes/sun/nio/fs/UnixFileSystem.java#L78-L108")
     private static synchronized void reinitialize(Target_sun_nio_fs_UnixFileSystem_BuildTime that) {
         if (that.needsReinitialization != NeedsReinitializationProvider.STATUS_NEEDS_REINITIALIZATION) {
             /* Field initialized is volatile, so double-checked locking is OK. */

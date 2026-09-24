@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,22 +26,21 @@ package com.oracle.svm.core.heap;
 
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
 import com.oracle.svm.core.FrameAccess;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
-import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
+import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
 import com.oracle.svm.core.util.NonmovableByteArrayReader;
+import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.Uninterruptible;
 
 import jdk.graal.compiler.core.common.util.AbstractTypeReader;
 import jdk.graal.compiler.core.common.util.UnsafeArrayTypeWriter;
-import jdk.graal.compiler.word.Word;
 
 @DuplicatedInNativeCode
 public class CodeReferenceMapDecoder {
-
     /**
      * Walk the reference map encoding from a Pointer, applying a visitor to each Object reference.
      *
@@ -59,7 +58,7 @@ public class CodeReferenceMapDecoder {
         assert referenceMapIndex != ReferenceMapIndex.NO_REFERENCE_MAP;
         assert referenceMapEncoding.isNonNull();
         int uncompressedSize = FrameAccess.uncompressedReferenceSize();
-        int compressedSize = ConfigurationValues.getObjectLayout().getReferenceSize();
+        int compressedSize = ObjectLayout.singleton().getReferenceSize();
 
         Pointer objRef = (Pointer) baseAddress;
         long idx = referenceMapIndex;
@@ -121,7 +120,7 @@ public class CodeReferenceMapDecoder {
             count = (count < 0) ? -count : count;
 
             if (derived) {
-                callVisitObjectReferencesInline(visitor, objRef, compressed, refSize, holderObject, 1);
+                callVisitDerivedReferenceBaseInline(visitor, objRef, compressed, refSize, holderObject);
 
                 /* count in this case is the number of derived references for this base pointer */
                 for (long d = 0; d < count; d++) {
@@ -146,7 +145,7 @@ public class CodeReferenceMapDecoder {
                     } else {
                         derivedRef = objRef.subtract(Word.unsigned(-refOffset).multiply(refSize));
                     }
-                    callVisitDerivedReferenceInline(visitor, objRef, derivedRef, holderObject);
+                    callVisitDerivedReferenceInline(visitor, objRef, derivedRef, compressed, holderObject);
                 }
                 objRef = objRef.add(refSize);
             } else {
@@ -171,7 +170,13 @@ public class CodeReferenceMapDecoder {
 
     @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
     @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
-    private static void callVisitDerivedReferenceInline(ObjectReferenceVisitor visitor, Pointer baseObjRef, Pointer derivedObjRef, Object holderObject) {
-        visitor.visitDerivedReference(baseObjRef, derivedObjRef, holderObject);
+    private static void callVisitDerivedReferenceBaseInline(ObjectReferenceVisitor visitor, Pointer baseObjRef, boolean compressed, int referenceSize, Object holderObject) {
+        visitor.visitDerivedReferenceBase(baseObjRef, compressed, referenceSize, holderObject);
+    }
+
+    @AlwaysInline("de-virtualize calls to ObjectReferenceVisitor")
+    @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
+    private static void callVisitDerivedReferenceInline(ObjectReferenceVisitor visitor, Pointer baseObjRef, Pointer derivedObjRef, boolean compressed, Object holderObject) {
+        visitor.visitDerivedReference(baseObjRef, derivedObjRef, compressed, holderObject);
     }
 }

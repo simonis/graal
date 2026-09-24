@@ -22,6 +22,7 @@
  */
 package com.oracle.truffle.espresso.impl;
 
+import static com.oracle.truffle.espresso.classfile.Constants.ACC_CONTAINS_UNHIDDEN_FIELDS;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_FINALIZER;
 
 import java.lang.reflect.Modifier;
@@ -31,7 +32,6 @@ import com.oracle.truffle.api.staticobject.StaticShape;
 import com.oracle.truffle.espresso.EspressoLanguage;
 import com.oracle.truffle.espresso.classfile.ParserConstantPool;
 import com.oracle.truffle.espresso.classfile.ParserKlass;
-import com.oracle.truffle.espresso.classfile.attributes.Attribute;
 import com.oracle.truffle.espresso.classfile.descriptors.Name;
 import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
 import com.oracle.truffle.espresso.classfile.descriptors.Type;
@@ -123,15 +123,17 @@ public final class LinkedKlass {
         if (hasFinalizer) {
             flags |= ACC_FINALIZER;
         }
+        for (LinkedField lkField : instanceFields) {
+            if (!lkField.isHidden()) {
+                flags |= ACC_CONTAINS_UNHIDDEN_FIELDS;
+                break;
+            }
+        }
         return flags;
     }
 
     ParserConstantPool getConstantPool() {
         return parserKlass.getConstantPool();
-    }
-
-    Attribute getAttribute(Symbol<Name> name) {
-        return parserKlass.getAttribute(name);
     }
 
     Symbol<Type> getType() {

@@ -37,7 +37,7 @@ import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.AnalysisFuture;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.core.common.type.CompressibleConstant;
 import jdk.vm.ci.meta.JavaConstant;
@@ -49,6 +49,14 @@ import jdk.vm.ci.meta.VMConstant;
  * object replacers on the original hosted object, and the instance field values or array elements
  * of this object. The field values are stored as JavaConstant to also encode primitive values.
  * ImageHeapObject are created only after an object is processed through the object replacers.
+ * <p>
+ * A snapshot can be created, have its hosted-value reader installed by
+ * {@link #ensureReaderInstalled()}, and be traversed by {@link HeapSnapshotVerifier} without being
+ * marked reachable by {@link ImageHeapScanner#markReachable}. Marking it reachable causes
+ * {@link ImageHeapScanner#onObjectReachable} to validate the hosted object, execute its reachability
+ * callbacks, register its type with the analysis, and follow its contents.
+ * Consequently, a materialized snapshot for which {@link #isReachable()} is {@code false} can still
+ * be linked from the verified object graph and included in the image heap.
  */
 @Platforms(Platform.HOSTED_ONLY.class)
 public abstract class ImageHeapConstant implements JavaConstant, TypedConstant, CompressibleConstant, VMConstant {
@@ -93,12 +101,12 @@ public abstract class ImageHeapConstant implements JavaConstant, TypedConstant, 
          */
         @SuppressWarnings("unused") private volatile Object isReachable;
         /**
-         * A boolean allowing to distinguish a constant that was persisted from a base layer and a
+         * A boolean allowing to distinguish a constant that was persisted from a shared layer and a
          * constant created in the current layer.
          */
-        private boolean isInBaseLayer;
+        private boolean isInSharedLayer;
         /**
-         * A boolean telling if the constant was written in the image heap of the base layer.
+         * A boolean telling if the constant was written in the image heap of the shared layer.
          */
         private boolean writtenInPreviousLayer;
         /**
@@ -149,6 +157,11 @@ public abstract class ImageHeapConstant implements JavaConstant, TypedConstant, 
         return constantData;
     }
 
+    /**
+     * Materializes the tasks that read this object's hosted fields or array elements, if necessary.
+     * This does not mark the constant reachable and does not execute object validation or
+     * reachability callbacks.
+     */
     public void ensureReaderInstalled() {
         if (constantData.hostedValuesReader != null) {
             constantData.hostedValuesReader.ensureDone();
@@ -208,16 +221,16 @@ public abstract class ImageHeapConstant implements JavaConstant, TypedConstant, 
         return constantData.identityHashCode;
     }
 
-    public void markInBaseLayer() {
-        constantData.isInBaseLayer = true;
+    public void markInSharedLayer() {
+        constantData.isInSharedLayer = true;
     }
 
-    public boolean isInBaseLayer() {
-        return constantData.isInBaseLayer;
+    public boolean isInSharedLayer() {
+        return constantData.isInSharedLayer;
     }
 
     public void markWrittenInPreviousLayer() {
-        AnalysisError.guarantee(isInBaseLayer(), "Constant must be in base layer to be marked as written in the base layer.");
+        AnalysisError.guarantee(isInSharedLayer(), "Constant must be in base layer to be marked as written in the base layer.");
         constantData.writtenInPreviousLayer = true;
     }
 

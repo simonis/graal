@@ -62,16 +62,21 @@ import org.graalvm.collections.EconomicSet;
 
 import com.oracle.graal.pointsto.util.TimerCollection;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.hosted.webimage.codegen.WebImageJSCodeGen;
 import com.oracle.svm.hosted.webimage.logging.LoggerContext;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions;
 import com.oracle.svm.hosted.webimage.options.WebImageOptions.CompilerBackend;
 import com.oracle.svm.hosted.webimage.util.metrics.ImageMetricsCollector;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.debug.MetricKey;
 import jdk.graal.compiler.options.OptionValues;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class CLIVisualizationSupport extends VisualizationSupport {
     private static final HashMap<String, Color> SIZE_COLORS = new HashMap<>();
     private static final HashMap<String, Color> TYPE_COLORS = new HashMap<>();
@@ -170,7 +175,7 @@ public class CLIVisualizationSupport extends VisualizationSupport {
 
     private static LinkedHashMap<String, String> createInfo() {
         LinkedHashMap<String, String> info = new LinkedHashMap<>();
-        OptionValues options = HostedOptionValues.singleton();
+        OptionValues options = HostedOptionValues.singleton().get();
         info.put("Image name", SubstrateOptions.Name.getValue(options));
         info.put("Target VM", WebImageOptions.getTargetVM());
         info.put("Backend", WebImageOptions.getBackend().name());

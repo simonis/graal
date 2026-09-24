@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,32 +32,62 @@ import org.graalvm.nativeimage.hosted.RuntimeClassInitialization;
 
 import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
 import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
-import com.oracle.svm.core.BuildPhaseProvider;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.fieldvaluetransformer.FieldValueTransformerWithAvailability;
+import com.oracle.svm.core.fieldvaluetransformer.JVMCIFieldValueTransformerWithAvailability;
+import com.oracle.svm.core.fieldvaluetransformer.NewInstanceOfFixedClassFieldValueTransformer;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
 import com.oracle.svm.core.thread.JavaThreads;
 import com.oracle.svm.core.thread.JavaThreadsFeature;
 import com.oracle.svm.core.thread.PlatformThreads;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
-import com.oracle.svm.core.util.ConcurrentIdentityHashMap;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.FeatureImpl;
-import com.oracle.svm.util.ClassUtil;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.shared.collections.ConcurrentIdentityHashMap;
+import com.oracle.svm.shared.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.shared.singletons.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ClassUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
+
+import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.ResolvedJavaField;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 @AutomaticallyRegisteredFeature
 public class HostedJavaThreadsFeature extends JavaThreadsFeature {
+
+    /** Delays reading one transient thread-bookkeeping field and validates its final value. */
+    private static final class DeferredThreadFieldTransformer implements JVMCIFieldValueTransformerWithAvailability {
+        private final String fieldName;
+
+        private DeferredThreadFieldTransformer(ResolvedJavaField field) {
+            this.fieldName = field.format("%H.%n");
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return BuildPhaseProvider.isAnalysisFinished();
+        }
+
+        @Override
+        public JavaConstant transform(JavaConstant receiver, JavaConstant originalValue) {
+            UserError.guarantee(originalValue.isNull(), "A transient thread-bookkeeping field cannot legally hold a thread reference after analysis has finished. " +
+                            "The field identifies the current owner or waiter of a concurrency primitive, but all application threads must have completed by this point. " +
+                            "A non-null value indicates that an application thread is still running or that the concurrency primitive was misused. Offending field: %s. Offending receiver: %s",
+                            fieldName,
+                            receiver);
+            return originalValue;
+        }
+    }
 
     /**
      * All {@link Thread} objects that are reachable in the image heap. Only unstarted threads,
@@ -73,8 +103,10 @@ public class HostedJavaThreadsFeature extends JavaThreadsFeature {
     private boolean sealed;
 
     @Override
-    public void duringSetup(DuringSetupAccess access) {
-        access.registerObjectReplacer(this::collectReachableObjects);
+    public void duringSetup(DuringSetupAccess a) {
+        FeatureImpl.DuringSetupAccessImpl access = (FeatureImpl.DuringSetupAccessImpl) a;
+        access.registerObjectReachableCallback(Thread.class, (_, thread, _) -> collectReachableThreads(thread));
+        access.registerObjectReachableCallback(ThreadGroup.class, (_, group, _) -> collectReachableThreadGroups(group));
 
         /*
          * This currently only means that we don't support setting custom values for
@@ -87,6 +119,7 @@ public class HostedJavaThreadsFeature extends JavaThreadsFeature {
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess a) {
         a.registerFieldValueTransformer(ReflectionUtil.lookupField(ThreadGroup.class, "ngroups"), new FieldValueTransformerWithAvailability() {
+            // JVMCI migration blocked by GR-72587: Migrate (virtual) thread support for terminus
 
             /*
              * We must wait until reachableThreadGroups stabilizes after analysis to replace this
@@ -105,6 +138,7 @@ public class HostedJavaThreadsFeature extends JavaThreadsFeature {
         });
 
         a.registerFieldValueTransformer(ReflectionUtil.lookupField(ThreadGroup.class, "groups"), new FieldValueTransformerWithAvailability() {
+            // JVMCI migration blocked by GR-72587: Migrate (virtual) thread support for terminus
 
             /*
              * We must wait until reachableThreadGroups stabilizes after analysis to replace this
@@ -121,39 +155,67 @@ public class HostedJavaThreadsFeature extends JavaThreadsFeature {
                 return reachableThreadGroups.get(group).groups;
             }
         });
+
+        FeatureImpl.BeforeAnalysisAccessImpl access = (FeatureImpl.BeforeAnalysisAccessImpl) a;
+        registerDeferredThreadField(access, "java.util.concurrent.locks.AbstractOwnableSynchronizer", "exclusiveOwnerThread");
+        registerDeferredThreadField(access, "java.util.concurrent.locks.AbstractQueuedSynchronizer$Node", "waiter");
+        registerDeferredThreadField(access, "java.util.concurrent.locks.AbstractQueuedLongSynchronizer$Node", "waiter");
+        registerDeferredThreadField(access, "java.util.concurrent.locks.ReentrantReadWriteLock$Sync", "firstReader");
+
+        var trackerType = GuestAccess.get().lookupType(jdk.internal.misc.ThreadTracker.class);
+        resetThreadTracker(access, "java.net.URL$ThreadTrackHolder", "TRACKER", trackerType);
+        resetThreadTracker(access, "java.nio.charset.Charset$ThreadTrackHolder", "TRACKER", trackerType);
+        resetThreadTracker(access, "java.util.jar.JarFile$ThreadTrackHolder", "TRACKER", trackerType);
+        resetThreadTracker(access, "jdk.internal.event.EventHelper$ThreadTrackHolder", "TRACKER", trackerType);
+        resetThreadTracker(access, "sun.security.provider.certpath.ForwardBuilder$ThreadTrackerHolder", "AIA_TRACKER", trackerType);
     }
 
-    private Object collectReachableObjects(Object original) {
-        if (original instanceof Thread) {
-            Thread thread = (Thread) original;
-            if (thread.getState() == Thread.State.NEW) {
-                registerReachableObject(reachableThreads, thread, Boolean.TRUE);
-            } else {
-                /*
-                 * Started Threads must not be in the image heap. The error is reported in
-                 * DisallowedImageHeapObjectFeature (which is in a hosted project).
-                 */
-            }
+    /**
+     * Keeps a transient thread-bookkeeping field unavailable until
+     * {@link BuildPhaseProvider#isAnalysisFinished()} returns {@code true}, then requires its value
+     * to be {@code null}.
+     */
+    private static void registerDeferredThreadField(FeatureImpl.BeforeAnalysisAccessImpl access, String declaringClass, String fieldName) {
+        ResolvedJavaField field = JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(declaringClass), fieldName);
+        access.registerFieldValueTransformer(field, new DeferredThreadFieldTransformer(field));
+    }
 
-        } else if (original instanceof ThreadGroup) {
-            ThreadGroup group = (ThreadGroup) original;
-            if (registerReachableObject(reachableThreadGroups, group, new ReachableThreadGroup())) {
-                ThreadGroup parent = group.getParent();
-                if (parent != null) {
-                    /* Ensure ReachableThreadGroup object for parent is created. */
-                    collectReachableObjects(parent);
-                    /*
-                     * Build the tree of thread groups that is then written out in the image heap.
-                     * This tree is a subtree of all thread groups in the image generator,
-                     * containing only the thread groups that were found as reachable at run time.
-                     */
-                    reachableThreadGroups.get(parent).add(group);
-                } else {
-                    assert group == PlatformThreads.singleton().systemGroup;
-                }
+    /**
+     * Replaces one JDK-owned tracker with a fresh empty instance using
+     * {@link NewInstanceOfFixedClassFieldValueTransformer}.
+     */
+    private static void resetThreadTracker(FeatureImpl.BeforeAnalysisAccessImpl access, String declaringClass, String fieldName, ResolvedJavaType trackerType) {
+        access.registerFieldValueTransformer(JVMCIReflectionUtil.getUniqueDeclaredField(GuestAccess.get().lookupType(declaringClass), fieldName),
+                        new NewInstanceOfFixedClassFieldValueTransformer(trackerType, true));
+    }
+
+    private void collectReachableThreads(Thread thread) {
+        if (thread.getState() == Thread.State.NEW) {
+            registerReachableObject(reachableThreads, thread, Boolean.TRUE);
+        } else {
+            /*
+             * Started Threads must not be in the image heap. The error is reported in
+             * DisallowedImageHeapObjectFeature (which is in a hosted project).
+             */
+        }
+    }
+
+    private void collectReachableThreadGroups(ThreadGroup group) {
+        if (registerReachableObject(reachableThreadGroups, group, new ReachableThreadGroup())) {
+            ThreadGroup parent = group.getParent();
+            if (parent != null) {
+                /* Ensure ReachableThreadGroup object for parent is created. */
+                collectReachableThreadGroups(parent);
+                /*
+                 * Build the tree of thread groups that is then written out in the image heap. This
+                 * tree is a subtree of all thread groups in the image generator, containing only
+                 * the thread groups that were found as reachable at run time.
+                 */
+                reachableThreadGroups.get(parent).add(group);
+            } else {
+                assert group == PlatformThreads.singleton().systemGroup;
             }
         }
-        return original;
     }
 
     private <K, V> boolean registerReachableObject(Map<K, V> map, K object, V value) {
@@ -249,7 +311,7 @@ class ReachableThreadGroup {
 }
 
 @AutomaticallyRegisteredImageSingleton
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = HostedJavaThreadsMetadata.LayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = HostedJavaThreadsMetadata.LayeredCallbacks.class)
 class HostedJavaThreadsMetadata {
     long maxThreadId;
     int maxAutonumber;
@@ -268,18 +330,18 @@ class HostedJavaThreadsMetadata {
         this.maxAutonumber = maxAutonumber;
     }
 
-    public LayeredImageSingleton.PersistFlags preparePersist(ImageSingletonWriter writer) {
+    public LayeredPersistFlags preparePersist(ImageSingletonWriter writer) {
         writer.writeLong("maxThreadId", maxThreadId);
         writer.writeInt("maxAutonumber", maxAutonumber);
-        return LayeredImageSingleton.PersistFlags.CREATE;
+        return LayeredPersistFlags.CREATE;
     }
 
     static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
         @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
             SingletonLayeredCallbacks<HostedJavaThreadsMetadata> action = new SingletonLayeredCallbacks<>() {
                 @Override
-                public LayeredImageSingleton.PersistFlags doPersist(ImageSingletonWriter writer, HostedJavaThreadsMetadata singleton) {
+                public LayeredPersistFlags doPersist(ImageSingletonWriter writer, HostedJavaThreadsMetadata singleton) {
                     return singleton.preparePersist(writer);
                 }
 
@@ -288,7 +350,7 @@ class HostedJavaThreadsMetadata {
                     return SingletonInstantiator.class;
                 }
             };
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, action);
+            return new LayeredCallbacksSingletonTrait(action);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,6 +33,10 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexGatherOp.EVPGATHER
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexGatherOp.EVPGATHERDQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexGatherOp.EVPGATHERQD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexGatherOp.EVPGATHERQQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexRMIExtendOp.EVPROLD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexRMIExtendOp.EVPROLQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexRMIExtendOp.EVPRORD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.EvexRMIExtendOp.EVPRORQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexFloatCompareOp.EVCMPPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexFloatCompareOp.EVCMPPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexFloatCompareOp.EVCMPSD;
@@ -122,6 +126,8 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVPCMPUB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVPCMPUD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVPCMPUQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVPCMPUW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVRNDSCALESD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMIOp.EVRNDSCALESS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVADDPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVADDPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVANDPD;
@@ -130,6 +136,12 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVBLENDMPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVBLENDMPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVDIVPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVDIVPS;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVFMADD213PD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVFMADD213PS;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMAXPD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMAXPS;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMINPD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMINPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMULPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVMULPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVORPD;
@@ -137,6 +149,10 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVORPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDSB;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDSW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDUSB;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDUSW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPADDW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPANDD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPANDQ;
@@ -160,6 +176,8 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPERMPD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPERMPS;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPERMQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPERMW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMADDUBSW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMADDWD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMAXSB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMAXSD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMAXSQ;
@@ -183,10 +201,18 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMULLQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPMULLW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPORD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPORQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPROLVD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPROLVQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPRORVD;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPRORVQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSHUFB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBB;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBQ;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBSB;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBSW;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBUSB;
+import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBUSW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPSUBW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPXORD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexRVMOp.EVPXORQ;
@@ -205,6 +231,8 @@ import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexShiftOp.EVPSRAW;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexShiftOp.EVPSRLD;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexShiftOp.EVPSRLQ;
 import static jdk.graal.compiler.asm.amd64.AMD64Assembler.VexShiftOp.EVPSRLW;
+import static jdk.graal.compiler.lir.LIRValueUtil.asConstant;
+import static jdk.graal.compiler.lir.LIRValueUtil.isConstantValue;
 import static jdk.graal.compiler.vector.lir.amd64.AMD64VectorNodeMatchRules.getRegisterSize;
 
 import java.util.Arrays;
@@ -234,6 +262,7 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.CastValue;
 import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIRFrameState;
+import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.amd64.AMD64AddressValue;
@@ -250,16 +279,29 @@ import jdk.graal.compiler.lir.amd64.vector.AMD64VectorShuffle;
 import jdk.graal.compiler.lir.amd64.vector.AMD64VectorUnary;
 import jdk.graal.compiler.lir.amd64.vector.AVX512CompressExpand;
 import jdk.graal.compiler.lir.amd64.vector.AVX512MaskedOp;
+import jdk.graal.compiler.lir.amd64.vector.AVXByteCompress;
 import jdk.graal.compiler.nodes.ValueNode;
 import jdk.graal.compiler.nodes.calc.AbsNode;
 import jdk.graal.compiler.nodes.calc.AddNode;
 import jdk.graal.compiler.nodes.calc.AndNode;
 import jdk.graal.compiler.nodes.calc.FloatDivNode;
+import jdk.graal.compiler.nodes.calc.FusedMultiplyAddNode;
+import jdk.graal.compiler.nodes.calc.LeftShiftNode;
+import jdk.graal.compiler.nodes.calc.MaxNode;
+import jdk.graal.compiler.nodes.calc.MinNode;
 import jdk.graal.compiler.nodes.calc.MulNode;
 import jdk.graal.compiler.nodes.calc.OrNode;
+import jdk.graal.compiler.nodes.calc.ReinterpretNode;
+import jdk.graal.compiler.nodes.calc.RightShiftNode;
+import jdk.graal.compiler.nodes.calc.SaturatingAddNode;
+import jdk.graal.compiler.nodes.calc.SaturatingSubNode;
+import jdk.graal.compiler.nodes.calc.SaturatingUAddNode;
+import jdk.graal.compiler.nodes.calc.SaturatingUSubNode;
 import jdk.graal.compiler.nodes.calc.SqrtNode;
 import jdk.graal.compiler.nodes.calc.SubNode;
+import jdk.graal.compiler.nodes.calc.UnsignedRightShiftNode;
 import jdk.graal.compiler.nodes.calc.XorNode;
+import jdk.graal.compiler.vector.nodes.amd64.AMD64SimdPairwiseMultiplyAddNode;
 import jdk.graal.compiler.vector.nodes.simd.MaskedOpMetaData;
 import jdk.graal.compiler.vector.nodes.simd.SimdPermuteWithVectorIndicesNode;
 import jdk.graal.compiler.vector.nodes.simd.SimdPrimitiveCompareNode;
@@ -271,6 +313,7 @@ import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.PlatformKind;
+import jdk.vm.ci.meta.PrimitiveConstant;
 import jdk.vm.ci.meta.Value;
 import jdk.vm.ci.meta.ValueKind;
 
@@ -575,6 +618,55 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
         };
     }
 
+    /**
+     * Emits a vector rotate with one of three count forms:
+     * <ul>
+     * <li>scalar constant count: lowered to an immediate rotate op,</li>
+     * <li>scalar variable count: broadcast to a vector count,</li>
+     * <li>vector count: used directly as lane-wise counts.</li>
+     * </ul>
+     */
+    private Variable emitRotate(Value inputVector, Value rotateCount, VexRVMOp vectorRotateOp, AMD64Assembler.VexRRIOp immediateRotateOp) {
+        if (isConstantValue(rotateCount) && asConstant(rotateCount) instanceof PrimitiveConstant primitiveConstant) {
+            int rotateCountInt = primitiveConstant.asInt() & 0xFF;
+            Variable result = getLIRGen().newVariable(LIRKind.combine(inputVector));
+            getLIRGen().append(new AMD64VectorBinary.AVXBinaryConstOp(immediateRotateOp, getRegisterSize(result), result, asAllocatable(inputVector), rotateCountInt));
+            return result;
+        }
+
+        AMD64Kind rotateCountKind = (AMD64Kind) rotateCount.getPlatformKind();
+        Value vectorCount = rotateCountKind.isXMM() ? rotateCount : emitVectorFill(LIRKind.value(inputVector.getPlatformKind()), rotateCount);
+        return emitVectorBinary(vectorRotateOp, inputVector, vectorCount);
+    }
+
+    @Override
+    public Variable emitRol(Value inputVector, Value rotateCount) {
+        AMD64Kind inputKind = (AMD64Kind) inputVector.getPlatformKind();
+        if (!inputKind.isXMM()) {
+            return super.emitRol(inputVector, rotateCount);
+        }
+
+        return switch (inputKind.getScalar()) {
+            case DWORD -> emitRotate(inputVector, rotateCount, EVPROLVD, EVPROLD);
+            case QWORD -> emitRotate(inputVector, rotateCount, EVPROLVQ, EVPROLQ);
+            default -> throw GraalError.shouldNotReachHereUnexpectedValue(inputKind.getScalar()); // ExcludeFromJacocoGeneratedReport
+        };
+    }
+
+    @Override
+    public Variable emitRor(Value inputVector, Value rotateCount) {
+        AMD64Kind inputKind = (AMD64Kind) inputVector.getPlatformKind();
+        if (!inputKind.isXMM()) {
+            return super.emitRor(inputVector, rotateCount);
+        }
+
+        return switch (inputKind.getScalar()) {
+            case DWORD -> emitRotate(inputVector, rotateCount, EVPRORVD, EVPRORD);
+            case QWORD -> emitRotate(inputVector, rotateCount, EVPRORVQ, EVPRORQ);
+            default -> throw GraalError.shouldNotReachHereUnexpectedValue(inputKind.getScalar()); // ExcludeFromJacocoGeneratedReport
+        };
+    }
+
     @Override
     public Value emitMathAbs(Value input) {
         AMD64Kind kind = (AMD64Kind) input.getPlatformKind();
@@ -664,6 +756,11 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     public Value emitFloatConvert(FloatConvert op, Value inputVal, boolean canBeNaN, boolean canOverflow) {
         AMD64Kind kind = (AMD64Kind) inputVal.getPlatformKind();
         int length = kind.getVectorLength();
+        /*
+         * If narrow == true, the conversion operation must be encoded with the input size rather
+         * than the result size.
+         */
+        boolean narrow = op.isNarrowing();
         if (length > 1) {
             AMD64Kind baseKind = kind.getScalar();
 
@@ -672,22 +769,22 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                     assert baseKind == AMD64Kind.DOUBLE : baseKind;
                     // when input length is 4 doubles or less we store the result in a 128
                     // bit/XMM register otherwise we use a YMM register
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.SINGLE, Math.max(length, 4)), EVCVTPD2PS, inputVal, true);
+                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.SINGLE, Math.max(length, 4)), EVCVTPD2PS, inputVal, narrow);
                 case D2I:
                     assert baseKind == AMD64Kind.DOUBLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DWORD, length), EVCVTTPD2DQ, inputVal, true);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.DWORD, length), EVCVTTPD2DQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case D2L:
                     assert baseKind == AMD64Kind.DOUBLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.QWORD, length), EVCVTTPD2QQ, inputVal);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.QWORD, length), EVCVTTPD2QQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case F2D:
                     assert baseKind == AMD64Kind.SINGLE : baseKind;
                     return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DOUBLE, length), EVCVTPS2PD, inputVal);
                 case F2I:
                     assert baseKind == AMD64Kind.SINGLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DWORD, length), EVCVTTPS2DQ, inputVal);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.DWORD, length), EVCVTTPS2DQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case F2L:
                     assert baseKind == AMD64Kind.SINGLE : baseKind;
-                    return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.QWORD, length), EVCVTTPS2QQ, inputVal);
+                    return emitVectorFloatConvertWithFixup(AVXKind.getAVXKind(AMD64Kind.QWORD, length), EVCVTTPS2QQ, inputVal, canBeNaN, canOverflow, narrow, op.signedness());
                 case I2D:
                     assert baseKind == AMD64Kind.DWORD : baseKind;
                     return emitConvertOp(AVXKind.getAVXKind(AMD64Kind.DOUBLE, length), EVCVTDQ2PD, inputVal);
@@ -706,7 +803,6 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                     throw GraalError.unimplemented("unsupported vectorized convert " + op); // ExcludeFromJacocoGeneratedReport
             }
         } else {
-            boolean narrow = false;
             switch (op) {
                 case D2F:
                     assert kind == AMD64Kind.DOUBLE : kind;
@@ -972,6 +1068,21 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     }
 
     @Override
+    public Value emitRound(Value value, RoundingMode mode) {
+        if (value.getPlatformKind() == AMD64Kind.SINGLE) {
+            Variable result = getLIRGen().newVariable(LIRKind.combine(value));
+            getLIRGen().append(new AMD64VectorBinary.AVXBinaryImmOp(EVRNDSCALESS, AVXSize.XMM, result, asAllocatable(value), asAllocatable(value), mode.encoding));
+            return result;
+        } else if (value.getPlatformKind() == AMD64Kind.DOUBLE) {
+            Variable result = getLIRGen().newVariable(LIRKind.combine(value));
+            getLIRGen().append(new AMD64VectorBinary.AVXBinaryImmOp(EVRNDSCALESD, AVXSize.XMM, result, asAllocatable(value), asAllocatable(value), mode.encoding));
+            return result;
+        } else {
+            return super.emitRound(value, mode);
+        }
+    }
+
+    @Override
     protected void emitVectorBroadcast(AMD64Kind elementKind, Variable result, Value input) {
         ValueKind<?> singleValueKind = input.getValueKind();
         switch (elementKind) {
@@ -1006,7 +1117,7 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
     }
 
     @Override
-    public Value emitVectorToBitMask(LIRKind resultKind, Value vector) {
+    public Value emitVectorToBitMask(LIRKind resultKind, Value vector, boolean inputIsMask) {
         throw GraalError.shouldNotReachHere("AVX512 should use opmask");
     }
 
@@ -1030,13 +1141,6 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
         };
         getLIRGen().append(new AMD64VectorUnary.AVXUnaryRROp(op, inputSize, resultMask, inputVector));
         return resultMask;
-    }
-
-    private Value emitConstOpmaskInK1(AMD64Kind maskKind, JavaConstant maskValue) {
-        Value mask = emitConstOpmask(maskKind, maskValue);
-        Value k1 = AMD64.k1.asValue(LIRKind.value(maskKind));
-        getLIRGen().append(new AMD64Move.MoveToRegOp((AMD64Kind) mask.getPlatformKind(), asAllocatable(k1), asAllocatable(mask)));
-        return k1;
     }
 
     public Value emitConstOpmask(AMD64Kind maskKind, JavaConstant maskValue) {
@@ -1077,14 +1181,13 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
         /*
          * Make an all-ones mask, meaning that we want to gather all elements. More general masked
          * gathers are not supported yet. We must construct this mask immediately before the gather
-         * instruction because it clobbers it. It must also be a fixed register for the Use+Temp
-         * trick to work. Note that k0 is not allowed as the mask register for the AVX512 gather
-         * instructions.
+         * instruction because it clobbers it. The mask can stay allocatable here because k0 is
+         * already excluded from the allocatable opmask set.
          */
         int maskValue = (1 << vectorLength) - 1;
-        Value maskInK1 = maskValue > 0xFF
-                        ? emitConstOpmaskInK1(AMD64Kind.MASK16, JavaConstant.forShort((short) maskValue))
-                        : emitConstOpmaskInK1(AMD64Kind.MASK8, JavaConstant.forByte((byte) maskValue));
+        AllocatableValue mask = asAllocatable(maskValue > 0xFF
+                        ? emitConstOpmask(AMD64Kind.MASK16, JavaConstant.forShort((short) maskValue))
+                        : emitConstOpmask(AMD64Kind.MASK8, JavaConstant.forByte((byte) maskValue)));
 
         EvexGatherOp op = offsetKind == AMD64Kind.DWORD
                         ? switch (resultElementKind) {
@@ -1102,7 +1205,7 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                             default -> throw GraalError.shouldNotReachHere("unsupported vector gather: offset kind " + offsetKind + ", result element kind " + resultElementKind); // ExcludeFromJacocoGeneratedReport
                         };
 
-        getLIRGen().append(new AMD64VectorGather.EvexVectorGatherOp(op, size, result, b, offs, asAllocatable(maskInK1)));
+        getLIRGen().append(new AMD64VectorGather.EvexVectorGatherOp(op, size, result, b, offs, mask));
         return result;
     }
 
@@ -1878,10 +1981,19 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
         } else {
             avxSize = AVXKind.getRegisterSize(srcKind);
         }
+        if (isFloatingPointMinMax(meta, eKind)) {
+            Value fixedMinMax = emitMathMinMax(resultKind, src1, src2, meta.op() == MinNode.class ? AMD64MathMinMaxFloatOp.Min : AMD64MathMinMaxFloatOp.Max);
+            return emitVectorBlend(background, fixedMinMax, mask);
+        }
         Variable result = getLIRGen().newVariable(resultKind);
 
         NormalizedMaskedOp normalizedOp = NormalizedMaskedOp.make(getMaskedOpcode(getArchitecture(), meta, eKind, srcEKind), avxSize, src1, src2);
+        Value normalizedSrc1 = normalizedOp.src1;
         Value normalizedSrc2 = normalizedOp.src2;
+        if (normalizedSrc2 != null && !background.equals(normalizedSrc1) && background.equals(normalizedSrc2) && eKind.isInteger() && meta.commutative()) {
+            normalizedSrc2 = normalizedSrc1;
+            normalizedSrc1 = background;
+        }
         if (normalizedOp.opcode == EVPERMILPD) {
             /*
              * EVPERMILPD uses the SECOND bit in each element as the index. See also
@@ -1891,14 +2003,36 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
             getLIRGen().append(new AMD64VectorBinary.AVXBinaryConstOp(EVPSLLQ, getRegisterSize(tmp), tmp, asAllocatable(src2), 1));
             normalizedSrc2 = tmp;
         }
-        AVX512MaskedOp.AVX512MaskedMergeOp lirOp;
+        LIRInstruction lirOp;
         if (normalizedSrc2 == null) {
-            lirOp = new AVX512MaskedOp.AVX512MaskedMergeOp(normalizedOp.opcode(), avxSize, result, asAllocatable(background), asAllocatable(mask), Value.ILLEGAL, asAllocatable(normalizedOp.src1()));
+            lirOp = new AVX512MaskedOp.AVX512MaskedMergeOp(normalizedOp.opcode(), avxSize, result, asAllocatable(background), asAllocatable(mask), Value.ILLEGAL, asAllocatable(normalizedSrc1));
+        } else if (background.equals(normalizedSrc1)) {
+            lirOp = new AVX512MaskedOp.AVX512MaskedInPlaceMergeOp(normalizedOp.opcode(), avxSize, result, asAllocatable(background), asAllocatable(mask), asAllocatable(normalizedSrc2));
         } else {
-            lirOp = new AVX512MaskedOp.AVX512MaskedMergeOp(normalizedOp.opcode(), avxSize, result, asAllocatable(background), asAllocatable(mask), asAllocatable(normalizedOp.src1()),
+            lirOp = new AVX512MaskedOp.AVX512MaskedMergeOp(normalizedOp.opcode(), avxSize, result, asAllocatable(background), asAllocatable(mask), asAllocatable(normalizedSrc1),
                             asAllocatable(normalizedSrc2));
         }
         getLIRGen().append(lirOp);
+        return result;
+    }
+
+    private static boolean isFloatingPointMinMax(MaskedOpMetaData meta, AMD64Kind eKind) {
+        return (eKind == AMD64Kind.SINGLE || eKind == AMD64Kind.DOUBLE) && (meta.op() == MinNode.class || meta.op() == MaxNode.class);
+    }
+
+    /**
+     * Emits masked FMA for {@code src1 * src2 + src3} when {@code src1} is also the background.
+     */
+    public Value emitMaskedFmaOp(LIRKind resultKind, Value mask, Value src1, Value src2, Value src3) {
+        AMD64Kind kind = (AMD64Kind) resultKind.getPlatformKind();
+        AVXSize avxSize = AVXKind.getRegisterSize(kind);
+        AMD64Assembler.VexRVMOp opcode = switch (kind.getScalar()) {
+            case SINGLE -> EVFMADD213PS;
+            case DOUBLE -> EVFMADD213PD;
+            default -> throw GraalError.shouldNotReachHereUnexpectedValue(kind.getScalar());
+        };
+        Variable result = getLIRGen().newVariable(resultKind);
+        getLIRGen().append(new AVX512MaskedOp.AVX512MaskedFmaOp(opcode, avxSize, result, asAllocatable(mask), asAllocatable(src1), asAllocatable(src2), asAllocatable(src3)));
         return result;
     }
 
@@ -1988,6 +2122,30 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                 case DOUBLE -> EVSUBPD;
                 default -> null;
             };
+        } else if (op == SaturatingAddNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPADDSB;
+                case WORD -> EVPADDSW;
+                default -> null;
+            };
+        } else if (op == SaturatingSubNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPSUBSB;
+                case WORD -> EVPSUBSW;
+                default -> null;
+            };
+        } else if (op == SaturatingUAddNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPADDUSB;
+                case WORD -> EVPADDUSW;
+                default -> null;
+            };
+        } else if (op == SaturatingUSubNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPSUBUSB;
+                case WORD -> EVPSUBUSW;
+                default -> null;
+            };
         } else if (op == MulNode.class) {
             return switch (dstEKind) {
                 case WORD -> EVPMULLW;
@@ -2001,6 +2159,32 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
             return switch (dstEKind) {
                 case SINGLE -> EVDIVPS;
                 case DOUBLE -> EVDIVPD;
+                default -> null;
+            };
+        } else if (op == FusedMultiplyAddNode.class) {
+            return switch (dstEKind) {
+                case SINGLE -> EVFMADD213PS;
+                case DOUBLE -> EVFMADD213PD;
+                default -> null;
+            };
+        } else if (op == MinNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPMINSB;
+                case WORD -> EVPMINSW;
+                case DWORD -> EVPMINSD;
+                case QWORD -> EVPMINSQ;
+                case SINGLE -> EVMINPS;
+                case DOUBLE -> EVMINPD;
+                default -> null;
+            };
+        } else if (op == MaxNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVPMAXSB;
+                case WORD -> EVPMAXSW;
+                case DWORD -> EVPMAXSD;
+                case QWORD -> EVPMAXSQ;
+                case SINGLE -> EVMAXPS;
+                case DOUBLE -> EVMAXPD;
                 default -> null;
             };
         } else if (op == AndNode.class) {
@@ -2027,6 +2211,36 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                 case DOUBLE -> EVXORPD;
                 default -> null;
             };
+        } else if (op == LeftShiftNode.class) {
+            return switch (dstEKind) {
+                case WORD -> AMD64Assembler.VexRVMOp.EVPSLLVW;
+                case DWORD -> AMD64Assembler.VexRVMOp.EVPSLLVD;
+                case QWORD -> AMD64Assembler.VexRVMOp.EVPSLLVQ;
+                default -> null;
+            };
+        } else if (op == RightShiftNode.class) {
+            return switch (dstEKind) {
+                case WORD -> AMD64Assembler.VexRVMOp.EVPSRAVW;
+                case DWORD -> AMD64Assembler.VexRVMOp.EVPSRAVD;
+                case QWORD -> AMD64Assembler.VexRVMOp.EVPSRAVQ;
+                default -> null;
+            };
+        } else if (op == UnsignedRightShiftNode.class) {
+            return switch (dstEKind) {
+                case WORD -> AMD64Assembler.VexRVMOp.EVPSRLVW;
+                case DWORD -> AMD64Assembler.VexRVMOp.EVPSRLVD;
+                case QWORD -> AMD64Assembler.VexRVMOp.EVPSRLVQ;
+                default -> null;
+            };
+        } else if (op == AMD64SimdPairwiseMultiplyAddNode.class) {
+            AMD64SimdPairwiseMultiplyAddNode.OpKind opKind = meta.pairwiseMultiplyAddKind();
+            if (opKind == null) {
+                return null;
+            }
+            return switch (opKind) {
+                case SIGNED_SHORTS_TO_INTS -> EVPMADDWD;
+                case UNSIGNED_SIGNED_BYTES_TO_SHORTS_SATURATING -> EVPMADDUBSW;
+            };
         } else if (op == SimdPermuteWithVectorIndicesNode.class) {
             return switch (dstEKind) {
                 case BYTE -> features.contains(AMD64.CPUFeature.AVX512_VBMI) ? EVPERMB : null;
@@ -2035,6 +2249,16 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
                 case QWORD -> EVPERMQ;
                 case SINGLE -> EVPERMPS;
                 case DOUBLE -> EVPERMPD;
+                default -> null;
+            };
+        } else if (op == ReinterpretNode.class) {
+            return switch (dstEKind) {
+                case BYTE -> EVMOVDQU8;
+                case WORD -> EVMOVDQU16;
+                case DWORD -> EVMOVDQU32;
+                case QWORD -> EVMOVDQU64;
+                case SINGLE -> EVMOVUPS;
+                case DOUBLE -> EVMOVUPD;
                 default -> null;
             };
         } else if (op == SimdPrimitiveCompareNode.class) {
@@ -2055,6 +2279,25 @@ public class AMD64AVX512ArithmeticLIRGenerator extends AMD64VectorArithmeticLIRG
 
     @Override
     public Variable emitVectorCompress(LIRKind resultKind, Value source, Value mask) {
+        GraalError.guarantee(AMD64BaseAssembler.supportsFullAVX512(this.getArchitecture().getFeatures()), "should only use AVX-512 paths with 'full' AVX-512 support");
+        AMD64Kind kind = (AMD64Kind) resultKind.getPlatformKind();
+        AVXSize size = AVXKind.getRegisterSize(kind);
+        if (kind.getScalar() == AMD64Kind.BYTE &&
+                        !supports(AMD64.CPUFeature.AVX512_VBMI2) &&
+                        supports(AMD64.CPUFeature.AVX2) &&
+                        supports(AMD64.CPUFeature.POPCNT)) {
+            /*
+             * VPCOMPRESSB (native byte compress) requires AVX512_VBMI2. Without it, byte compress
+             * must be emulated with the AVX2 shuffle-based fallback.
+             */
+            Variable result = getLIRGen().newVariable(resultKind);
+            AMD64Kind maskKind = size == AVXSize.ZMM ? AMD64Kind.QWORD : AMD64Kind.DWORD;
+            Value scalarMask = emitMoveOpMaskToInteger(LIRKind.value(maskKind), mask, kind.getVectorLength());
+            getLIRGen().append(new AVXByteCompress.CompressBytesWithMaskOp(getLIRGen(), asAllocatable(result), asAllocatable(source), asAllocatable(scalarMask)));
+            return result;
+        }
+
+        GraalError.guarantee(kind.getScalar().getSizeInBytes() >= Integer.BYTES || supports(AMD64.CPUFeature.AVX512_VBMI2), "sub-word compress without fallback requires AVX512_VBMI2");
         Variable result = getLIRGen().newVariable(resultKind);
         getLIRGen().append(new AVX512CompressExpand.CompressOp(result, asAllocatable(source), asAllocatable(mask)));
         return result;

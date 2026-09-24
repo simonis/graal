@@ -25,7 +25,6 @@
 package com.oracle.graal.pointsto.heap;
 
 import static com.oracle.graal.pointsto.ObjectScanner.ScanReason;
-import static com.oracle.graal.pointsto.ObjectScanner.constantAsObject;
 
 import java.util.Map;
 import java.util.Objects;
@@ -41,7 +40,8 @@ import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.graal.pointsto.util.AnalysisFuture;
 import com.oracle.graal.pointsto.util.CompletionExecutor;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.shared.util.LogUtils;
 
 import jdk.graal.compiler.core.common.type.CompressibleConstant;
 import jdk.graal.compiler.debug.DebugContext;
@@ -89,10 +89,23 @@ public class HeapSnapshotVerifier {
     }
 
     /**
-     * Heap verification does a complete scan from roots (static fields and embedded constant) and
-     * compares the object graph against the shadow heap. If any new reachable objects or primitive
-     * values are found then the verifier automatically patches the shadow heap. If this is during
-     * analysis then the heap scanner will also notify the analysis of the new objects.
+     * Heap verification does a complete scan from roots (static fields and embedded constants) and
+     * compares the hosted object graph against the {@link ImageHeap shadow heap}. If any new
+     * reachable objects or primitive values are found then the verifier automatically patches the
+     * shadow heap. During
+     * analysis, values processed by such a patch are also reported to the analysis.
+     * <p>
+     * Verification can materialize and traverse an {@link ImageHeapConstant} that has not been
+     * marked reachable by {@link ImageHeapScanner}. Calling
+     * {@link ImageHeapConstant#ensureReaderInstalled()}, or finding that a field snapshot already
+     * equals its hosted value, does not call
+     * {@link ImageHeapScanner#markReachable} and does not guarantee that object validation and
+     * reachability callbacks are executed. A field whose delayed value requires that processing
+     * must be explicitly rescanned through
+     * {@link ImageHeapScanner}, for example with {@link ImageHeapScanner#rescanField} or
+     * {@link ImageHeapScanner#rescanRoot} after the value becomes available.
+     * <p>
+     * The verifier intentionally does not mark every object that it traverses as reachable.
      */
     protected boolean checkHeapSnapshot(UniverseMetaAccess metaAccess, CompletionExecutor executor, String phase, boolean forAnalysis, Map<Constant, Object> embeddedConstants,
                     boolean skipReachableCheck) {
@@ -187,7 +200,7 @@ public class HeapSnapshotVerifier {
                 verifyStaticFieldValue(typeData, field, fieldSnapshot, fieldValue, reason);
             } else {
                 ImageHeapInstance receiverObject = (ImageHeapInstance) getSnapshot(receiver, reason);
-                if (receiverObject == null || (receiverObject.isInBaseLayer() && !bb.getUniverse().getImageLayerLoader().getRelinkedFields(receiverObject.getType()).contains(field.getPosition()))) {
+                if (receiverObject == null || (receiverObject.isInSharedLayer() && !bb.getUniverse().getImageLayerLoader().getRelinkedFields(receiverObject.getType()).contains(field.getPosition()))) {
                     return false;
                 }
                 JavaConstant fieldSnapshot = receiverObject.readFieldValue(field);
@@ -211,7 +224,7 @@ public class HeapSnapshotVerifier {
         }
 
         private void verifyInstanceFieldValue(AnalysisField field, JavaConstant receiver, ImageHeapInstance receiverObject, JavaConstant fieldSnapshot, JavaConstant fieldValue, ScanReason reason) {
-            if (fieldSnapshot instanceof ImageHeapConstant ihc && ihc.isInBaseLayer() && ihc.getHostedObject() == null && !(ihc instanceof ImageHeapRelocatableConstant)) {
+            if (fieldSnapshot instanceof ImageHeapConstant ihc && ihc.isInSharedLayer() && ihc.getHostedObject() == null && !(ihc instanceof ImageHeapRelocatableConstant)) {
                 /*
                  * We cannot verify a base layer constant which doesn't have a backing hosted
                  * object. Since the hosted object is missing the constant would be replaced with
@@ -268,7 +281,7 @@ public class HeapSnapshotVerifier {
              * the future, then compare the produced value.
              */
             JavaConstant elementSnapshot = arrayObject.readElementValue(index);
-            if (elementSnapshot instanceof ImageHeapConstant ihc && ihc.isInBaseLayer() && ihc.getHostedObject() == null) {
+            if (elementSnapshot instanceof ImageHeapConstant ihc && ihc.isInSharedLayer() && ihc.getHostedObject() == null) {
                 /*
                  * We cannot verify a base layer constant which doesn't have a backing hosted
                  * object. Since the hosted object is missing the constant would be replaced with
@@ -303,14 +316,15 @@ public class HeapSnapshotVerifier {
             }
             if (isPrimitiveArrayConstant(bb, snapshot)) {
                 AnalysisError.guarantee(isPrimitiveArrayConstant(bb, newValue));
-                Object snapshotArray = ((ImageHeapPrimitiveArray) snapshot).getArray();
-                Object newValueArray = constantAsObject(bb, newValue);
-                if (!Objects.deepEquals(snapshotArray, newValueArray)) {
+                ImageHeapPrimitiveArray primitiveArrayConstant = (ImageHeapPrimitiveArray) snapshot;
+                JavaConstant snapshotArray = primitiveArrayConstant.getArray();
+                GuestAccess access = GuestAccess.get();
+                if (!access.invokeStatic(GuestAccess.elements().java_util_Objects_deepEquals, snapshotArray, newValue).asBoolean()) {
                     /* Guarantee that the shadowed constant and the hosted constant are the same. */
-                    AnalysisError.guarantee(((ImageHeapPrimitiveArray) snapshot).getHostedObject().equals(newValue));
+                    AnalysisError.guarantee(primitiveArrayConstant.getHostedObject().equals(newValue));
                     Integer length = bb.getUniverse().getHostedValuesProvider().readArrayLength(newValue);
                     /* Since the shadowed constant didn't change, the length should match. */
-                    System.arraycopy(newValueArray, 0, snapshotArray, 0, length);
+                    access.copyArray(newValue, 0, snapshotArray, 0, length);
                     return true;
                 }
             }

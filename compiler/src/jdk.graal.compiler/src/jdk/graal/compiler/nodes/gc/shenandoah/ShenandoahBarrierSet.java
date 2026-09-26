@@ -383,6 +383,18 @@ public class ShenandoahBarrierSet extends BarrierSet {
      * {@code oop_store_not_in_heap}. Note that the SATB pre barrier is still required for off-heap
      * oop stores, so this predicate only affects the card barrier.
      */
+    /**
+     * Shenandoah needs a barrier for every single reference: the SATB pre-write barrier must enqueue
+     * the value that a slot held before the store, and the load-reference barrier must resolve each
+     * loaded reference to its to-space copy. Neither can be expressed for a SIMD access that covers
+     * several references at once, so object accesses must not be vectorized while any of these
+     * barriers is in use. Passive mode uses none of them and keeps full vectorization.
+     */
+    @Override
+    public boolean supportsVectorizedObjectAccess() {
+        return !(useLoadRefBarrier || useSATBBarrier || useCASBarrier || useCardBarrier);
+    }
+
     @SuppressWarnings("unused")
     protected boolean isInHeap(LocationIdentity location) {
         return true;

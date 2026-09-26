@@ -199,6 +199,24 @@ public abstract class BarrierSet {
      *         {@code true} if writes of {@code storageKind} may need a pre-write barrier at least
      *         under certain circumstances.
      */
+    /**
+     * Determines whether this barrier set can emit correct barriers for vectorized (SIMD) accesses
+     * to object references.
+     *
+     * <p>
+     * A vectorized access covers several references with a single node whose stamp is a SIMD stamp
+     * rather than an {@link jdk.graal.compiler.core.common.type.AbstractObjectStamp}. A barrier set
+     * that only needs a post-write (card marking) barrier can handle this by marking the cards of
+     * the written range after the vector loop. A barrier set that needs a barrier per individual
+     * reference cannot: a snapshot-at-the-beginning pre-write barrier has to observe the value that
+     * each slot held before it is overwritten, and a load-reference barrier has to resolve each
+     * loaded reference individually. Such a barrier set returns {@code false} here, and the
+     * vectorizer then leaves object accesses scalar.
+     */
+    public boolean supportsVectorizedObjectAccess() {
+        return true;
+    }
+
     public boolean mayNeedPreWriteBarrier(JavaKind storageKind) {
         return false;
     }

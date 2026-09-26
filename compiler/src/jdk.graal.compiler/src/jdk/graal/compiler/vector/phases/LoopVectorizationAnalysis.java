@@ -144,6 +144,7 @@ import jdk.graal.compiler.nodes.memory.ReadNode;
 import jdk.graal.compiler.nodes.memory.WriteNode;
 import jdk.graal.compiler.nodes.memory.address.AddressNode;
 import jdk.graal.compiler.nodes.memory.address.OffsetAddressNode;
+import jdk.graal.compiler.nodes.memory.LIRLowerableAccess;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.graal.compiler.nodes.spi.Virtualizable;
 import jdk.graal.compiler.nodes.spi.VirtualizableAllocation;
@@ -243,8 +244,19 @@ public final class LoopVectorizationAnalysis {
         boolean seenSafepoint = false;
         boolean seenObjectWrite = false;
         boolean vectDeopt = false;
+        /*
+         * Some garbage collectors need a barrier for every individual reference (for example a
+         * snapshot-at-the-beginning pre-write barrier, which has to see the previous value of each
+         * slot). Those barriers cannot be expressed for a SIMD access that covers several references
+         * at once, so such a collector forbids vectorizing object accesses altogether.
+         */
+        boolean allowObjectAccesses = providers.getPlatformConfigurationProvider().getBarrierSet().supportsVectorizedObjectAccess();
         while (node != null) {
             debug.log(DebugContext.VERY_DETAILED_LEVEL, "look at loop body node %s", node);
+            if (!allowObjectAccesses && accessesObjectReferences(node)) {
+                debug.log(DebugContext.DETAILED_LEVEL, "can't vectorize loop containing object reference access %s: the collector needs a barrier per reference", node);
+                return null;
+            }
             if (recordBodyNode(node)) {
                 bodyNodes.add(node);
                 if (bodyNodes.size() > maxBodyNodes) {
@@ -1306,6 +1318,24 @@ public final class LoopVectorizationAnalysis {
         } else {
             return ivs.get(index);
         }
+    }
+
+    /**
+     * Determines whether {@code node} reads or writes object references, and therefore would need
+     * GC barriers if it were vectorized.
+     */
+    static boolean accessesObjectReferences(Node node) {
+        if (node instanceof LoadIndexedNode load) {
+            return load.elementKind() == JavaKind.Object;
+        }
+        if (node instanceof StoreIndexedNode store) {
+            return store.elementKind() == JavaKind.Object;
+        }
+        if (node instanceof LIRLowerableAccess access) {
+            Stamp accessStamp = access.getAccessStamp(NodeView.DEFAULT);
+            return accessStamp != null && accessStamp.isObjectStamp();
+        }
+        return false;
     }
 
     public static boolean canVectorizeIv(StructuredGraph graph, InductionVariable iv) {

@@ -663,6 +663,24 @@ public class LoopVectorizationPhase extends PostRunCanonicalizationPhase<MidTier
 
     @SuppressWarnings("try")
     private boolean vectorizeLoop(StructuredGraph graph, MidTierContext context, Loop loop, VectorizableLoopInfo vectorizableLoop) {
+        /*
+         * Some collectors need a GC barrier for every individual reference (a
+         * snapshot-at-the-beginning pre-write barrier has to observe the value each slot held before
+         * it is overwritten, and a load-reference barrier has to resolve each loaded reference).
+         * Those barriers cannot be attached to a SIMD access that covers several references at once,
+         * so leave loops that access object references scalar. Checked here as well as in
+         * LoopVectorizationAnalysis because reads are floating at this point and are therefore not
+         * part of the fixed-node scan done there.
+         */
+        if (!context.getPlatformConfigurationProvider().getBarrierSet().supportsVectorizedObjectAccess()) {
+            for (Node node : loop.whole().nodes()) {
+                if (LoopVectorizationAnalysis.accessesObjectReferences(node)) {
+                    graph.getDebug().log(DebugContext.DETAILED_LEVEL, "can't vectorize loop with object reference access %s: the collector needs a barrier per reference", node);
+                    return false;
+                }
+            }
+        }
+
         EconomicMap<WriteNode, InductionVariable> writes = vectorizableLoop.writes;
         ArrayList<FixedNode> bodyNodes = vectorizableLoop.bodyNodes;
         ArrayList<IfNode> ifNodesToConditionalize = vectorizableLoop.ifNodesToConditionalize;

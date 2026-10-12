@@ -694,7 +694,121 @@ def svm_gate_body(args, tasks):
         if t:
             java_agent_test(args.extra_image_builder_arguments)
 
-def native_unittests_task(extra_build_args=None):
+
+# THIS IS THE EXPECTED FAILURE STACK TRACE FOR TERMINUS HELLO WORLD MVP (GR-72797).
+# Whitespaces are stripped and line numbers are replaced with a placeholder to account for line changes.
+TERMINUS_HELLO_WORLD_EXPECTED_FAILURE = """
+    at jdk.internal.vm.ci/jdk.vm.ci.common.JVMCIError.shouldNotReachHere(JVMCIError.java:48)
+    at jdk.graal.compiler.espresso.vmaccess/com.oracle.truffle.espresso.vmaccess.EspressoExternalSnippetReflectionProvider.originalClass(EspressoExternalSnippetReflectionProvider.java:124)
+    at org.graalvm.nativeimage.base/com.oracle.svm.util.OriginalClassProvider.getJavaClass(OriginalClassProvider.java:60)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisType.getJavaClass(AnalysisType.java:936)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.SVMHost.createHub(SVMHost.java:599)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.SVMHost.registerType(SVMHost.java:465)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisUniverse.createType(AnalysisUniverse.java:314)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisUniverse.lookupAllowUnresolved(AnalysisUniverse.java:218)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisUniverse.lookup(AnalysisUniverse.java:195)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisUniverse.lookup(AnalysisUniverse.java:86)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.infrastructure.UniverseMetaAccess$1.apply(UniverseMetaAccess.java:51)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.infrastructure.UniverseMetaAccess$1.apply(UniverseMetaAccess.java:48)
+    at java.base/java.util.concurrent.ConcurrentHashMap.computeIfAbsent(ConcurrentHashMap.java:1724)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.infrastructure.UniverseMetaAccess.lookupJavaType(UniverseMetaAccess.java:75)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisMetaAccess.lookupJavaType(AnalysisMetaAccess.java:56)
+    at org.graalvm.nativeimage.pointsto/com.oracle.graal.pointsto.meta.AnalysisMetaAccess.<init>(AnalysisMetaAccess.java:49)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.analysis.SVMAnalysisMetaAccess.<init>(SVMAnalysisMetaAccess.java:37)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGenerator.setupNativeImage(NativeImageGenerator.java:1164)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGenerator.doRun(NativeImageGenerator.java:658)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGenerator.run(NativeImageGenerator.java:611)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGeneratorRunner.buildImage(NativeImageGeneratorRunner.java:626)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGeneratorRunner.build(NativeImageGeneratorRunner.java:814)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGeneratorRunner.start(NativeImageGeneratorRunner.java:186)
+    at org.graalvm.nativeimage.builder/com.oracle.svm.hosted.NativeImageGeneratorRunner.main(NativeImageGeneratorRunner.java:134)
+"""
+
+
+def _run_terminus_gate(args):
+    # check for the espresso compiler stub suite
+    espresso_compiler_stub = 'espresso-compiler-stub'
+    if not mx.suite(espresso_compiler_stub, fatalIfMissing=False):
+        mx.abort(f'The {espresso_compiler_stub} suite is require for running terminus.\n' +
+                 f'Use `mx --dy /{espresso_compiler_stub}` to dynamically import it.')
+
+    # we need to wrap the native_image command to inject the output capture and ignore non-zero return values
+    out = mx.LinesOutputCapture()
+    def _native_image_wrapper(native_image_func):
+        def _native_image_with_out(*args, **kwargs):
+            kwargs.update(out=mx.TeeOutputCapture(out), nonZeroIsFatal=False)
+            native_image_func(*args, **kwargs)
+        return _native_image_with_out
+
+    # running with --build-only since for now there won't be anything to execute
+    run_helloworld_command(
+        ['--build-only'] + svm_experimental_options(['-H:+RunMainInNewThread']) + [
+            '-Dorg.graalvm.nativeimage.vmaccess.name=espresso',
+        ] + args.extra_image_builder_arguments,
+        config=None, command_name="helloworld", native_image_wrapper=_native_image_wrapper
+    )
+
+    # pattern to remove line number from the end of the stack trace
+    line_number_pattern = re.compile(r':\d+\)$')
+    def _strip_line_numbers(lines):
+        return [line_number_pattern.sub(':xxx)', s.strip()) for s in lines if s.strip()]
+
+    # split and strip
+    expected_lines = _strip_line_numbers(TERMINUS_HELLO_WORLD_EXPECTED_FAILURE.splitlines())
+    actual_lines = _strip_line_numbers(out.lines)
+
+    # sanity check
+    if len(actual_lines) < len(expected_lines):
+        mx.log_error(f"Actual output too short. Expected {len(expected_lines)} lines, got {len(actual_lines)}.")
+        mx.log_error("Expected output:")
+        mx.log_error("\n".join(expected_lines))
+        mx.abort("Truncated output.")
+
+    # Anchor at the bottom of the expected stack so appended diagnostics do not affect the match.
+    try:
+        actual_idx = actual_lines.index(expected_lines[-1])
+    except ValueError:
+        mx.abort(f"Could not find the bottom of the expected stack trace:\n{expected_lines[-1]}")
+
+    if actual_idx < len(expected_lines) - 1:
+        mx.abort(
+            f"Not enough output before the bottom of the expected stack trace. Expected at least {len(expected_lines) - 1} lines, got {actual_idx}."
+        )
+
+    # Compare expected and actual from bottom to top.
+    for expected_idx in range(len(expected_lines) - 1, -1, -1):
+        expected_line = expected_lines[expected_idx]
+        actual_line = actual_lines[actual_idx]
+
+        if expected_line != actual_line:
+            mx.log_error("Actual output does not match expected:")
+
+            # print lines before mismatch
+            for s in expected_lines[:expected_idx]:
+                mx.log_error(" " + s)
+
+            # print mismatching line in diff style
+            mx.log_error(mx.colorize(f"+{actual_line}", color="green"))
+            mx.log_error(mx.colorize(f"-{expected_line}", color="red"))
+
+            # print lines after mismatch
+            for s in expected_lines[expected_idx + 1:]:
+                mx.log_error(" " + s)
+
+            mx.abort("Please update TERMINUS_HELLO_WORLD_EXPECTED_FAILURE in mx_substrate.py")
+
+        actual_idx -= 1
+
+    mx.log(mx.colorize("Detected the expected failure pattern!", color="green"))
+
+
+def _compute_native_unittest_args(extra_build_args=None, include_svm_test_features=True):
+    """
+    Compute the arguments and environment necessary to run the native unit tests.
+    This logic is shared by the gate task and the mx native-unittest command.
+    """
+    additional_build_args = []
+    # Windows/JDK specific ignores that affect which tests run
     if mx.is_windows():
         # GR-24075
         mx_unittest.add_global_ignore_glob('com.oracle.svm.test.ProcessPropertiesTest')
@@ -712,17 +826,53 @@ def native_unittests_task(extra_build_args=None):
 
     # Create/overwrite simple resource files (idempotent content write)
     for i in range(4):
-        with open(join(cp_entry_name, "resourcesFromDir", f'cond-resource{i}.txt'), 'w') as out:
-            out.write(f"Conditional file{i}" + '\n')
+        with open(join(resources_from_dir, f'cond-resource{i}.txt'), 'w', encoding='utf-8') as out:
+            out.write(f"Conditional file{i}\n")
+        with open(join(simple_dir, f'simple-resource{i}.txt'), 'w', encoding='utf-8') as out:
+            out.write(f"Simple file{i}\n")
 
-        with open(join(cp_entry_name, "simpleDir", f'simple-resource{i}.txt'), 'w') as out:
-            out.write(f"Simple file{i}" + '\n')
+    # This trace-processor test uses reflective access to SVM_CONFIGURE internals so that the JVM
+    # unit-test path can apply test-local module exports lazily. Native unit tests cannot apply the
+    # same late exports and would also need extra reflection metadata for the test plumbing.
+    mx_unittest.add_global_ignore_glob('com.oracle.svm.configure.test.config.URLProtocolTraceProcessorTest')
 
-    additional_build_args = svm_experimental_options([
-        '-H:AdditionalSecurityProviders=com.oracle.svm.test.services.SecurityServiceTest$NoOpProvider,sun.security.pkcs11.SunPKCS11',
-        '-H:AdditionalSecurityServiceTypes=com.oracle.svm.test.services.SecurityServiceTest$JCACompliantNoOpService',
-        '-cp', cp_entry_name
+    def write_micronaut_style_service_entries(cp_entry, service_name, implementation_names):
+        service_dir = join(cp_entry, micronaut_style_service_root, service_name)
+        mx_util.ensure_dir_exists(service_dir)
+        for implementation_name in implementation_names:
+            with open(join(service_dir, implementation_name), 'w', encoding='utf-8') as out:
+                out.write(implementation_name + '\n')
+
+    write_micronaut_style_service_entries(micronaut_style_cp_entry_a, 'com.oracle.svm.test.ServiceA', [
+        'com.oracle.svm.test.impl.ServiceAImpl1',
+        'com.oracle.svm.test.impl.ServiceAImplShared',
     ])
+    write_micronaut_style_service_entries(micronaut_style_cp_entry_a, 'com.oracle.svm.test.ServiceB', [
+        'com.oracle.svm.test.impl.ServiceBImpl',
+    ])
+    write_micronaut_style_service_entries(micronaut_style_cp_entry_b, 'com.oracle.svm.test.ServiceA', [
+        'com.oracle.svm.test.impl.ServiceAImpl2',
+        'com.oracle.svm.test.impl.ServiceAImplShared',
+    ])
+    write_micronaut_style_service_entries(micronaut_style_cp_entry_b, 'com.oracle.svm.test.ServiceC', [
+        'com.oracle.svm.test.impl.ServiceCImpl',
+    ])
+
+    # Always add our extra classpath entry with resources
+    additional_build_args += svm_experimental_options([
+        '-cp', os.pathsep.join([cp_entry_name, micronaut_style_cp_entry_a, micronaut_style_cp_entry_b])
+    ])
+    # Only add SVM test-specific security provider/service overrides when running the SVM tests.
+    # Truffle/native unittests (and others) don't have com.oracle.svm.test on the classpath.
+    if include_svm_test_features:
+        additional_build_args += svm_experimental_options([
+            '--add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED',
+            '--add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.libjvm=ALL-UNNAMED',
+            '--add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.properties=ALL-UNNAMED',
+            '--add-opens=org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED',
+            '-H:AdditionalSecurityProviders=com.oracle.svm.test.services.SecurityServiceTest$NoOpProvider,sun.security.pkcs11.SunPKCS11',
+            '-H:AdditionalSecurityServiceTypes=com.oracle.svm.test.services.SecurityServiceTest$JCACompliantNoOpService',
+        ])
     if extra_build_args is not None:
         additional_build_args += extra_build_args
 
@@ -730,8 +880,198 @@ def native_unittests_task(extra_build_args=None):
         if mx.is_windows():
             mx_unittest.add_global_ignore_glob('com.oracle.svm.test.SecurityServiceTest')
 
-    native_unittest(['--build-args', _native_unittest_features] + additional_build_args)
+    # Inject SVM test feature classes only if we are actually running SVM tests.
+    # Truffle unit tests (and other suites) do not have com.oracle.svm.test on the classpath,
+    # so adding these features would fail with "Feature class not found".
+    if include_svm_test_features:
+        return ['--build-args', _native_unittest_features] + additional_build_args
+    else:
+        return ['--build-args'] + additional_build_args
 
+# Do not inline this, it's used from the enterprise repository.
+def native_unittests_task(
+        extra_build_args=None,
+        include_custom_test_groups=False,
+        include_default_test_group=True,
+        custom_batch=None):
+    # native_unittests runs the SVM test suite => include SVM test features.
+    computed = _compute_native_unittest_args(extra_build_args, include_svm_test_features=True)
+    if include_custom_test_groups:
+        computed = computed + ['--all']
+    if not include_default_test_group:
+        computed = computed + ['--custom-only']
+    native_image_context_run(
+        lambda native_image, native_unittest_args: _native_unittest(
+            native_image,
+            native_unittest_args,
+            custom_batch=custom_batch,
+        ),
+        computed,
+    )
+
+
+def generic_field_type_test_task(extra_build_args=None):
+    test_dir = join(suite.dir, 'src', 'native-image-tests', 'generic-field-type')
+    output_dir = join(svmbuild_dir(), 'generic-field-type-test')
+    if exists(output_dir):
+        mx.rmtree(output_dir)
+    mx_util.ensure_dir_exists(output_dir)
+
+    sources = [
+        join(test_dir, 'GenericFieldTypeReproducer.java'),
+    ]
+    mx.run([mx.get_jdk().javac, '-d', output_dir] + sources)
+
+    with native_image_context(IMAGE_ASSERTION_FLAGS) as native_image:
+        field_build_args = svm_experimental_options([
+            '-H:ReflectionConfigurationFiles=' + join(test_dir, 'reflect-config.json'),
+        ]) + [
+            '-cp', output_dir,
+            '-o', join(output_dir, 'generic-field-type-reproducer'),
+            'GenericFieldTypeReproducer',
+        ]
+        if extra_build_args is not None:
+            field_build_args += extra_build_args
+        field_image = native_image(field_build_args)
+
+        field_output = []
+        mx.run([field_image, 'referent', 'discovered', 'queue', 'next'], out=lambda line: field_output.append(line.rstrip()))
+        expected_field_output = [
+            'referent: T',
+            'discovered: java.lang.ref.Reference<?>',
+            'queue: java.lang.ref.ReferenceQueue<? super T>',
+            'next: java.lang.ref.Reference',
+        ]
+        if field_output != expected_field_output:
+            mx.abort('Unexpected generic field types: ' + str(field_output) + ' != ' + str(expected_field_output))
+
+
+def runtime_assertions_test_task(extra_image_args=None):
+    test_dir = join(suite.dir, 'src', 'native-image-tests', 'runtime-assertions')
+    output_dir = join(svmbuild_dir(), 'runtime-assertions-test')
+    if exists(output_dir):
+        mx.rmtree(output_dir)
+    mx_util.ensure_dir_exists(output_dir)
+
+    sources = [
+        join(test_dir, 'RuntimeAssertions.java'),
+        join(test_dir, 'RuntimeLoadedAssertions.java'),
+    ]
+    mx.run([mx.get_jdk().javac, '-d', output_dir] + sources)
+
+    test_class = 'runtimeassertions.RuntimeAssertions'
+    with native_image_context(IMAGE_ASSERTION_FLAGS) as native_image:
+        def build_assertion_image(name, assertion_args, image_options, main_class=test_class, classpath=output_dir, output_root=output_dir):
+            build_args = []
+            if classpath is not None:
+                build_args += ['-cp', classpath]
+            build_args += assertion_args + [
+                '-o', join(output_root, name),
+            ] + svm_experimental_options(image_options)
+            if main_class is not None:
+                build_args.append(main_class)
+            if extra_image_args is not None:
+                build_args += extra_image_args
+            return native_image(build_args)
+
+        assertion_image = build_assertion_image('runtime-assertions', [
+            '-ea',
+            '-esa',
+        ], [
+            '-H:+StrictRuntimeJavaOptions',
+        ])
+
+        # Each execution starts with fresh runtime assertion directives.
+        test_cases = [
+            [],
+            ['-ea'],
+            ['-ea', '-da'],
+            ['-ea:runtimeassertions.ClassEnabled'],
+            ['-ea:runtimeassertions...', '-da:runtimeassertions.ClassDisabled'],
+            ['-ea', '-da:runtimeassertions...', '-ea:runtimeassertions.ClassEnabled'],
+            ['-esa'],
+            ['-esa', '-dsa'],
+            ['-enableassertions:runtimeassertions.ClassEnabled', '-enablesystemassertions'],
+            ['-enableassertions', '-disableassertions', '-enablesystemassertions', '-disablesystemassertions'],
+        ]
+        for runtime_args in test_cases:
+            scenario = " ".join(runtime_args)
+            mx.run([assertion_image] + runtime_args + ['--', scenario])
+
+        legacy_assertion_image = build_assertion_image('runtime-assertions-legacy', [
+            '-ea',
+        ], [
+            '-H:-StrictRuntimeJavaOptions',
+        ])
+        mx.run([legacy_assertion_image, 'legacy-build-time-status'])
+
+        runtime_loaded_excluded_image = build_assertion_image('runtime-assertions-runtime-loaded-excluded', [
+            '-ea',
+        ], [
+            '-H:IncludeResources=runtimeassertions/RuntimeLoadedAssertions.class',
+            '-H:+StrictRuntimeJavaOptions',
+            '-H:+RuntimeClassLoading',
+        ])
+        # Runtime-loaded classes must remain controlled by runtime directives even when image assertion code is excluded.
+        runtime_loaded_test_cases = [
+            ([], False),
+            (['-ea'], True),
+            (['-ea:runtimeassertions...'], True),
+            (['-ea', '-da:runtimeassertions...'], False),
+            (['-ea:runtimeassertions...', '-da:runtimeassertions.RuntimeLoadedAssertions'], False),
+        ]
+        for runtime_args, expected in runtime_loaded_test_cases:
+            scenario = 'runtime-loaded:' + str(expected).lower()
+            mx.run([runtime_loaded_excluded_image] + runtime_args + ['--', scenario])
+
+        default_assertion_image = build_assertion_image('runtime-assertions-default', [], ['-H:-StrictRuntimeJavaOptions'])
+        mx.run([default_assertion_image, 'code-excluded'])
+
+
+@mx.command(suite.name, 'runtime-assertionstest', 'Builds and tests runtime assertion options in a native image.')
+def runtime_assertionstest(args):
+    runtime_assertions_test_task(args)
+
+
+def runtime_classpath_resource_test_task(extra_build_args=None):
+    svm_tests_jar = mx.distribution('substratevm:SVM_TESTS').path
+    build_args = svm_experimental_options(['-H:+ClassForNameRespectsClassLoader']) + [
+        RUNTIME_CLASSLOADERS_INIT_ARG,
+    ]
+    if extra_build_args is not None:
+        build_args += extra_build_args
+
+    computed = _compute_native_unittest_args(build_args, include_svm_test_features=True)
+    # First exercise the regular embedded-resource tests with loader-aware resource lookup enabled.
+    # This keeps their expected resource: URL semantics independent from the runtime classpath jar.
+    native_image_context_run(_native_unittest, [
+        'com.oracle.svm.test.NativeImageResourceTest',
+    ] + computed)
+
+    runtime_classpath_build_args = build_args + [
+        '-Dsvm.test.expectRuntimeClassPathResource=true',
+    ]
+    computed = _compute_native_unittest_args(runtime_classpath_build_args, include_svm_test_features=True)
+    # Then exercise runtime classpath lookup in isolation. The SVM tests jar is intentionally added
+    # only to this image run, because it changes URL/resource behavior for embedded-resource tests.
+    native_image_context_run(_native_unittest, [
+        'com.oracle.svm.test.NativeImageRuntimeClassPathResourceTest',
+    ] + computed + [
+        '--run-args',
+        '--verbose',
+        '-Dsvm.test.expectRuntimeClassPathResource=true',
+        '-Djava.class.path=' + svm_tests_jar,
+    ])
+
+
+def java_desktop_integration_task(native_image, extra_build_args=None):
+    build_args = _compute_native_unittest_args(extra_build_args, include_svm_test_features=False)
+    build_args += svm_experimental_options(['-H:Preserve=module=java.desktop'])
+    _native_unittest(native_image, [
+        '--test-classes-per-run', '1',
+        'com.oracle.svm.integrationtest.HeadlessJavaDesktopTest',
+        'com.oracle.svm.integrationtest.NonHeadlessJavaDesktopTest',
+    ] + build_args)
 
 def conditional_config_task(native_image):
     agent_path = build_native_image_agent(native_image)
@@ -965,21 +1305,32 @@ def _native_junit(
                 mx.log(f"No custom native-unittest groups are assigned to batch {selected_batch}.")
                 return
         extra_image_args = mx.get_runtime_jvm_args(unittest_deps, jdk=mx_compiler.jdk, exclude_names=mx_sdk_vm_impl.NativePropertiesBuildTask.implicit_excludes)
-        macro_junit = '--macro:junit'
-        unittest_image = native_image(['-ea', '-esa'] + build_args + extra_image_args + [macro_junit + '=' + unittest_file] + svm_experimental_options(['-H:Path=' + junit_test_dir]))
-        image_pattern_replacement = unittest_image + ".exe" if mx.is_windows() else unittest_image
-        run_args = [arg.replace('${unittest.image}', image_pattern_replacement) for arg in run_args]
-        mx.log('Running: ' + ' '.join(map(shlex.quote, [unittest_image] + run_args)))
-
-        if not test_classes_per_run:
-            # Run all tests in one go. The default behavior.
-            test_classes_per_run = sys.maxsize
-
         failures = []
-        for classes in batched(test_classes, test_classes_per_run):
-            ret = mx.run([unittest_image] + run_args + [arg for c in classes for arg in ['--run-explicit', c]], nonZeroIsFatal=False)
-            if ret != 0:
-                failures.append((ret, classes))
+        for group_index, (group_build_args, group_tests) in enumerate(test_groups.items()):
+            group_dir = _native_junit_group_dir(junit_root_dir, len(test_groups), group_index, len(group_build_args) != 0)
+            group_unittest_file = join(group_dir, 'svmjunit.tests')
+            with open(group_unittest_file, 'w', encoding='utf-8') as f:
+                for test_class in group_tests:
+                    print(test_class, file=f)
+            mx.log('Building junit image for matching: ' + ' '.join(group_tests))
+            group_image_args = ['-ea', '-esa'] + build_args + list(group_build_args) + extra_image_args + ['--macro:junit=' + group_unittest_file] + svm_experimental_options(['-H:Path=' + group_dir])
+            unittest_image = native_image(group_image_args)
+            image_pattern_replacement = unittest_image + ".exe" if mx.is_windows() else unittest_image
+            group_run_args = [arg.replace('${unittest.image}', image_pattern_replacement) for arg in run_args]
+            mx.log('Running: ' + ' '.join(map(shlex.quote, [unittest_image] + group_run_args)))
+
+            effective_test_classes_per_run = test_classes_per_run if test_classes_per_run else sys.maxsize
+            for classes in batched(group_tests, effective_test_classes_per_run):
+                # Run the tests with the working directory set to the image-specific directory so
+                # artifacts created with default filenames stay under the suite output and do not
+                # clash with other native-unittest image groups.
+                ret = mx.run(
+                    [unittest_image] + group_run_args + [arg for c in classes for arg in ['--run-explicit', c]],
+                    nonZeroIsFatal=False,
+                    cwd=group_dir
+                )
+                if ret != 0:
+                    failures.append((ret, classes))
         if len(failures) != 0:
             fail_descs = (f"> Test run of the following classes failed with exit code {ret}: {', '.join(classes)}" for ret, classes in failures)
             mx.log('Some test runs failed:\n' + '\n'.join(fail_descs))

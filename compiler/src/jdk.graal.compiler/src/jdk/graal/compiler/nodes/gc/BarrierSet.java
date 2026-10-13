@@ -192,14 +192,6 @@ public abstract class BarrierSet {
     public abstract BarrierType readWriteBarrier(ValueNode object, ValueNode value);
 
     /**
-     * Determine whether writes of the given {@code storageKind} may ever need a pre-write barrier.
-     *
-     * @param storageKind the kind of value being stored
-     * @return {@code false} if no writes of {@code storageKind} ever need a pre-write barrier;
-     *         {@code true} if writes of {@code storageKind} may need a pre-write barrier at least
-     *         under certain circumstances.
-     */
-    /**
      * Determines whether this barrier set can emit correct barriers for vectorized (SIMD) accesses
      * to object references.
      *
@@ -217,6 +209,14 @@ public abstract class BarrierSet {
         return true;
     }
 
+    /**
+     * Determine whether writes of the given {@code storageKind} may ever need a pre-write barrier.
+     *
+     * @param storageKind the kind of value being stored
+     * @return {@code false} if no writes of {@code storageKind} ever need a pre-write barrier;
+     *         {@code true} if writes of {@code storageKind} may need a pre-write barrier at least
+     *         under certain circumstances.
+     */
     public boolean mayNeedPreWriteBarrier(JavaKind storageKind) {
         return false;
     }

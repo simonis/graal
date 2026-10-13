@@ -131,7 +131,8 @@ public final class ShenandoahHeap extends Heap {
      * so it can be indexed directly by {@code object_address >> region_shift}). Per-isolate and stable
      * for the isolate's lifetime; read by the compiled CAS heal barrier off the thread register to skip
      * the heal stub for references that are not in the collection set. See
-     * {@link com.oracle.svm.core.graal.amd64.AMD64SubstrateShenandoahCASHealOp}.
+     * {@link com.oracle.svm.core.graal.amd64.AMD64SubstrateShenandoahCASHealOp} and
+     * {@link com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahCASHealOp}.
      */
     public static final FastThreadLocalWord<Word> csetMapAddressTL = FastThreadLocalFactory.createWord("ShenandoahHeap.csetMapAddress");
 

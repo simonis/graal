@@ -175,7 +175,6 @@ import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.core.util.UserErrorSupportImpl;
 import com.oracle.svm.guest.staging.config.SubstrateGuestLibC;
 import com.oracle.svm.guest.staging.jdk.RuntimeSupport;
-import com.oracle.svm.guest.staging.option.RuntimeOptionValidationSupport;
 import com.oracle.svm.guest.staging.option.RuntimeOptionValues;
 import com.oracle.svm.guest.staging.option.SharedLayerRuntimeOptionsValues;
 import com.oracle.svm.guest.staging.util.LayeredHostedImageHeapMapCollector;
@@ -239,6 +238,7 @@ import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.image.PreserveOptionsSupport;
 import com.oracle.svm.hosted.imagelayer.AccessImageSingletonFeature;
 import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
+import com.oracle.svm.hosted.imagelayer.LayeredFoldFeature;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerSnapshotUtil;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerWriter;
@@ -258,6 +258,7 @@ import com.oracle.svm.hosted.phases.EarlyConstantFoldLoadFieldPlugin;
 import com.oracle.svm.hosted.phases.GuestFoldInvocationPlugin;
 import com.oracle.svm.hosted.phases.ImageBuildStatisticsCounterPhase;
 import com.oracle.svm.hosted.phases.InjectedAccessorsPlugin;
+import com.oracle.svm.hosted.phases.PruneFrameStateValuesPhase;
 import com.oracle.svm.hosted.phases.SubstrateClassInitializationPlugin;
 import com.oracle.svm.hosted.phases.VerifyDeoptLIRFrameStatesPhase;
 import com.oracle.svm.hosted.phases.VerifyNoGuardsPhase;
@@ -326,9 +327,11 @@ import jdk.graal.compiler.phases.common.AbstractInliningPhase;
 import jdk.graal.compiler.phases.common.AddressLoweringPhase;
 import jdk.graal.compiler.phases.common.CanonicalizerPhase;
 import jdk.graal.compiler.phases.common.DeoptimizationGroupingPhase;
+import jdk.graal.compiler.phases.common.FinalCanonicalizerPhase;
 import jdk.graal.compiler.phases.common.FrameStateAssignmentPhase;
 import jdk.graal.compiler.phases.common.LoopSafepointInsertionPhase;
 import jdk.graal.compiler.phases.common.TransplantGraphsPhase;
+import jdk.graal.compiler.phases.schedule.SchedulePhase;
 import jdk.graal.compiler.phases.tiers.HighTierContext;
 import jdk.graal.compiler.phases.tiers.LowTierContext;
 import jdk.graal.compiler.phases.tiers.MidTierContext;
@@ -599,7 +602,6 @@ public class NativeImageGenerator {
                  */
                 ImageSingletons.add(VMRuntimeSupport.class, runtimeSupport);
                 ImageSingletons.add(RuntimeSupport.class, runtimeSupport);
-                ImageSingletons.add(RuntimeOptionValidationSupport.class, new RuntimeOptionValidationSupport());
             }
             if (ImageLayerBuildingSupport.lastImageBuild()) {
                 ImageSingletons.add(RuntimeOptionValues.class, new RuntimeOptionValues(optionProvider.getRuntimeValues(), allOptionNames));
@@ -938,6 +940,10 @@ public class NativeImageGenerator {
                 BeforeAnalysisAccessImpl config = new BeforeAnalysisAccessImpl(featureHandler, loader, bb, nativeLibraries, debug);
                 ServiceCatalogSupport.singleton().enableServiceCatalogMapTransformer(config);
                 featureHandler.forEachFeature(feature -> feature.beforeAnalysis(config));
+                if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
+                    /* Fold resolution can observe state initialized by any beforeAnalysis callback. */
+                    LayeredFoldFeature.singleton().preparePendingApplicationFolds();
+                }
                 bb.getHostVM().checkWellKnownStableFieldsBeforeAnalysis(bb);
                 ServiceCatalogSupport.singleton().seal();
                 bb.getHostVM().getClassInitializationSupport().sealConfiguration();
@@ -1106,6 +1112,7 @@ public class NativeImageGenerator {
                 UserErrorSupportImpl.init();
 
                 AutomaticallyRegisteredImageSingletonHandler.registerImageSingletons(loader);
+                GuestImageGeneratorSupport.installIsolateArgumentParser();
 
                 featureHandler.registerFeatures(loader, originalMetaAccess, debug);
                 BuildPhaseProviderImpl.markFeatureRegistrationFinished();
@@ -1882,6 +1889,19 @@ public class NativeImageGenerator {
         midTier.findPhase(LoopSafepointInsertionPhase.class).set(new SubstrateSafepointInsertionPhase());
 
         if (hosted) {
+            /*
+             * Native debug info supports unavailable locals. Preserve all values only for
+             * source-level debugging; the phase itself restricts pruning to eligible handler roots.
+             * Keep this guard consistent with FrameInfoRetention.canPruneFrameStateValues.
+             */
+            if (!SubstrateOptions.getSourceLevelDebug()) {
+                var retentionPosition = lowTier.findPhase(FinalCanonicalizerPhase.class);
+                if (retentionPosition == null) {
+                    retentionPosition = lowTier.findPhase(SchedulePhase.FinalSchedulePhase.class);
+                }
+                retentionPosition.previous();
+                retentionPosition.add(new PruneFrameStateValuesPhase());
+            }
             lowTier.appendPhase(new VerifyNoGuardsPhase());
 
             /* Remove phases that are not suitable for AOT compilation. */

@@ -1515,6 +1515,33 @@ public class WasmJsApiSuite {
     }
 
     @Test
+    public void testMemory64AllocationAndGrow() throws IOException {
+        runTest(options -> {
+            options.option("wasm.Memory64", "true");
+            options.option("wasm.UseUnsafeMemory", "true");
+        }, context -> {
+            final WebAssembly wasm = new WebAssembly(context);
+            final InteropLibrary lib = InteropLibrary.getUncached();
+            try {
+                final Object memAlloc = wasm.readMember("mem_alloc");
+                final Object memGrow = wasm.readMember("mem_grow");
+                final WasmMemory memory = (WasmMemory) lib.execute(memAlloc, 1L, 3L, false, true);
+                Assert.assertTrue(memory.hasIndexType64());
+                Assert.assertEquals(1L, lib.execute(memGrow, memory, 1L));
+                Assert.assertEquals(2L, WasmMemoryLibrary.getUncached().size(memory));
+                try {
+                    lib.execute(memGrow, memory, Long.MAX_VALUE);
+                    Assert.fail("Expected a range error");
+                } catch (WasmJsApiException e) {
+                    Assert.assertEquals(WasmJsApiException.Kind.RangeError, e.kind());
+                }
+            } catch (InteropException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    @Test
     public void testInitialTableSizeOutOfBounds() throws IOException {
         runTest(context -> {
             final WebAssembly wasm = new WebAssembly(context);
@@ -2442,6 +2469,10 @@ public class WasmJsApiSuite {
             Assert.assertEquals("Value written to pre-grow buffer not seen in post-grow buffer", 42, postGrowBuffer.get(0));
             postGrowBuffer.put(1, (byte) 21);
             Assert.assertEquals("Value written to post-grow buffer not seen in pre-grow buffer", 21, preGrowBuffer.get(1));
+            preGrowBuffer.put(Sizes.MEMORY_PAGE_SIZE, (byte) 42);
+            Assert.assertEquals("Value written to pre-grow buffer not seen in post-grow buffer in grown section", 42, postGrowBuffer.get(Sizes.MEMORY_PAGE_SIZE));
+            postGrowBuffer.put(Sizes.MEMORY_PAGE_SIZE + 1, (byte) 21);
+            Assert.assertEquals("Value written to post-grow buffer not seen in pre-grow buffer in grown section", 21, preGrowBuffer.get(Sizes.MEMORY_PAGE_SIZE + 1));
         });
     }
 

@@ -53,8 +53,8 @@ import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.AssertionsSupport;
 import com.oracle.svm.core.CPUFeatureAccess;
-import com.oracle.svm.core.IsolateArgumentParser;
-import com.oracle.svm.core.IsolateArguments;
+import com.oracle.svm.guest.staging.IsolateArgumentParser;
+import com.oracle.svm.guest.staging.IsolateArguments;
 import com.oracle.svm.core.IsolateListenerSupport;
 import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.SubstrateDiagnostics;
@@ -85,7 +85,7 @@ import com.oracle.svm.core.os.MemoryProtectionProvider;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
-import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
+import com.oracle.svm.guest.staging.snippets.SubstrateForeignCallTarget;
 import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.IsolateThreadCache;
 import com.oracle.svm.core.thread.PlatformThreads;
@@ -335,13 +335,13 @@ public final class CEntryPointSnippets extends SubstrateTemplates implements Sni
         CLongPointer parsedArgs = StackValue.get(IsolateArgumentParser.getParsedArgsSize());
         arguments.setParsedArgs(parsedArgs);
 
-        IsolateArgumentParser.singleton().parse(parameters, arguments);
+        IsolateArgumentParser.parse(parameters, arguments);
 
         /* Create the isolate and map the image heap. */
         WordPointer isolatePtr = StackValue.get(WordPointer.class);
         int error = Isolates.create(isolatePtr, arguments);
         if (error != CEntryPointErrors.NO_ERROR) {
-            IsolateArgumentParser.singleton().tearDown(arguments);
+            IsolateArgumentParser.tearDown(arguments);
             return error;
         }
 
@@ -352,7 +352,7 @@ public final class CEntryPointSnippets extends SubstrateTemplates implements Sni
         /* Finish isolate creation and attach the current thread. */
         error = createIsolate0(isolate, arguments);
         if (error != CEntryPointErrors.NO_ERROR) {
-            IsolateArgumentParser.singleton().tearDown(arguments);
+            IsolateArgumentParser.tearDown(arguments);
         }
         return error;
     }

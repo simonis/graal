@@ -51,6 +51,7 @@ import com.oracle.svm.core.gc.shared.NativeGCOptions.NativeGCHostedOptionKey;
 import com.oracle.svm.core.gc.shared.NativeGCOptions.NativeGCRuntimeOptionKey;
 import com.oracle.svm.core.gc.shared.NativeGCOptions.RuntimeArgumentsSupplier;
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidation;
 import com.oracle.svm.guest.staging.option.RuntimeOptionValues;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.shared.option.HostedOptionKey;
@@ -277,9 +278,9 @@ public class NativeGCOptions {
         }
 
         if (!Platform.includedIn(LINUX_AMD64.class) && !Platform.includedIn(LINUX_AARCH64.class) && !Platform.includedIn(DARWIN_AARCH64.class) && !Platform.includedIn(WINDOWS_AMD64.class)) {
-            throw UserError.abort("The option '%s' can only be used on Linux/amd64, Linux/aarch64, macOS/aarch64, or Windows/amd64.", optionKey.getName());
+            throw RuntimeOptionValidation.abort("The option '" + optionKey.getName() + "' can only be used on Linux/amd64, Linux/aarch64, macOS/aarch64, or Windows/amd64.");
         } else if (!SubstrateOptions.useG1GC() && !SubstrateOptions.useShenandoahGC()) {
-            throw UserError.abort("The option '%s' can only be used with the G1 ('--gc=G1') or the Shenandoah ('--gc=shenandoah') garbage collector.", optionKey.getName());
+            throw RuntimeOptionValidation.abort("The option '" + optionKey.getName() + "' can only be used with the G1 ('--gc=G1') or the Shenandoah ('--gc=shenandoah')  garbage collector.");
         }
     }
 
@@ -289,21 +290,23 @@ public class NativeGCOptions {
         }
 
         @Override
-        public void validate() {
+        public void validateAfterParsing() {
             validatePlatformAndGC(this);
-            super.validate();
+            super.validateAfterParsing();
         }
     }
 
     public static class NativeGCRuntimeOptionKey<T> extends RuntimeOptionKey<T> {
         public NativeGCRuntimeOptionKey(T defaultValue, RuntimeOptionKeyFlag... flags) {
-            super(defaultValue, flags);
+            this(defaultValue, NativeGCRuntimeOptionKey::validateNativeGCOption, flags);
         }
 
-        @Override
-        public void validate() {
-            validatePlatformAndGC(this);
-            super.validate();
+        protected NativeGCRuntimeOptionKey(T defaultValue, Consumer<RuntimeOptionKey<T>> afterParsingValidation, RuntimeOptionKeyFlag... flags) {
+            super(defaultValue, null, afterParsingValidation, flags);
+        }
+
+        protected static void validateNativeGCOption(RuntimeOptionKey<?> optionKey) {
+            validatePlatformAndGC(optionKey);
         }
     }
 

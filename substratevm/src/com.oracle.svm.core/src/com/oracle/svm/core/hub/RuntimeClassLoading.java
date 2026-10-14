@@ -40,6 +40,7 @@ import com.oracle.svm.core.hub.registry.ClassRegistries;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.espresso.classfile.Constants;
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidation;
 import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.shared.option.SubstrateOptionsParser;
 import com.oracle.svm.shared.util.VMError;
@@ -93,6 +94,7 @@ public class RuntimeClassLoading {
                     SubstrateOptions.ClosedTypeWorld.update(values, false);
                     ClassRegistries.Options.ClassForNameRespectsClassLoader.update(values, true);
                     PredefinedClassesSupport.Options.SupportPredefinedClasses.update(values, false);
+                    SubstrateOptions.EnableJVMCIGuest.update(values, true);
                 }
             }
         };
@@ -121,26 +123,22 @@ public class RuntimeClassLoading {
         public static final RuntimeOptionKey<VerifyMode> ClassVerification = new RuntimeOptionKey<>(VerifyMode.REMOTE, Immutable);
 
         @Option(help = "Trace runtime class loading events.") //
-        public static final RuntimeOptionKey<Boolean> TraceClassLoading = new RuntimeOptionKey<>(false, Options::validateTraceRuntimeClassLoading);
+        public static final RuntimeOptionKey<Boolean> TraceClassLoading = new RuntimeOptionKey<>(false, null, Options::validateTraceRuntimeClassLoading);
 
         @Option(help = "Logs a stack trace when a class is defined. " +
                         "The logging is applied to all classes whose fully qualified name contains this string. " +
                         "(\"*\" matches any class.)") //
-        public static final RuntimeOptionKey<String> LogClassLoadingCauseFor = new RuntimeOptionKey<>(null, Options::validateLogClassLoadingCauseFor);
+        public static final RuntimeOptionKey<String> LogClassLoadingCauseFor = new RuntimeOptionKey<>(null, null, Options::validateLogClassLoadingCauseFor);
 
         private static void validateTraceRuntimeClassLoading(RuntimeOptionKey<Boolean> optionKey) {
-            if (optionKey.getValue() && !RuntimeClassLoading.getValue()) {
-                throw UserError.abort("Option '%s' requires runtime class-loading support to be enabled via '%s'.",
-                                optionKey.getName(),
-                                SubstrateOptionsParser.commandArgument(RuntimeClassLoading, "+"));
+            if (optionKey.getValue() && !isSupported()) {
+                throw RuntimeOptionValidation.abort("Option '" + optionKey.getName() + "' requires runtime class-loading support to be enabled via '-H:+RuntimeClassLoading'.");
             }
         }
 
         private static void validateLogClassLoadingCauseFor(RuntimeOptionKey<String> optionKey) {
-            if (optionKey.getValue() != null && !RuntimeClassLoading.getValue()) {
-                throw UserError.abort("Option '%s' requires runtime class-loading support to be enabled via '%s'.",
-                                optionKey.getName(),
-                                SubstrateOptionsParser.commandArgument(RuntimeClassLoading, "+"));
+            if (optionKey.getValue() != null && !isSupported()) {
+                throw RuntimeOptionValidation.abort("Option '" + optionKey.getName() + "' requires runtime class-loading support to be enabled via '-H:+RuntimeClassLoading'.");
             }
         }
     }

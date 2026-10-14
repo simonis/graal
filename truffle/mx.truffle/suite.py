@@ -39,7 +39,7 @@
 # SOFTWARE.
 #
 suite = {
-  "mxversion": "7.79.3",
+  "mxversion": "7.86.0",
   "name" : "truffle",
   "version_from" : "sdk",
   "release_from" : "sdk",
@@ -445,6 +445,23 @@ suite = {
       "checkstyle" : "com.oracle.truffle.dsl.processor",
       "javaCompliance" : "17+",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR"],
+      "workingSets" : "API,Truffle,Test",
+      "jacoco" : "exclude",
+      "graalCompilerSourceEdition": "ignore",
+    },
+
+    "com.oracle.truffle.api.test.jdk22" : {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "dependencies" : [
+        "com.oracle.truffle.api.test",
+      ],
+      "overlayTarget" : "com.oracle.truffle.api.test",
+      "checkPackagePrefix" : "false",
+      "multiReleaseJarVersion" : "22",
+      "testProject" : True,
+      "checkstyle" : "com.oracle.truffle.dsl.processor",
+      "javaCompliance" : "22+",
       "workingSets" : "API,Truffle,Test",
       "jacoco" : "exclude",
       "graalCompilerSourceEdition": "ignore",

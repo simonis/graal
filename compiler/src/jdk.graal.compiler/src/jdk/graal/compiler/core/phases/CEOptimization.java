@@ -25,18 +25,29 @@
 package jdk.graal.compiler.core.phases;
 
 import jdk.graal.compiler.core.common.GraalOptions;
+import jdk.graal.compiler.duplication.phases.DeDuplicationPhase;
 import jdk.graal.compiler.duplication.phases.PullThroughPhiPhase;
 import jdk.graal.compiler.duplication.phases.simulation.DuplicationPhase;
 import jdk.graal.compiler.graph.Node.ValueNumberable;
+import jdk.graal.compiler.guards.GuardRangeGroupingPhase;
 import jdk.graal.compiler.guards.optimistic.memory.OptimisticAliasingAnalysisPhase;
+import jdk.graal.compiler.guards.optimistic.SpeculativeStoreChecksPhase;
 import jdk.graal.compiler.loop.phases.ConvertDeoptimizeToGuardPhase;
+import jdk.graal.compiler.loop.phases.AggressivePartialUnrollPhase;
+import jdk.graal.compiler.loop.phases.CountedStripMiningPhase;
+import jdk.graal.compiler.loop.phases.InjectLoopCounterStampsPhase;
 import jdk.graal.compiler.loop.phases.LoopFullUnrollPhase;
-import jdk.graal.compiler.loop.phases.LoopPartialUnrollPhase;
+import jdk.graal.compiler.loop.phases.LoopInversionPhase;
 import jdk.graal.compiler.loop.phases.LoopPeelingPhase;
+import jdk.graal.compiler.loop.phases.LoopRotationPhase;
 import jdk.graal.compiler.loop.phases.LoopPredicationPhase;
+import jdk.graal.compiler.loop.phases.OptimizeLoopAccessesPhase;
+import jdk.graal.compiler.loop.phases.RangeCheckEliminationPhase;
 import jdk.graal.compiler.loop.phases.LoopSafepointEliminationPhase;
+import jdk.graal.compiler.loop.phases.NonCountedStripMiningPhase;
 import jdk.graal.compiler.loop.phases.LoopUnswitchingPhase;
 import jdk.graal.compiler.loop.phases.SpeculativeGuardMovementPhase;
+import jdk.graal.compiler.loop.phases.SimpleLoopPartialUnrollPhase;
 import jdk.graal.compiler.nodes.memory.MemoryMap;
 import jdk.graal.compiler.nodes.spi.Canonicalizable;
 import jdk.graal.compiler.nodes.spi.CanonicalizerTool;
@@ -44,21 +55,26 @@ import jdk.graal.compiler.nodes.spi.Simplifiable;
 import jdk.graal.compiler.nodes.spi.SimplifierTool;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.phases.BasePhase;
+import jdk.graal.compiler.phases.common.BreakChainedPhisPhase;
 import jdk.graal.compiler.phases.common.BoxNodeOptimizationPhase;
 import jdk.graal.compiler.phases.common.CanonicalizerPhase;
 import jdk.graal.compiler.phases.common.ConditionalEliminationPhase;
 import jdk.graal.compiler.phases.common.DeadCodeEliminationPhase;
 import jdk.graal.compiler.phases.common.DeoptimizationGroupingPhase;
+import jdk.graal.compiler.phases.common.EarlyExpandCheckCastPhase;
 import jdk.graal.compiler.phases.common.FloatingReadPhase;
 import jdk.graal.compiler.phases.common.LateLockEliminationPhase;
 import jdk.graal.compiler.phases.common.LockEliminationPhase;
 import jdk.graal.compiler.phases.common.OptimizeDivPhase;
+import jdk.graal.compiler.phases.common.OptimizeExactArithmeticPhase;
 import jdk.graal.compiler.phases.common.ReassociationPhase;
 import jdk.graal.compiler.phases.common.UseTrappingNullChecksPhase;
+import jdk.graal.compiler.phases.common.writesinking.WriteSinkingPhase;
 import jdk.graal.compiler.phases.common.inlining.InliningPhase;
 import jdk.graal.compiler.phases.common.priorityinline.PriorityInliningPhase;
 import jdk.graal.compiler.phases.constantblinding.ConstantBlindingPhase;
 import jdk.graal.compiler.phases.constantblinding.ConstantBlindingPhase.Options;
+import jdk.graal.compiler.phases.schedule.PartialRedundancySchedulePhase;
 import jdk.graal.compiler.phases.schedule.SchedulePhase;
 import jdk.graal.compiler.vector.nodes.SimplifiableVectorNode;
 import jdk.graal.compiler.vector.nodes.SimplifiableVectorNode.VectorSimplifier;
@@ -110,6 +126,13 @@ public enum CEOptimization {
     /// [InliningPhase] is a less aggressive inlining algorithm used when priority
     /// inlining is disabled. Inlining as a whole can be disabled with [HighTier.Options#Inline].
     Inlining(HighTier.Options.Inline, InliningPhase.class),
+
+    /// [DeDuplicationPhase] can reduce code size by moving equal statements and expressions from
+    /// incoming branches to their shared merge.
+    ///
+    /// This phase is enabled by default and can be disabled with
+    /// [DeDuplicationPhase.Options#OptDeDuplication].
+    DeDuplicationOptimization(DeDuplicationPhase.Options.OptDeDuplication, DeDuplicationPhase.class),
 
     /// [PullThroughPhiPhase] heuristically duplicates floating operations at control flow merges.
     /// The duplicated operations can then be specialized based on the types and values of the
@@ -163,6 +186,59 @@ public enum CEOptimization {
      */
     ConditionalElimination(GraalOptions.ConditionalElimination, ConditionalEliminationPhase.class),
 
+    /// [GuardRangeGroupingPhase] replaces multiple integer based guards with a single
+    /// [jdk.graal.compiler.nodes.extended.MultiGuardNode] covering the low and high bounds implied
+    /// by the guards' conjunction. For example:
+    ///
+    /// ```
+    /// if (x < 10 || x < 50 || x > 100 || x > 1000) {
+    /// deopt();
+    /// }
+    /// ```
+    ///
+    /// is transformed to:
+    ///
+    /// ```
+    /// if (x < 50 || x > 100) {
+    /// deopt();
+    /// }
+    /// ```
+    ///
+    /// This phase is enabled by default and can be disabled with
+    /// [MidTier.Options#OptGuardRangeGrouping].
+    GuardRangeGrouping(MidTier.Options.OptGuardRangeGrouping, GuardRangeGroupingPhase.class),
+
+    /**
+     * {@link EarlyExpandCheckCastPhase} is an optimization that expands {@code checkcast} bytecodes
+     * early in the compilation pipeline: it makes both the null check and typecheck portion of a
+     * check cast amenable for other optimizations by exposing it as control flow.
+     *
+     * This optimization is enabled per default and can be disabled with
+     * {@link GraalOptions#EarlyExpandCheckCast}.
+     *
+     */
+    EarlyExpandCheckCast(GraalOptions.EarlyExpandCheckCast, EarlyExpandCheckCastPhase.class),
+
+    /**
+     * {@link SpeculativeStoreChecksPhase} tries to remove array store checks by speculating that
+     * the <b>declared</b> type of the array is actually its <b>exact</b> type. This can improve
+     * program performance since less type checks are necessary.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link GraalOptions#SpeculativeStoreCheck}.
+     */
+    SpeculativeStoreChecks(GraalOptions.SpeculativeStoreCheck, SpeculativeStoreChecksPhase.class),
+
+    /**
+     * {@link PartialRedundancySchedulePhase} is Graal's implementation of partial redundancy
+     * elimination. An optimization that tries to improve program performance by removing
+     * (partially) redundant operations along branches.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.phases.schedule.PartialRedundancySchedulePhase.Options#PartialRedundancyScheduling}.
+     */
+    PartialRedundancyElimination(PartialRedundancySchedulePhase.Options.PartialRedundancyScheduling, PartialRedundancySchedulePhase.class),
+
     /**
      * {@link SchedulePhase} is Graal's implementation of an instruction scheduling algorithm for
      * the compiler IR. <a href="http://ssw.jku.at/General/Staff/GD/APPLC-2013-paper_12.pdf">Graal
@@ -177,6 +253,15 @@ public enum CEOptimization {
     InstructionScheduling(null, SchedulePhase.class),
 
     /**
+     * {@link BreakChainedPhisPhase} is an optimization that optimizes chains of loop phis by using
+     * rematerialization on the HIR level.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link LowTier.Options#BreakChainedPhis}.
+     */
+    BreakChainedPhisPhase(LowTier.Options.BreakChainedPhis, BreakChainedPhisPhase.class),
+
+    /**
      * {@link FloatingReadPhase} rewrites fixed memory read nodes to floating read nodes that can
      * move more freely (see {@link #InstructionScheduling}). It builds a {@linkplain MemoryMap
      * memory graph} which allows better optimization of memory related instructions.
@@ -185,6 +270,15 @@ public enum CEOptimization {
      * {@link GraalOptions#OptFloatingReads}.
      */
     FloatingReads(GraalOptions.OptFloatingReads, FloatingReadPhase.class),
+
+    /**
+     * {@link WriteSinkingPhase} moves eligible writes out of loops when no intervening read needs
+     * the value written in the loop body.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link LowTier.Options#OptWriteSinking}.
+     */
+    WriteSinking(LowTier.Options.OptWriteSinking, WriteSinkingPhase.class),
 
     /**
      * {@link ReadEliminationPhase} removes redundant memory access operations using a control-flow
@@ -236,6 +330,12 @@ public enum CEOptimization {
     DivisionOptimization(GraalOptions.OptimizeDiv, OptimizeDivPhase.class),
 
     /**
+     * {@link OptimizeExactArithmeticPhase} rewrites exact integer additions to normal additions
+     * when loop overflow can be handled by the loop limit deoptimization.
+     */
+    ExactMathOptimization(MidTier.Options.OptExactArithmetic, OptimizeExactArithmeticPhase.class),
+
+    /**
      * {@link LoopSafepointEliminationPhase} tries to reduce the number of safepoint checks in the
      * generated machine code. Safepoints in Java are program locations where mutator threads
      * (application threads) are at a well defined point with respect to the Java heap. This means
@@ -249,6 +349,73 @@ public enum CEOptimization {
      * This phase is unconditionally enabled.
      */
     SafepointElimination(null, LoopSafepointEliminationPhase.class),
+
+    /**
+     * {@link InjectLoopCounterStampsPhase} tries to inject more precise value and type information
+     * into the counter of a loop to better reason about its iteration boundaries. This can improve
+     * performance as later optimization can better reason about the semantic of a loop.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.loop.phases.InjectLoopCounterStampsPhase.Options#OptLoopPhiStamps}
+     */
+    LoopPhiOptimization(InjectLoopCounterStampsPhase.Options.OptLoopPhiStamps, InjectLoopCounterStampsPhase.class),
+
+    /**
+     * {@link CountedStripMiningPhase} is an optimization that tiles the iteration space of counted
+     * loops to enable the removal of safepoints inside counted loops. Additionally, strip-mining
+     * long counted loops enables range check elimination of 64bit integer range checks. See
+     * {@link SpeculativeGuardMovementPhase} for details.
+     *
+     * Strip mining is the default policy to reduce safepoints in counted loops. Graal does not
+     * remove safepoints from loops since that can increase the time-to-safepoint and cause a
+     * throughput problem for applications by stalling a GC. Instead Graal uses strip mining to tile
+     * the iteration space and perform a safepoint poll after every such tile.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link MidTier.Options#StripMineCountedLoops}.
+     */
+    CountedStripMining(MidTier.Options.StripMineCountedLoops, CountedStripMiningPhase.class),
+
+    /**
+     * {@link RangeCheckEliminationPhase} is an optimization that tries to rewrite 64bit integer
+     * range checks (in general guards) to semantically equivalent 32bit range guards in order to
+     * make them amenable to other optimizations like {@link SpeculativeGuardMovementPhase}. This
+     * optimization is enabled when {@link CountedStripMiningPhase} is enabled. It can be disabled
+     * selectively with
+     * {@link jdk.graal.compiler.loop.phases.RangeCheckEliminationPhase.Options#RangeCheckElimination}.
+     */
+    RangeCheckElimination(RangeCheckEliminationPhase.Options.RangeCheckElimination, RangeCheckEliminationPhase.class),
+
+    /**
+     * {@link NonCountedStripMiningPhase} is an optimization that tiles the iteration space of
+     * non-counted loops by adding artificial loop counters to enable the removal of safepoints
+     * inside non-counted loops.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link MidTier.Options#StripMineNonCountedLoops}.
+     */
+    NonCountedStripMining(MidTier.Options.StripMineNonCountedLoops, NonCountedStripMiningPhase.class),
+
+    /**
+     * {@link LoopInversionPhase} tries to transform a {@code while} loop to an {@code if} block
+     * containing a {@code do..while} loop. This can improve performance due to instruction
+     * pipelining. It also provides a location for hoisting loop-invariant code outside a loop where
+     * said code must only be executed if the loop is executed at least once.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.loop.phases.LoopInversionPhase.Options#LoopInversion}.
+     */
+    LoopInversion(LoopInversionPhase.Options.LoopInversion, LoopInversionPhase.class),
+
+    /**
+     * {@link LoopRotationPhase} tries to transform non-counted loops into counted ones by applying
+     * code duplication on parts of the loop body. This can enable more counted loops which makes
+     * them amendable for unrolling, vectorization and safepoint removal.
+     *
+     * This phase is enabled by default and can be disabled with
+     * {@link jdk.graal.compiler.loop.phases.LoopRotationPhase.Options#LoopRotation}.
+     */
+    LoopRotation(LoopRotationPhase.Options.LoopRotation, LoopRotationPhase.LoopRotationPhaseWitness.class),
 
     /**
      * {@link ReassociationPhase} implements expression reassociation. It re-orders operations and
@@ -317,6 +484,13 @@ public enum CEOptimization {
      */
     LoopPredication(GraalOptions.LoopPredication, LoopPredicationPhase.class),
 
+    /// [OptimizeLoopAccessesPhase] replaces eligible reads from loop memory phis with value phis,
+    /// allowing the read to move out of the loop.
+    ///
+    /// This phase is enabled by default and can be disabled with
+    /// [MidTier.Options#OptimizeLoopAccesses].
+    LoopAccess(MidTier.Options.OptimizeLoopAccesses, OptimizeLoopAccessesPhase.class),
+
     /**
      * {@link LoopPeelingPhase} is an optimization that moves first or last loop iterations outside
      * the loop. This process of moving loop iterations is called "peeling". This can improve
@@ -342,14 +516,19 @@ public enum CEOptimization {
      */
     LoopUnswitching(GraalOptions.LoopUnswitch, LoopUnswitchingPhase.class),
 
-    /**
-     * {@link LoopPartialUnrollPhase} is a compiler optimization unrolling the body of a loop
-     * multiple times to improve instruction-level parallelism, reduce the loop control overhead and
-     * enable other optimizations.
-     *
-     * This phase is enabled by default and can be disabled with {@link GraalOptions#PartialUnroll}.
-     */
-    PartialLoopUnrolling(GraalOptions.PartialUnroll, LoopPartialUnrollPhase.class),
+    /// [AggressivePartialUnrollPhase] is a compiler optimization unrolling the body of a loop
+    /// multiple times to improve instruction-level parallelism, reduce the loop control overhead
+    /// and enable other optimizations. It handles a broad range of loop shapes and uses simulation
+    /// to estimate the benefit of each unrolling step.
+    ///
+    /// This phase is enabled by default and can be disabled with
+    /// [AggressivePartialUnrollPhase.Options#AggressivePartialUnroll]. The master
+    /// [GraalOptions#PartialUnroll] switch also disables this optimization.
+    PartialLoopUnrolling(AggressivePartialUnrollPhase.Options.AggressivePartialUnroll, AggressivePartialUnrollPhase.class),
+
+    /// [SimpleLoopPartialUnrollPhase] provides a restricted partial loop unrolling algorithm.
+    /// It is controlled by the master [GraalOptions#PartialUnroll] switch.
+    SimplePartialLoopUnrolling(GraalOptions.PartialUnroll, SimpleLoopPartialUnrollPhase.class),
 
     /**
      * {@link BoxNodeOptimizationPhase} is a compiler optimization for Java box operations. The

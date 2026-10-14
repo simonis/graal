@@ -65,6 +65,8 @@ import jdk.graal.compiler.nodes.virtual.VirtualArrayNode;
 import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
 import jdk.graal.compiler.replacements.nodes.MacroNode.MacroParams;
 import jdk.graal.compiler.replacements.nodes.MacroWithExceptionNode;
+import jdk.graal.compiler.vector.architecture.VectorArchitecture;
+import jdk.graal.compiler.vector.architecture.VectorLoweringProvider;
 import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaKind;
@@ -350,6 +352,7 @@ public abstract class CopyOfNode extends MacroWithExceptionNode implements Simpl
             replaceWithUncheckedCopyOfNode(tool);
             return;
         }
+        // TODO: we can probably revert this code (bd90b509) in favor of the new code below (c08e09ca5d7)
         if (!tool.getPlatformConfigurationProvider().getBarrierSet().supportsVectorizedObjectAccess()) {
             /*
              * Lowering this node leads to a vectorized copy, whose SIMD accesses cannot carry the
@@ -358,6 +361,11 @@ public abstract class CopyOfNode extends MacroWithExceptionNode implements Simpl
              * has to resolve each reference individually). Revert to the original invoke so that the
              * copy is performed by ordinary, barriered code.
              */
+            super.lower(tool);
+            return;
+        }
+        VectorArchitecture vectorArch = ((VectorLoweringProvider) tool.getLowerer()).getVectorArchitecture();
+        if (vectorArch == null || !vectorArch.supportsObjectVectorization()) {
             super.lower(tool);
             return;
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,15 +27,20 @@ package com.oracle.svm.guest.staging;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.Immutable;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.IsolateCreationOnly;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RegisterForIsolateArgumentParser;
+import static com.oracle.svm.guest.staging.option.RuntimeOptionValidators.NON_NEGATIVE;
 import static com.oracle.svm.shared.option.HostedOptionKey.HostedOptionKeyFlag.DoNotPassToNativeGC;
 
+import java.util.function.Consumer;
+
 import org.graalvm.collections.EconomicMap;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.guest.staging.option.NotifyGCRuntimeOptionKey;
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidation;
 import com.oracle.svm.guest.staging.util.UserError;
+import com.oracle.svm.shared.meta.GuestFold;
 import com.oracle.svm.shared.option.HostedOptionKey;
-import com.oracle.svm.shared.option.SubstrateOptionsParser;
 import com.oracle.svm.shared.util.DuplicatedInNativeCode;
 import com.oracle.svm.shared.util.SubstrateUtil;
 
@@ -49,15 +54,22 @@ import java.util.function.Consumer;
 /**
  * Garbage collection-specific options that are supported by all garbage collectors. Some of these
  * options don't have any effect on the epsilon GC because it does not collect any garbage.
+ * <p>
+ * Runtime options in this class are also passed to native GCs such as G1. They must either be
+ * immutable or use {@link NotifyGCRuntimeOptionKey} so that runtime changes are forwarded to the
+ * native code of the GC.
  */
 @DuplicatedInNativeCode
 public class SubstrateGCOptions {
+    private static final Consumer<? super RuntimeOptionKey<Boolean>> VALIDATE_VERIFY_GC_OPTION = SubstrateGCOptions::validateVerifyGCOption;
+
     @Option(help = "The minimum heap size at run-time, in bytes.", type = OptionType.User)//
     public static final RuntimeOptionKey<Long> MinHeapSize = new NotifyGCRuntimeOptionKey<>(0L, RegisterForIsolateArgumentParser) {
         @Override
         protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Long oldValue, Long newValue) {
             if (!SubstrateUtil.HOSTED) {
-                GuestStagingDependencyBridge.singleton().minHeapSizeOptionValueChanged(newValue);
+                HeapSizeVerifier.verifyMinHeapSizeAgainstMaxAddressSpaceSize(Word.unsigned(newValue));
+                IsolateArgumentParser.singleton().setLongOptionValue(IsolateArgumentParser.getOptionIndex(MinHeapSize), newValue);
             }
 
             super.onValueUpdate(values, oldValue, newValue);
@@ -69,7 +81,8 @@ public class SubstrateGCOptions {
         @Override
         protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Long oldValue, Long newValue) {
             if (!SubstrateUtil.HOSTED) {
-                GuestStagingDependencyBridge.singleton().maxHeapSizeOptionValueChanged(newValue);
+                HeapSizeVerifier.verifyMaxHeapSizeAgainstMaxAddressSpaceSize(Word.unsigned(newValue));
+                IsolateArgumentParser.singleton().setLongOptionValue(IsolateArgumentParser.getOptionIndex(MaxHeapSize), newValue);
             }
 
             super.onValueUpdate(values, oldValue, newValue);
@@ -81,7 +94,8 @@ public class SubstrateGCOptions {
         @Override
         protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Long oldValue, Long newValue) {
             if (!SubstrateUtil.HOSTED) {
-                GuestStagingDependencyBridge.singleton().maxNewSizeOptionValueChanged(newValue);
+                HeapSizeVerifier.verifyMaxNewSizeAgainstMaxAddressSpaceSize(Word.unsigned(newValue));
+                IsolateArgumentParser.singleton().setLongOptionValue(IsolateArgumentParser.getOptionIndex(MaxNewSize), newValue);
             }
 
             super.onValueUpdate(values, oldValue, newValue);
@@ -95,7 +109,7 @@ public class SubstrateGCOptions {
     public static final RuntimeOptionKey<Boolean> ExitOnOutOfMemoryError = new RuntimeOptionKey<>(false, Immutable);
 
     @Option(help = "Report a fatal error on the first occurrence of an out-of-memory error that is thrown because the Java heap is out of memory.", type = OptionType.Expert)//
-    public static final RuntimeOptionKey<Boolean> ReportFatalErrorOnOutOfMemoryError = new RuntimeOptionKey<>(false);
+    public static final RuntimeOptionKey<Boolean> ReportFatalErrorOnOutOfMemoryError = new RuntimeOptionKey<>(false, Immutable);
 
     @Option(help = "Ignore calls to System.gc().", type = OptionType.Expert)//
     public static final RuntimeOptionKey<Boolean> DisableExplicitGC = new NotifyGCRuntimeOptionKey<>(false, Immutable);
@@ -118,6 +132,12 @@ public class SubstrateGCOptions {
     @Option(help = "Verify the heap before and after each collection.", type = OptionType.Debug)//
     public static final HostedOptionKey<Boolean> VerifyHeap = new HostedOptionKey<>(false);
 
+    @Option(help = "Print information about the metaspace on shutdown.", type = OptionType.Expert)//
+    public static final HostedOptionKey<Boolean> PrintMetaspace = new HostedOptionKey<>(false, DoNotPassToNativeGC);
+
+    @Option(help = "Terminates the VM instead of throwing OutOfMemoryError when metaspace allocation fails.", type = OptionType.Expert)//
+    public static final HostedOptionKey<Boolean> MetaspaceExhaustionIsFatal = new HostedOptionKey<>(false, DoNotPassToNativeGC);
+
     @Option(help = "Determines if references from runtime-installed code to Java heap objects should be treated as strong or weak.", type = OptionType.Debug)//
     public static final HostedOptionKey<Boolean> TreatRuntimeCodeInfoReferencesAsWeak = new HostedOptionKey<>(true);
 
@@ -135,7 +155,7 @@ public class SubstrateGCOptions {
 
     @Option(help = "This number of milliseconds multiplied by the free heap memory in MByte is the time span " +
                     "for which a soft reference will keep its referent alive after its last access.", type = OptionType.Expert) //
-    public static final RuntimeOptionKey<Integer> SoftRefLRUPolicyMSPerMB = new NotifyGCRuntimeOptionKey<>(1000);
+    public static final RuntimeOptionKey<Integer> SoftRefLRUPolicyMSPerMB = new NotifyGCRuntimeOptionKey<>(1000, NON_NEGATIVE, null);
 
     private static void verifyTLABUsagePolicy(@SuppressWarnings("unused") HostedOptionKey<?> key) {
         if (!UseTLAB.getValue() && TLABUsagePolicy.getValue() == TLABPolicy.Always) {
@@ -150,8 +170,51 @@ public class SubstrateGCOptions {
         }
     }
 
+    public static void validateMaxMetaspaceSize(long alignment, int metaspaceOffset) {
+        int value = ConcealedOptions.MaxMetaspaceSize.getValue();
+        if (GuestStagingDependencyBridge.singleton().isRuntimeClassLoadingSupported()) {
+            if (value < 0) {
+                throw UserError.invalidOptionValue(ConcealedOptions.MaxMetaspaceSize, value, "The value must be greater than or equal to 0");
+            }
+
+            long availableSize = Integer.MAX_VALUE - metaspaceOffset;
+            long maximumMetaspaceSize = availableSize - availableSize % alignment;
+            if (ConcealedOptions.getMaxMetaspaceSize() > maximumMetaspaceSize) {
+                throw UserError.invalidOptionValue(ConcealedOptions.MaxMetaspaceSize, value, "The value must not exceed " + maximumMetaspaceSize + " bytes");
+            }
+        } else {
+            if (value != 0) {
+                throw UserError.invalidOptionValue(ConcealedOptions.MaxMetaspaceSize, value, "This option can only be used if runtime class loading is enabled");
+            }
+        }
+    }
+
+    private static void validateVerifyGCOption(RuntimeOptionKey<Boolean> optionKey) {
+        Boolean value = optionKey.getValue();
+        if (value != null && value) {
+            GuestStagingDependencyBridge dependencyBridge = GuestStagingDependencyBridge.singleton();
+            if (dependencyBridge.useEpsilonGC()) {
+                throw RuntimeOptionValidation.invalidOptionValue(optionKey, true, "This option cannot be enabled if epsilon GC is used");
+            } else if (dependencyBridge.useSerialGC() && !VerifyHeap.getValue()) {
+                throw RuntimeOptionValidation.invalidOptionValue(optionKey, true, "This option can only be used together with -H:+VerifyHeap");
+            }
+        }
+    }
+
     @DuplicatedInNativeCode
     public static class ConcealedOptions {
+        /** Use the GC-specific accessors instead. */
+        @Option(help = "Determines the maximum size in bytes of the metaspace. 0 means set ergonomically.")//
+        public static final HostedOptionKey<Integer> MaxMetaspaceSize = new HostedOptionKey<>(0, DoNotPassToNativeGC);
+
+        /** Use the GC-specific accessors instead as this not include GC-specific alignment. */
+        @GuestFold
+        public static int getMaxMetaspaceSize() {
+            int value = ConcealedOptions.MaxMetaspaceSize.getValue();
+            UserError.guarantee(value >= 0, "The value of '%s' must be greater than or equal to 0.", SubstrateGCOptions.ConcealedOptions.MaxMetaspaceSize.getName());
+            return value == 0 ? 32 * 1024 * 1024 : value;
+        }
+
         /** Use GC-specific accessors instead. */
         @Option(help = "Minimum allowed TLAB size (in bytes).", type = OptionType.Expert)//
         public static final RuntimeOptionKey<Long> MinTLABSize = new RuntimeOptionKey<>(0L, RegisterForIsolateArgumentParser);
@@ -161,25 +224,13 @@ public class SubstrateGCOptions {
         public static final RuntimeOptionKey<Long> TLABSize = new RuntimeOptionKey<>(0L, RegisterForIsolateArgumentParser);
 
         @Option(help = "Verify the heap before doing a garbage collection.", type = OptionType.Debug)//
-        public static final RuntimeOptionKey<Boolean> VerifyBeforeGC = new NotifyGCRuntimeOptionKey<>(null, ConcealedOptions::validateVerifyGCOption);
+        public static final RuntimeOptionKey<Boolean> VerifyBeforeGC = new NotifyGCRuntimeOptionKey<>(null, null, VALIDATE_VERIFY_GC_OPTION);
 
         @Option(help = "Verify the heap during a garbage collection.", type = OptionType.Debug)//
-        public static final RuntimeOptionKey<Boolean> VerifyDuringGC = new NotifyGCRuntimeOptionKey<>(null, ConcealedOptions::validateVerifyGCOption);
+        public static final RuntimeOptionKey<Boolean> VerifyDuringGC = new NotifyGCRuntimeOptionKey<>(null, null, VALIDATE_VERIFY_GC_OPTION);
 
         @Option(help = "Verify the heap after doing a garbage collection.", type = OptionType.Debug)//
-        public static final RuntimeOptionKey<Boolean> VerifyAfterGC = new NotifyGCRuntimeOptionKey<>(null, ConcealedOptions::validateVerifyGCOption);
-
-        public static void validateVerifyGCOption(RuntimeOptionKey<Boolean> key) {
-            Boolean value = key.getValue();
-            if (value != null && value) {
-                GuestStagingDependencyBridge dependencyBridge = GuestStagingDependencyBridge.singleton();
-                if (dependencyBridge.useEpsilonGC()) {
-                    throw UserError.invalidOptionValue(key, true, "This option cannot be enabled if epsilon GC is used");
-                } else if (dependencyBridge.useSerialGC() && !VerifyHeap.getValue()) {
-                    throw UserError.invalidOptionValue(key, true, "This option can only be used together with " + SubstrateOptionsParser.commandArgument(VerifyHeap, "+"));
-                }
-            }
-        }
+        public static final RuntimeOptionKey<Boolean> VerifyAfterGC = new NotifyGCRuntimeOptionKey<>(null, null, VALIDATE_VERIFY_GC_OPTION);
     }
 
     public enum TLABPolicy {

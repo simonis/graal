@@ -29,6 +29,8 @@ import static com.oracle.svm.core.SubstrateOptions.OptimizationLevel.O3;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.Immutable;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RegisterForIsolateArgumentParser;
 import static com.oracle.svm.guest.staging.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
+import static com.oracle.svm.guest.staging.option.RuntimeOptionValidators.NON_NEGATIVE;
+import static com.oracle.svm.guest.staging.option.RuntimeOptionValidators.NOT_ENABLED_ON_WINDOWS;
 import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static jdk.graal.compiler.core.common.SpectrePHTMitigations.None;
 import static jdk.graal.compiler.core.common.SpectrePHTMitigations.Options.SpectrePHTBarriers;
@@ -61,6 +63,7 @@ import com.oracle.svm.core.jdk.VectorAPIEnabled;
 import com.oracle.svm.core.option.GCOptionValue;
 import com.oracle.svm.core.thread.VMOperationControl;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.guest.staging.IsolateArgumentParser;
 import com.oracle.svm.guest.staging.SubstrateGuestOptions;
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
 import com.oracle.svm.shared.Uninterruptible;
@@ -88,14 +91,19 @@ import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.asm.amd64.AMD64Assembler;
 import jdk.graal.compiler.core.common.GraalOptions;
 import jdk.graal.compiler.core.common.NumUtil;
+import jdk.graal.compiler.core.phases.LowTier;
 import jdk.graal.compiler.core.phases.MidTier;
 import jdk.graal.compiler.duplication.phases.PullThroughPhiPhase;
+import jdk.graal.compiler.loop.phases.CountedStripMiningReassociationPhase;
+import jdk.graal.compiler.loop.phases.LoopInversionPhase;
+import jdk.graal.compiler.loop.phases.LoopRotationPhase;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionStability;
 import jdk.graal.compiler.options.OptionType;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.phases.common.DeadCodeEliminationPhase;
+import jdk.graal.compiler.phases.schedule.PartialRedundancySchedulePhase;
 import jdk.graal.compiler.vector.phases.ConditionalMoveOptimizationPhase;
 import jdk.graal.compiler.vector.phases.LoopVectorizationPhase;
 import jdk.graal.compiler.vector.replacements.VectorIntrinsics;
@@ -199,6 +207,9 @@ public class SubstrateOptions {
 
     @Option(help = "Builds image with libstdc++ statically linked into the image (if needed)", type = Expert, stability = OptionStability.EXPERIMENTAL)//
     public static final HostedOptionKey<Boolean> StaticLibStdCpp = new HostedOptionKey<>(false);
+
+    @Option(help = "Enable JVMCI in the guest", type = Expert, stability = OptionStability.EXPERIMENTAL)//
+    public static final HostedOptionKey<Boolean> EnableJVMCIGuest = new HostedOptionKey<>(false);
 
     public static final String IMAGE_CLASSPATH_PREFIX = "-imagecp";
     public static final String IMAGE_MODULEPATH_PREFIX = "-imagemp";
@@ -356,6 +367,17 @@ public class SubstrateOptions {
         disable(GraalOptions.OptDuplication, values);
         disable(PullThroughPhiPhase.Options.OptPullThroughPhi, values);
 
+        /* Partial redundancy scheduling duplicates operations and can increase code size. */
+        disable(PartialRedundancySchedulePhase.Options.PartialRedundancyScheduling, values);
+
+        /*
+         * Expanding checkcasts for performance increases code size.
+         */
+        disable(GraalOptions.EarlyExpandCheckCast, values);
+
+        /* Breaking chained phis can increase code size by adding copies. */
+        disable(LowTier.Options.BreakChainedPhis, values);
+
         if (disableLoopOptimizations) {
             /*
              * Remove all loop optimizations that can increase code size, i.e., duplicate a loop
@@ -367,7 +389,18 @@ public class SubstrateOptions {
             disable(GraalOptions.PartialUnroll, values);
             disable(LoopVectorizationPhase.Options.VectorizeLoops, values);
             disable(MidTier.Options.OptimisticAliasingAnalysis, values);
+            disable(MidTier.Options.StripMineCountedLoops, values);
+            disable(MidTier.Options.StripMineNonCountedLoops, values);
+            disable(MidTier.Options.StripMiningPreparationPhases, values);
+            disable(LoopInversionPhase.Options.LoopInversion, values);
+            disable(LoopRotationPhase.Options.LoopRotation, values);
+            disable(CountedStripMiningReassociationPhase.Options.StripMiningReassociation, values);
         }
+
+        /*
+         * Exact math operations can fan out
+         */
+        disable(MidTier.Options.OptExactArithmetic, values);
 
         if (disableVectorization) {
             disable(VectorIntrinsics.Options.Vectorization, values);
@@ -624,7 +657,8 @@ public class SubstrateOptions {
             protected void onValueUpdate(EconomicMap<OptionKey<?>, Object> values, Boolean oldValue, Boolean newValue) {
                 if (newValue) {
                     SubstrateOptions.SupportedGCs.update(values, ReplacingLocatableMultiOptionValue.DelimitedString.buildWithCommaDelimiter(GCOptionValue.Epsilon.getValue()));
-                } else if (((AccumulatingLocatableMultiOptionValue.Strings) values.get(SubstrateOptions.SupportedGCs)).contains(GCOptionValue.Epsilon.getValue())) {
+                } else if (values.containsKey(SubstrateOptions.SupportedGCs) &&
+                                ((ReplacingLocatableMultiOptionValue.DelimitedString) values.get(SubstrateOptions.SupportedGCs)).contains(GCOptionValue.Epsilon.getValue())) {
                     SubstrateOptions.SupportedGCs.update(values, ReplacingLocatableMultiOptionValue.DelimitedString.buildWithCommaDelimiter());
                 }
             }
@@ -961,8 +995,7 @@ public class SubstrateOptions {
     public static final HostedOptionKey<Boolean> ZapNativeMemory = new HostedOptionKey<>(false, SubstrateOptions::validateZapNativeMemory);
 
     private static void validateZapNativeMemory(HostedOptionKey<Boolean> optionKey) {
-        boolean value = optionKey.getValue();
-        if (value && !VMInspectionOptions.hasNativeMemoryTrackingSupport()) {
+        if (optionKey.getValue() && !VMInspectionOptions.hasNativeMemoryTrackingSupport()) {
             throw UserError.abort("The option '" + optionKey.getName() + "' can only be enabled if NMT is enabled as well ('--enable-monitoring=nmt').");
         }
     }
@@ -1391,11 +1424,7 @@ public class SubstrateOptions {
 
         /** Use {@link SubstrateOptions#hasDumpRuntimeCompiledMethodsSupport()} instead. */
         @Option(help = "Dump the instructions of runtime compiled methods in temporary files.") //
-        public static final RuntimeOptionKey<Boolean> DumpRuntimeCompiledMethods = new RuntimeOptionKey<>(false, key -> {
-            if (key.hasBeenSet() && Platform.includedIn(InternalPlatform.WINDOWS_BASE.class)) {
-                throw UserError.invalidOptionValue(key, key.getValue(), "Dumping runtime compiled code is not supported on Windows.");
-            }
-        });
+        public static final RuntimeOptionKey<Boolean> DumpRuntimeCompiledMethods = new RuntimeOptionKey<>(false, null, NOT_ENABLED_ON_WINDOWS);
 
         @Option(help = "Avoid linker relocations for code and instead emit address computations.", type = OptionType.Expert) //
         @LayerVerifiedOption(severity = Severity.Error, kind = Kind.Changed, positional = false) //
@@ -1446,6 +1475,7 @@ public class SubstrateOptions {
                 super.onValueUpdate(values, oldValue, newValue);
                 if (newValue) {
                     SubstrateOptions.SupportCompileInIsolates.update(values, false);
+                    SubstrateOptions.EnableJVMCIGuest.update(values, true);
                 }
             }
         };
@@ -1779,6 +1809,9 @@ public class SubstrateOptions {
 
     public static class TruffleStableOptions {
 
+        @Option(help = "Enable the auxiliary engine cache features at runtime.", stability = OptionStability.STABLE) //
+        public static final HostedOptionKey<Boolean> AuxiliaryEngineCache = new HostedOptionKey<>(false);
+
         @Option(help = "Automatically copy the necessary language resources to the resources directory next to the produced image.", type = User, stability = OptionStability.STABLE)//
         public static final HostedOptionKey<Boolean> CopyLanguageResources = new HostedOptionKey<>(false);
 
@@ -1907,15 +1940,19 @@ public class SubstrateOptions {
 
     @Option(help = "Maximum random offset in bytes applied to entry points of runtime-installed methods, to make them less predictable. " +
                     "The effective padding is rounded up to architecture-specific alignment.", type = Expert) //
-    public static final RuntimeOptionKey<Integer> MaxRuntimeCodeOffset = new RuntimeOptionKey<>(0, optionKey -> {
-        if (optionKey.getValue() < 0) {
-            throw UserError.invalidOptionValue(optionKey, optionKey.getValue(), "The value must be non-negative");
-        }
-    }, RelevantForCompilationIsolates);
+    public static final RuntimeOptionKey<Integer> MaxRuntimeCodeOffset = new RuntimeOptionKey<>(0, NON_NEGATIVE, null, RelevantForCompilationIsolates);
 
     @Option(help = "Emit fast path in monitor snippets", type = Expert) //
     public static final HostedOptionKey<Boolean> UseMonitorFastPath = new HostedOptionKey<>(true);
 
     @Option(help = "Map the runtime code cache at pseudo-random addresses. This fragments the virtual address space, which can make subsequent reservations of very large contiguous ranges harder to satisfy.", type = Expert) //
     public static final HostedOptionKey<Boolean> RandomizeRuntimeCodeCache = new HostedOptionKey<>(true);
+
+    @Option(help = "Size in bytes of an address space to reserve for auxiliary images.", stability = OptionStability.STABLE)//
+    public static final HostedOptionKey<Long> ReservedAuxiliaryImageBytes = new HostedOptionKey<>(0L, optionKey -> {
+        if (optionKey.getValue() < 0) {
+            throw UserError.invalidOptionValue(optionKey, optionKey.getValue(), "The value must be non-negative");
+        }
+    });
+
 }

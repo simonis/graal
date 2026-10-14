@@ -40,8 +40,12 @@ import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.guest.staging.ArgsSupport;
 import com.oracle.svm.guest.staging.GuestStagingDependencyBridge;
+import com.oracle.svm.guest.staging.IsolateArgumentParser;
 import com.oracle.svm.guest.staging.log.Log;
+import com.oracle.svm.guest.staging.util.AbstractImageHeapList;
+import com.oracle.svm.guest.staging.util.ImageHeapList;
 import com.oracle.svm.guest.staging.util.ImageHeapMap;
+import com.oracle.svm.shared.imagelayer.LayeredGuestFoldResolver;
 import com.oracle.svm.shared.meta.GuaranteeFolded;
 import com.oracle.svm.shared.meta.GuestFold;
 import com.oracle.svm.shared.option.CommonOptionParser.BooleanOptionFormat;
@@ -118,6 +122,9 @@ public final class RuntimeOptionParser {
     private static final String PATCH_MODULE_OPTION = "--patch-module";
     private static final String RESERVED_INTERNAL_MODULE_PROPERTY_WARNING = "Ignoring system property options whose names match '-Djdk.module.*', which is reserved for internal use.";
     private static final String VERIFY_NONE_WARNING = "Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.";
+    private static final String RISTRETTO_JIT_ENABLE_COMPILATION_OPTION = "JITEnableCompilation";
+    private static final String RISTRETTO_XBATCH_OPTION = "JITXBatch";
+    private static final String RISTRETTO_XCOMP_OPTION = "JITXComp";
 
     private static final Set<String> SYSTEM_ASSERTION_OPTIONS = Set.of(
                     "-esa",
@@ -147,7 +154,13 @@ public final class RuntimeOptionParser {
                     "-Xcomp",
                     "-Xbatch",
                     "-Xint",
+                    "-Xmixed",
                     "-Xverify:all");
+    private static final Set<String> RISTRETTO_COMPILATION_MODE_OPTIONS = Set.of(
+                    "-Xint",
+                    "-Xmixed",
+                    "-Xbatch",
+                    "-Xcomp");
     private static final Set<String> EXACT_RECOGNIZED_X_OPTIONS = Set.of(
                     "-Xnoclassgc",
                     "-Xbatch",
@@ -167,21 +180,35 @@ public final class RuntimeOptionParser {
                     "jni",
                     "module");
 
+    /// HotSpot-style runtime compilation modes that map to Ristretto runtime options.
+    private enum RistrettoCompilationMode {
+        INTERPRETED,
+        MIXED,
+        COMPILE_ONLY
+    }
+
     /** All reachable options. */
     private final EconomicMap<String, OptionDescriptor> options = ImageHeapMap.createNonLayeredMap();
+    /** Reachable options that require validation after parsing. */
+    @SuppressWarnings("unchecked") //
+    private final AbstractImageHeapList<RuntimeOptionKey<?>> optionsWithAfterParsingValidation = (AbstractImageHeapList<RuntimeOptionKey<?>>) ImageHeapList.createGeneric(RuntimeOptionKey.class);
 
     /**
      * Returns the singleton instance that is created during native image generation and stored in
      * the {@link ImageSingletons}.
      */
-    @GuestFold
+    @GuestFold(resolver = LayeredGuestFoldResolver.INITIAL_LAYER)
     public static RuntimeOptionParser singleton() {
         return ImageSingletons.lookup(RuntimeOptionParser.class);
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public void addDescriptor(OptionDescriptor optionDescriptor) {
-        options.putIfAbsent(optionDescriptor.getName(), optionDescriptor);
+        if (options.putIfAbsent(optionDescriptor.getName(), optionDescriptor) == null &&
+                        optionDescriptor.getOptionKey() instanceof RuntimeOptionKey<?> runtimeOptionKey &&
+                        runtimeOptionKey.hasAfterParsingValidation()) {
+            optionsWithAfterParsingValidation.add(runtimeOptionKey);
+        }
     }
 
     public Optional<OptionDescriptor> getDescriptor(String optionName) {
@@ -192,6 +219,13 @@ public final class RuntimeOptionParser {
         return options.getValues();
     }
 
+    /** Runs validations that require the complete run-time option configuration. */
+    public void validateOptionsAfterParsing() {
+        for (RuntimeOptionKey<?> runtimeOptionKey : optionsWithAfterParsingValidation) {
+            runtimeOptionKey.validateAfterParsing();
+        }
+    }
+
     /// Parse and consume all standard options and system properties supported by Substrate VM. The
     /// returned array contains all arguments that were not consumed, i.e., were not recognized as
     /// options.
@@ -199,7 +233,7 @@ public final class RuntimeOptionParser {
     /// Note that the logic of whether to parse options must be in sync with the isolate argument
     /// parser. [GuestStagingDependencyBridge#shouldParseRuntimeOptions] provides that policy here.
     public static String[] parseAndConsumeAllOptions(String[] initialArgs, boolean ignoreUnrecognized) {
-        if (!GuestStagingDependencyBridge.singleton().shouldParseRuntimeOptions()) {
+        if (!GuestStagingDependencyBridge.singleton().shouldParseRuntimeOptions(IsolateArgumentParser.isCompilationIsolate())) {
             return initialArgs;
         }
 
@@ -261,6 +295,8 @@ public final class RuntimeOptionParser {
                 parseOptionAtRuntime(arg, GRAAL_OPTION_PREFIX, BooleanOptionFormat.NAME_VALUE, values, ignoreUnrecognized);
             } else if (arg.startsWith(LEGACY_GRAAL_OPTION_PREFIX)) {
                 parseOptionAtRuntime(arg, LEGACY_GRAAL_OPTION_PREFIX, BooleanOptionFormat.NAME_VALUE, values, ignoreUnrecognized);
+            } else if (isRistrettoCompilationModeOption(arg)) {
+                parseRistrettoCompilationModeOption(values, arg);
             } else if (arg.startsWith(X_OPTION_PREFIX) && XOptions.parse(arg.substring(X_OPTION_PREFIX.length()), values)) {
                 // option value was already parsed and added to the map
             } else {
@@ -279,6 +315,36 @@ public final class RuntimeOptionParser {
         } else {
             return Arrays.copyOf(args, newIdx);
         }
+    }
+
+    /**
+     * Keeps mode constants behind the Ristretto guard so analysis of other images does not read
+     * their enum fields while parsing the caller.
+     */
+    private void parseRistrettoCompilationModeOption(EconomicMap<OptionKey<?>, Object> values, String arg) {
+        switch (arg) {
+            case "-Xint" -> setRistrettoCompilationModeOptions(values, RistrettoCompilationMode.INTERPRETED);
+            case "-Xmixed" -> setRistrettoCompilationModeOptions(values, RistrettoCompilationMode.MIXED);
+            case "-Xbatch" -> setBooleanRuntimeOption(values, RISTRETTO_XBATCH_OPTION, true);
+            case "-Xcomp" -> setRistrettoCompilationModeOptions(values, RistrettoCompilationMode.COMPILE_ONLY);
+            default -> throw new IllegalStateException("Unexpected Ristretto compilation mode option: " + arg);
+        }
+    }
+
+    /// Applies a HotSpot-style compilation mode after all earlier arguments have been consumed.
+    private void setRistrettoCompilationModeOptions(EconomicMap<OptionKey<?>, Object> values, RistrettoCompilationMode compilationMode) {
+        boolean enableCompilation = compilationMode != RistrettoCompilationMode.INTERPRETED;
+        boolean compileOnly = compilationMode == RistrettoCompilationMode.COMPILE_ONLY;
+        setBooleanRuntimeOption(values, RISTRETTO_JIT_ENABLE_COMPILATION_OPTION, enableCompilation);
+        setBooleanRuntimeOption(values, RISTRETTO_XCOMP_OPTION, compileOnly);
+    }
+
+    private void setBooleanRuntimeOption(EconomicMap<OptionKey<?>, Object> values, String optionName, boolean value) {
+        OptionDescriptor descriptor = getDescriptor(optionName).orElseThrow(() -> new IllegalStateException("Missing Ristretto runtime option descriptor: " + optionName));
+        if (descriptor.getOptionValueType() != Boolean.class) {
+            throw new IllegalStateException("Ristretto runtime option must be Boolean: " + optionName);
+        }
+        descriptor.getOptionKey().update(values, value);
     }
 
     /**
@@ -472,6 +538,9 @@ public final class RuntimeOptionParser {
         if (parseCompatibilityBooleanOption(arg) || parseCompatibilityValueOption(arg)) {
             return true;
         }
+        if (isRistrettoCompilationModeOption(arg)) {
+            return false;
+        }
         if (IGNORED_COMPATIBILITY_OPTIONS.contains(arg) ||
                         arg.startsWith(XLOG_OPTION_PREFIX) ||
                         arg.startsWith(JAVA_AGENT_OPTION_PREFIX) ||
@@ -481,6 +550,14 @@ public final class RuntimeOptionParser {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Retains X-mode aliases for Ristretto images even when HotSpot compatibility mode is enabled.
+     * Other images continue to consume these aliases through the compatibility path.
+     */
+    private static boolean isRistrettoCompilationModeOption(String arg) {
+        return GuestStagingDependencyBridge.singleton().useRistretto() && RISTRETTO_COMPILATION_MODE_OPTIONS.contains(arg);
     }
 
     /// Parses a HotSpot `-XX:+name` or `-XX:-name` compatibility option.

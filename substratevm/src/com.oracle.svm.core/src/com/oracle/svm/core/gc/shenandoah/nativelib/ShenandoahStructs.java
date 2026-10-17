@@ -73,6 +73,9 @@ public class ShenandoahStructs {
         @CField("log_of_heap_region_grain_bytes")
         int logOfHeapRegionGrainBytes();
 
+        @CField("barrier_and_allocation_data_size")
+        int barrierAndAllocationDataSize();
+
         @CField("java_thread_size")
         int javaThreadSize();
 
@@ -96,6 +99,9 @@ public class ShenandoahStructs {
 
         @CField("gc_state_offset")
         int gcStateOffset();
+
+        @CField("cset_map_offset")
+        int csetMapOffset();
     }
 
     @CStruct(addStructKeyword = true)

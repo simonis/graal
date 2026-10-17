@@ -352,18 +352,6 @@ public abstract class CopyOfNode extends MacroWithExceptionNode implements Simpl
             replaceWithUncheckedCopyOfNode(tool);
             return;
         }
-        // TODO: we can probably revert this code (bd90b509) in favor of the new code below (c08e09ca5d7)
-        if (!tool.getPlatformConfigurationProvider().getBarrierSet().supportsVectorizedObjectAccess()) {
-            /*
-             * Lowering this node leads to a vectorized copy, whose SIMD accesses cannot carry the
-             * per-reference GC barriers that some collectors need (a snapshot-at-the-beginning
-             * pre-write barrier has to see the previous value of each slot, a load-reference barrier
-             * has to resolve each reference individually). Revert to the original invoke so that the
-             * copy is performed by ordinary, barriered code.
-             */
-            super.lower(tool);
-            return;
-        }
         VectorArchitecture vectorArch = ((VectorLoweringProvider) tool.getLowerer()).getVectorArchitecture();
         if (vectorArch == null || !vectorArch.supportsObjectVectorization()) {
             super.lower(tool);

@@ -26,6 +26,7 @@ package com.oracle.svm.core.gc.shenandoah;
 
 import static com.oracle.svm.core.gc.shenandoah.ShenandoahOptions.ShenandoahRegionSize;
 import static com.oracle.svm.core.heap.RuntimeCodeCacheCleaner.CLASSES_ASSUMED_REACHABLE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.lang.ref.Reference;
 import java.util.ArrayList;
@@ -36,6 +37,7 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.RuntimeStateTrimConfig.Mode;
 import org.graalvm.nativeimage.c.function.CEntryPointLiteral;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.struct.SizeOf;
@@ -47,11 +49,11 @@ import com.oracle.svm.shared.BuildPhaseProvider.ReadyForCompilation;
 import com.oracle.svm.core.StaticFieldsSupport;
 import com.oracle.svm.core.SubstrateDiagnostics;
 import com.oracle.svm.core.SubstrateDiagnostics.DiagnosticThunk;
-import com.oracle.svm.core.SubstrateDiagnostics.DiagnosticThunkRegistry;
 import com.oracle.svm.core.SubstrateDiagnostics.ErrorContext;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.guest.staging.SubstrateGCOptions;
 import com.oracle.svm.guest.staging.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.annotate.Substitute;
@@ -92,6 +94,7 @@ import com.oracle.svm.guest.staging.log.Log;
 import com.oracle.svm.guest.staging.option.NotifyGCRuntimeOptionKey;
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
 import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
+import com.oracle.svm.core.metaspace.Metaspace;
 import com.oracle.svm.core.thread.PlatformThreads;
 import com.oracle.svm.core.thread.Safepoint;
 import com.oracle.svm.guest.staging.core.thread.ThreadStatus;
@@ -102,7 +105,6 @@ import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocal;
 import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalBytes;
 import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalFactory;
-import com.oracle.svm.guest.staging.core.threadlocal.FastThreadLocalWord;
 import com.oracle.svm.core.threadlocal.VMThreadLocalSupport;
 import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
 import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
@@ -111,6 +113,7 @@ import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
+import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.nodes.extended.MembarNode;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
 import org.graalvm.word.impl.Word;
@@ -118,22 +121,11 @@ import jdk.vm.ci.meta.JavaKind;
 
 @SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public final class ShenandoahHeap extends Heap {
+    /* Keep frequently accessed allocation and barrier fields within compact displacement range. */
+    public static final FastThreadLocalBytes<Word> barrierAndAllocationDataTL = FastThreadLocalFactory.createBytes(ShenandoahConstants::barrierAndAllocationDataSize,
+                                                                                                                   "ShenandoahHeap.barrierAndAllocationData")
+                    .setMaxOffset(FastThreadLocal.BYTE_OFFSET - ShenandoahConstants.cardTableOffsetRel());
     public static final FastThreadLocalBytes<Word> javaThreadTL = FastThreadLocalFactory.createBytes(ShenandoahConstants::javaThreadSize, "ShenandoahHeap.javaThread");
-    /**
-     * Base of the Shenandoah card table as reported by the library at startup. The compiled
-     * card-marking barrier does NOT read this; it reads the C++-owned per-thread pointer
-     * (ShenandoahThreadLocalData::_card_table, see {@link ShenandoahConstants#cardTableAddressOffset})
-     * which also tracks card-table swaps.
-     */
-    private static final FastThreadLocalWord<Word> cardTableAddressTL = FastThreadLocalFactory.createWord("ShenandoahHeap.cardTableAddress").setMaxOffset(FastThreadLocal.FIRST_CACHE_LINE);
-    /**
-     * Base of the Shenandoah collection-set fast-test map (biased by {@code heap_base >> region_shift}
-     * so it can be indexed directly by {@code object_address >> region_shift}). Per-isolate and stable
-     * for the isolate's lifetime; read by the compiled CAS heal barrier off the thread register to skip
-     * the heal stub for references that are not in the collection set. See
-     * {@link com.oracle.svm.core.graal.amd64.AMD64SubstrateShenandoahCASHealOp}.
-     */
-    public static final FastThreadLocalWord<Word> csetMapAddressTL = FastThreadLocalFactory.createWord("ShenandoahHeap.csetMapAddress");
 
     private final ShenandoahGC gc = new ShenandoahGC();
     private final ShenandoahImageHeapInfo imageHeapInfo = new ShenandoahImageHeapInfo();
@@ -147,18 +139,11 @@ public final class ShenandoahHeap extends Heap {
 
     private boolean isInitialized = false;
     private List<Class<?>> classList;
-    /* The card table address is relative to the heap base and not an absolute address */
-    private Word cardTableAddress;
-    /* Base of the (biased) collection-set fast-test map; stable for the isolate's lifetime. */
-    private Word csetMapAddress;
 
     @UnknownObjectField(availability = ReadyForCompilation.class) private byte[] accessedFieldOffsets;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public ShenandoahHeap() {
-        DiagnosticThunkRegistry.singleton().add(new DumpHeapSettingsAndGCInternalState());
-        DiagnosticThunkRegistry.singleton().add(new DumpRegionInformation());
-        DiagnosticThunkRegistry.singleton().add(new DumpCurrentGCThreadName());
     }
 
     @Fold
@@ -251,8 +236,6 @@ public final class ShenandoahHeap extends Heap {
 
         VMError.guarantee(initState.isNonNull(), "Fatal error while initializing Shenandoah");
         validateInitState(initState);
-        ShenandoahHeap.get().cardTableAddress = initState.cardTableAddress();
-        ShenandoahHeap.get().csetMapAddress = initState.csetFastTestAddress();
     }
 
     @Uninterruptible(reason = "Called during startup.")
@@ -337,6 +320,31 @@ public final class ShenandoahHeap extends Heap {
     }
 
     @Fold
+    public static int getNullRegionSize() {
+        int buildTimePageSize = SubstrateOptions.getPageSize();
+        int result = Math.max(buildTimePageSize * ShenandoahConstants.cardSize(), ShenandoahRegionSize.getValue());
+        assert result % ShenandoahRegionSize.getValue() == 0 : "null region size must be region-aligned";
+        return result;
+    }
+
+    @Fold
+    static int getMetaspaceOffsetInAddressSpace() {
+        int result = getNullRegionSize();
+        assert result % ShenandoahRegionSize.getValue() == 0 : "start of metaspace must be region-aligned";
+        return result;
+    }
+
+    @Fold
+    static int getReservedMetaspaceSize() {
+        if (!Metaspace.isSupported()) {
+            return 0;
+        }
+
+        int unalignedValue = SubstrateGCOptions.ConcealedOptions.getMaxMetaspaceSize();
+        return NumUtil.roundUp(unalignedValue, ShenandoahOptions.ShenandoahRegionSize.getValue());
+    }
+
+    @Fold
     @Override
     public int getHeapBaseAlignment() {
         int buildTimePageSize = SubstrateOptions.getPageSize();
@@ -352,8 +360,7 @@ public final class ShenandoahHeap extends Heap {
     @Fold
     @Override
     public int getImageHeapOffsetInAddressSpace() {
-        int buildTimePageSize = SubstrateOptions.getPageSize();
-        int result = Math.max(buildTimePageSize * ShenandoahConstants.cardSize(), ShenandoahRegionSize.getValue());
+        int result = getNullRegionSize() + getReservedMetaspaceSize();
         assert result % getImageHeapAlignment() == 0 : "start of image heap must be aligned";
         return result;
     }
@@ -459,8 +466,14 @@ public final class ShenandoahHeap extends Heap {
         ShenandoahLibrary.endSafepoint();
     }
 
-    public static Pointer addressOfCardTableAddress() {
-        return (Pointer) cardTableAddressTL.getAddress();
+    @Override
+    public boolean isRuntimeStateTrimSupported(Mode mode) {
+        return false; // TODO: can we implement this for Shenandoah?
+    }
+
+    @Override
+    public void trimRuntimeState(Mode mode) {
+        // TODO: can we implement this for Shenandoah?
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -471,11 +484,13 @@ public final class ShenandoahHeap extends Heap {
         VMError.guarantee(ShenandoahConstants.cardTableShift() == state.cardTableShift(), "Failed while validating the Shenandoah state: cardTableShift");
         VMError.guarantee(ShenandoahConstants.cardTableOffsetRel() == state.cardTableOffset(), "Failed while validating the Shenandoah state: cardTableOffset");
         VMError.guarantee(ShenandoahConstants.logOfHeapRegionGrainBytes() == state.logOfHeapRegionGrainBytes(), "Failed while validating the Shenandoah state: logOfHeapRegionGrainBytes");
+        VMError.guarantee(ShenandoahConstants.barrierAndAllocationDataSize() == state.barrierAndAllocationDataSize(), "Failed while validating the Shenandoah state: barrierAndAllocationDataSize");
         VMError.guarantee(ShenandoahConstants.javaThreadSize() == state.javaThreadSize(), "Failed while validating the Shenandoah state: javaThreadSize");
         VMError.guarantee(ShenandoahConstants.satbIndexOffsetRel() == state.satbIndexOffset(), "Failed while validating the Shenandoah state: satbIndexOffset");
         VMError.guarantee(ShenandoahConstants.satbBufferOffsetRel() == state.satbBufferOffset(), "Failed while validating the Shenandoah state: satbBufferOffset");
         VMError.guarantee(ShenandoahConstants.markOffset() == state.markOffset(), "Failed while validating the Shenandoah state: markOffset");
-        VMError.guarantee(ShenandoahConstants.javaThreadGcStateOffset() == state.gcStateOffset(), "Failed while validating the Shenandoah state: gcStateOffset");
+        VMError.guarantee(ShenandoahConstants.gcStateOffsetRel() == state.gcStateOffset(), "Failed while validating the Shenandoah state: gcStateOffset");
+        VMError.guarantee(ShenandoahConstants.csetMapOffsetRel() == state.csetMapOffset(), "Failed while validating the Shenandoah state: csetMapOffset");
         VMError.guarantee(SizeOf.get(NativeGCVMOperationData.class) <= state.vmOperationDataSize(), "Failed while validating the Shenandoah state: vmOperationDataSize");
         VMError.guarantee(SizeOf.get(NativeGCVMOperationWrapperData.class) <= state.vmOperationWrapperDataSize(), "Failed while validating the Shenandoah state: vmOperationWrapperDataSize");
     }
@@ -489,18 +504,12 @@ public final class ShenandoahHeap extends Heap {
             /* The thread gets attached as a side effect of the initialization. */
             initialize(isolateThread);
         }
-        cardTableAddressTL.set(isolateThread, cardTableAddress);
-        csetMapAddressTL.set(isolateThread, csetMapAddress);
     }
 
     @Override
     @Uninterruptible(reason = "Thread is detaching and holds the ThreadsLock with exclusive write access.")
     public void detachThread(IsolateThread isolateThread) {
         ShenandoahLibrary.detachThread(isolateThread);
-
-        /* Use a value, so that it looks as if the card table starts at address 0. */
-        long invalidCardTableAddress = KnownIntrinsics.heapBase().unsignedShiftRight(ShenandoahConstants.cardTableShift()).rawValue();
-        cardTableAddressTL.set(isolateThread, Word.signed(-invalidCardTableAddress));
     }
 
     @Override
@@ -554,8 +563,12 @@ public final class ShenandoahHeap extends Heap {
 
     @Override
     public boolean printLocationInfo(Log log, UnsignedWord value, boolean allowJavaHeapAccess, boolean allowUnsafeOperations) {
-        if (value.equal(KnownIntrinsics.heapBase())) {
+        Pointer heapBase = KnownIntrinsics.heapBase();
+        if (value.equal(heapBase)) {
             log.string("is the heap base");
+            return true;
+        } else if (value.aboveThan(heapBase) && value.belowThan(heapBase.add(getNullRegionSize()))) {
+            log.string("points into the protected null region after the heap base");
             return true;
         }
 
@@ -727,7 +740,7 @@ public final class ShenandoahHeap extends Heap {
         return true;
     }
 
-    private static final class DumpHeapSettingsAndGCInternalState extends DiagnosticThunk {
+    public static final class DumpHeapSettingsAndGCInternalState extends DiagnosticThunk {
         @Override
         public int maxInvocationCount() {
             return 1;
@@ -751,7 +764,7 @@ public final class ShenandoahHeap extends Heap {
         }
     }
 
-    private static final class DumpRegionInformation extends DiagnosticThunk {
+    public static final class DumpRegionInformation extends DiagnosticThunk {
         private static final int MAX_REGIONS_TO_PRINT = 128 * 1024;
 
         @Override
@@ -788,7 +801,7 @@ public final class ShenandoahHeap extends Heap {
         }
     }
 
-    private static final class DumpCurrentGCThreadName extends DiagnosticThunk {
+    public static final class DumpCurrentGCThreadName extends DiagnosticThunk {
         @Override
         public int maxInvocationCount() {
             return 1;

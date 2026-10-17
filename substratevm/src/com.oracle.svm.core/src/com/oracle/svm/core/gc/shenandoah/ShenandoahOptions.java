@@ -154,22 +154,21 @@ public class ShenandoahOptions {
         }
 
         @Override
-        public void validate() {
+        public void validateAfterParsing() {
             validateShenandoahOption(this);
-            super.validate();
+            super.validateAfterParsing();
         }
     }
 
     @SuppressWarnings("unused")
     private static class ShenandoahRuntimeOptionKey<T> extends NativeGCRuntimeOptionKey<T> {
         ShenandoahRuntimeOptionKey(T defaultValue, RuntimeOptionKeyFlag... flags) {
-            super(defaultValue, flags);
+            super(defaultValue, ShenandoahRuntimeOptionKey::validateShenandoahAndNativeGCOption, flags);
         }
 
-        @Override
-        public void validate() {
-            validateShenandoahOption(this);
-            super.validate();
+        private static void validateShenandoahAndNativeGCOption(RuntimeOptionKey<?> optionKey) {
+            validateShenandoahOption(optionKey);
+            validateNativeGCOption(optionKey);
         }
     }
 }

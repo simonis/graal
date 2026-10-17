@@ -122,10 +122,10 @@ public class SubstrateGCOptions {
 
     @Option(help = "The log level for the VerboseGC option. Corresponds to the HotSpot Unified Logging log levels, i.e. one " +
                    "of ['off', 'trace', 'debug', 'info', 'warning', 'error'] (defaults to 'info').", type = OptionType.Expert)//
-    public static final RuntimeOptionKey<String> VerboseGCLevel = new NotifyGCRuntimeOptionKey<>("info", key -> {
+    public static final RuntimeOptionKey<String> VerboseGCLevel = new NotifyGCRuntimeOptionKey<>("info", null, key -> {
         List<String> logLevels = List.of("off", "trace", "debug", "info", "warning", "error");
         if (!logLevels.contains(key.getValue())) {
-            throw UserError.invalidOptionValue(key, key.getValue(), "Invalid value, use one of " + logLevels);
+            throw RuntimeOptionValidation.invalidOptionValue(key, key.getValue(), "Invalid value, use one of " + logLevels);
         }
     });
 

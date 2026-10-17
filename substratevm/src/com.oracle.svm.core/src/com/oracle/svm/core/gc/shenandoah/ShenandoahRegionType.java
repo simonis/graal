@@ -47,7 +47,11 @@ public enum ShenandoahRegionType {
 
     OpenImageHeap(Flags.OpenImageHeapBit),
     OpenImageHeapStartsHumongous(Flags.OpenImageHeapBit | Flags.StartsHumongousBit),
-    OpenImageHeapContinuesHumongous(Flags.OpenImageHeapBit | Flags.ContinuesHumongousBit);
+    OpenImageHeapContinuesHumongous(Flags.OpenImageHeapBit | Flags.ContinuesHumongousBit),
+
+    Metaspace(Flags.MetaspaceBit),
+    MetaspaceStartsHumongous(Flags.MetaspaceBit | Flags.StartsHumongousBit),
+    MetaspaceContinuesHumongous(Flags.MetaspaceBit | Flags.ContinuesHumongousBit);
 
     private final byte tag;
 
@@ -89,6 +93,12 @@ public enum ShenandoahRegionType {
             return "CIHS";
         } else if (tag == ClosedImageHeapContinuesHumongous.tag) {
             return "CIHC";
+        } else if (tag == Metaspace.tag) {
+            return "M";
+        } else if (tag == MetaspaceStartsHumongous.tag) {
+            return "MHS";
+        } else if (tag == MetaspaceContinuesHumongous.tag) {
+            return "MHC";
         } else {
             return "?";
         }
@@ -102,5 +112,6 @@ public enum ShenandoahRegionType {
 
         private static final byte ClosedImageHeapBit = 0b0100;
         private static final byte OpenImageHeapBit = 0b1000;
+        private static final byte MetaspaceBit = 0b10000;
     }
 }

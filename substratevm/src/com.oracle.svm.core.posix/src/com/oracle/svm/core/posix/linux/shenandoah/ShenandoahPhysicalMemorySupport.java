@@ -41,6 +41,6 @@ import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 public class ShenandoahPhysicalMemorySupport extends LinuxPhysicalMemorySupportImpl {
     @Override
     public UnsignedWord size() {
-        return ShenandoahCommittedMemoryProvider.getInstance().getPhysicalMemorySize();
+        return ShenandoahCommittedMemoryProvider.singleton().getPhysicalMemorySize();
     }
 }

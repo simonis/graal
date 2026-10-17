@@ -34,14 +34,15 @@ import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly
 import com.oracle.svm.shared.singletons.traits.BuiltinTraits.DisallowLayered;
 import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
 import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.DuplicatedInNativeCode;
 
 import org.graalvm.word.impl.Word;
 
 @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = DisallowLayered.class)
 public class ShenandoahAllocationSupport extends NativeGCAllocationSupport {
     @Override
-    public Word getTLABInfo() {
-        return ShenandoahHeap.javaThreadTL.getAddress();
+    public Word getThreadLocalData() {
+        return ShenandoahHeap.barrierAndAllocationDataTL.getAddress();
     }
 
     @Override
@@ -80,5 +81,47 @@ public class ShenandoahAllocationSupport extends NativeGCAllocationSupport {
     protected Object allocatePod0(int length, DynamicHub hub) {
         Word result = ShenandoahLibrary.allocatePod(Word.objectToUntrackedWord(hub), length);
         return result.toObject();
+    }
+
+    @Override
+    public DynamicHub allocateMetaspaceDynamicHub(int numVTableEntries) {
+        DynamicHub hub = DynamicHub.fromClass(DynamicHub.class);
+        return (DynamicHub) allocateMetaspaceArrayLikeObject(hub, numVTableEntries, MetaspaceAllocationKind.DYNAMIC_HUB);
+    }
+
+    @Override
+    public byte[] allocateMetaspaceByteArray(int length) {
+        DynamicHub hub = DynamicHub.fromClass(byte[].class);
+        return (byte[]) allocateMetaspaceArrayLikeObject(hub, length, MetaspaceAllocationKind.BYTE_ARRAY);
+    }
+
+    @Override
+    public int[] allocateMetaspaceIntArray(int length) {
+        DynamicHub hub = DynamicHub.fromClass(int[].class);
+        return (int[]) allocateMetaspaceArrayLikeObject(hub, length, MetaspaceAllocationKind.INT_ARRAY);
+    }
+
+    @Override
+    public Object allocateMetaspaceInstance(DynamicHub hub) {
+        return allocateMetaspaceInstance0(hub);
+    }
+
+    @Uninterruptible(reason = "Uses raw pointers", calleeMustBe = false)
+    private static Object allocateMetaspaceArrayLikeObject(DynamicHub hub, int length, int allocationKind) {
+        Word result = ShenandoahLibrary.allocateMetaspaceArray(Word.objectToUntrackedWord(hub), length, allocationKind);
+        return result.toObject();
+    }
+
+    @Uninterruptible(reason = "Uses raw pointers", calleeMustBe = false)
+    private static Object allocateMetaspaceInstance0(DynamicHub hub) {
+        Word result = ShenandoahLibrary.allocateMetaspaceInstance(Word.objectToUntrackedWord(hub));
+        return result.toObject();
+    }
+
+    @DuplicatedInNativeCode
+    private interface MetaspaceAllocationKind {
+        int DYNAMIC_HUB = 0;
+        int BYTE_ARRAY = 1;
+        int INT_ARRAY = 2;
     }
 }

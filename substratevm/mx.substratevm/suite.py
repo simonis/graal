@@ -1326,19 +1326,6 @@ suite = {
             "jacoco" : "exclude",
         },
 
-        "com.oracle.svm.test.terminus": {
-            "subDir": "src",
-            "sourceDirs": ["src"],
-            "dependencies": [
-                "sdk:NATIVEIMAGE",
-            ],
-            "checkstyle": "com.oracle.svm.test",
-            "javaCompliance": "24+",
-            "workingSets": "SVM",
-            "testProject": True,
-            "jacoco": "exclude",
-        },
-
         "com.oracle.svm.test.debug": {
             "subDir": "src",
             "sourceDirs": ["src"],
@@ -1524,6 +1511,27 @@ suite = {
             "jacoco" : "exclude",
         },
 
+        "com.oracle.svm.graalos": {
+            "subDir": "src",
+            "sourceDirs": ["src"],
+            "dependencies": [
+                "SVM",
+            ],
+            "requiresConcealed": {
+                "java.base": [
+                    "jdk.internal.misc",
+                    "jdk.internal.util",
+                    "sun.nio.fs",
+                ],
+            },
+            "javaCompliance": "24+",
+            "workingSets": "graalos-support",
+            "annotationProcessors": [
+                "SVM_PROCESSOR",
+            ],
+            "checkPackagePrefix": False,
+        },
+
         # This is a transitional project that can be referenced from both the guest module and the builder
         # module. It is intended as a staging place for code that eventually should go into the guest, but
         # is currently still referenced in the builder. Eventually, all content of this project should move
@@ -1540,11 +1548,9 @@ suite = {
                 "java.base" : [
                     "jdk.internal.misc",
                     "jdk.internal.reflect",
+                    "sun.reflect.annotation",
+                    "sun.reflect.generics.repository",
                     "sun.security.util",
-                ],
-                "jdk.internal.vm.ci" : [
-                    "jdk.vm.ci.meta",
-                    "jdk.vm.ci.meta.annotation",
                 ],
             },
             "checkstyle": "com.oracle.svm.core",
@@ -2149,6 +2155,7 @@ suite = {
                     "com.oracle.svm.jdwp.bridge.jniutils               to com.oracle.svm.jdwp.server",
                     "com.oracle.svm.interpreter.metadata               to com.oracle.svm.jdwp.server",
                     "com.oracle.svm.interpreter.metadata.serialization to com.oracle.svm.jdwp.server",
+                    "com.oracle.svm.core.graalos to svm.graalos.support",
                 ],
                 "opens" : [
                     "com.oracle.svm.core                          to jdk.graal.compiler",
@@ -2228,6 +2235,17 @@ suite = {
             "maven": False,
         },
 
+        "SVM_GRAALOS_SUPPORT": {
+            "subDir": "src",
+            "dependencies": [
+                "com.oracle.svm.graalos",
+            ],
+            "distDependencies": [
+                "SVM",
+            ],
+            "maven": False,
+        },
+
         "SVM_SHARED": {
             "subDir": "src",
             "description" : "Module for sharing code that is used in both, the builder and the guest context",
@@ -2242,6 +2260,7 @@ suite = {
             "moduleInfo" : {
                 "name" : "org.graalvm.nativeimage.shared",
                 "exports" : [
+                    "com.oracle.svm.shared.util to svm.graalos.support",
                     """* to
                             com.oracle.svm.extraimage_enterprise,
                             com.oracle.svm.jdwp.server,
@@ -2297,7 +2316,7 @@ suite = {
                     """com.oracle.svm.jvmci.shared.code to
                             jdk.graal.compiler,
                             com.oracle.svm.svm_enterprise,
-                            com.oracle.truffle.enterprise.svm,
+                            org.graalvm.truffle.runtime.svm,
                             org.graalvm.extraimage.builder,
                             org.graalvm.nativeimage.builder,
                             org.graalvm.nativeimage.foreign,
@@ -2306,7 +2325,7 @@ suite = {
                             org.graalvm.nativeimage.llvm""",
                     """com.oracle.svm.jvmci.shared.meta to
                             com.oracle.svm.svm_enterprise,
-                            com.oracle.truffle.enterprise.svm,
+                            org.graalvm.truffle.runtime.svm,
                             org.graalvm.extraimage.builder,
                             org.graalvm.nativeimage.builder,
                             org.graalvm.nativeimage.jvmci.guest,
@@ -2678,6 +2697,7 @@ suite = {
                         "./": [
                             "dependency:com.oracle.svm.native.libchelper/*",
                             "dependency:com.oracle.svm.native.jvm.posix/*",
+                            "dependency:svm-static-library-symbols/*",
                             "dependency:com.oracle.svm.native.libcontainer/*",
                             "file:debug/include",
                             "file:src/com.oracle.svm.core/src/com/oracle/svm/core/gc/shared/include",
@@ -2698,6 +2718,7 @@ suite = {
                         "<os>-<arch>/": [
                             "dependency:com.oracle.svm.native.libchelper/<os>-<arch>/default/*",
                             "dependency:com.oracle.svm.native.jvm.posix/<os>-<arch>/default/*",
+                            "dependency:svm-static-library-symbols/<os>-<arch>/default/*",
                             "dependency:com.oracle.svm.native.darwin/*",
                             "dependency:com.oracle.svm.native.jvm.windows/*",
                         ],
@@ -2876,9 +2897,11 @@ suite = {
             "moduleInfo" : {
                 "name" : "org.graalvm.nativeimage.base",
                 "requires" : [
-                    # workaround for GR-47773 on the module-path which requires java.sql (like truffle) or java.xml
-                    "java.sql",
-                    "java.xml",
+                    # workaround for GR-47773 on the module-path which requires java.sql (like truffle) or java.xml.
+                    # They are only needed if something else needs them: a small JDK without them must be able to
+                    # run the image builder (see `mx smalljdktest`).
+                    "static java.sql",
+                    "static java.xml",
                     "org.graalvm.collections",
                 ],
                 "exports" : [
@@ -2900,7 +2923,8 @@ suite = {
                            org.graalvm.extraimage.librarysupport,
                            org.graalvm.nativeimage.foreign,
                            org.graalvm.truffle.runtime.svm,
-                           com.oracle.truffle.enterprise.svm""",
+                           com.oracle.truffle.enterprise.svm,
+                           org.graalvm.nativeimage.enterprise.testrunner""",
                     """com.oracle.svm.common.meta to org.graalvm.nativeimage.pointsto,
                            org.graalvm.nativeimage.builder,
                            org.graalvm.nativeimage.llvm,
@@ -3089,17 +3113,6 @@ suite = {
             "SVM_CONFIGURE",
           ],
           "testDistribution" : True,
-        },
-
-        "SVM_TEST_TERMINUS": {
-          "subDir": "src",
-          "dependencies": [
-            "com.oracle.svm.test.terminus",
-          ],
-          "distDependencies": [
-            "sdk:NATIVEIMAGE",
-          ],
-          "testDistribution": True,
         },
 
         # Special test distribution used for testing inclusion of resources from jar files with a space in their name.

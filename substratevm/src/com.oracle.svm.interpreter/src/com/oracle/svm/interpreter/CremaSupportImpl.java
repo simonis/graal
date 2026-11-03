@@ -188,17 +188,17 @@ public class CremaSupportImpl implements CremaSupport {
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
     private CFunctionPointer enterDirectInterpreterStubEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodVarargsVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallVarargsVirtualWrapperEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodArrayVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallArrayVirtualWrapperEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodVaListVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallVaListVirtualWrapperEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodVarargsNonVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallVarargsNonVirtualWrapperEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodArrayNonVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallArrayNonVirtualWrapperEntryPoint;
     @UnknownPrimitiveField(availability = ReadyForCompilation.class) //
-    private CFunctionPointer cremaJNIMethodVaListNonVirtualWrapperEntryPoint;
+    private CFunctionPointer cremaJNIUpcallVaListNonVirtualWrapperEntryPoint;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     @Override
@@ -655,6 +655,16 @@ public class CremaSupportImpl implements CremaSupport {
     }
 
     private DynamicHub createArrayHub(DynamicHub componentHub) {
+        int dimensions = 1;
+        DynamicHub elementalHub = componentHub;
+        while (elementalHub.isArray()) {
+            dimensions += 1;
+            elementalHub = elementalHub.getComponentHub();
+        }
+        if (dimensions > Constants.MAX_ARRAY_DIMENSIONS) {
+            throw new IllegalArgumentException();
+        }
+
         String name;
         if (componentHub.isArray()) {
             name = '[' + componentHub.getName();
@@ -671,12 +681,6 @@ public class CremaSupportImpl implements CremaSupport {
         Module module = componentHub.getModule();
         int typeID = TypeIDs.singleton().nextTypeId();
 
-        int dimensions = 1;
-        DynamicHub elementalHub = componentHub;
-        while (elementalHub.isArray()) {
-            dimensions += 1;
-            elementalHub = elementalHub.getComponentHub();
-        }
         DynamicHub typeCheckSuperHub = getArrayTypeCheckSuperHub(elementalHub, dimensions);
         Class<?>[] transitiveSuperInterfaces = getSortedTransitiveArrayInterfaces(elementalHub, dimensions);
 
@@ -1653,7 +1657,7 @@ public class CremaSupportImpl implements CremaSupport {
     public Object execute(ResolvedJavaMethod targetMethod, Object[] args, CallKind callKind) {
         InterpreterResolvedJavaMethod iMethod = (InterpreterResolvedJavaMethod) targetMethod;
         try {
-            return InterpreterToVM.dispatchInvocation(iMethod, args, callKind, false, false, false);
+            return InterpreterToVM.dispatchInvocation(iMethod, args, callKind, false, false);
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
         }
@@ -1781,7 +1785,7 @@ public class CremaSupportImpl implements CremaSupport {
 
     private static int getMethodMemberNameFlags(ResolvedCall<InterpreterResolvedJavaType, InterpreterResolvedJavaMethod, InterpreterResolvedJavaField> resolvedCall) {
         InterpreterResolvedJavaMethod resolvedMethod = resolvedCall.getResolvedMethod();
-        int flags = resolvedMethod.getModifiers();
+        int flags = resolvedMethod.getOriginalModifiers();
         if (resolvedMethod.isConstructor() || resolvedMethod.isClassInitializer()) {
             flags |= getExtraMethodMemberNameFlags(resolvedMethod);
             flags |= MN_IS_CONSTRUCTOR;
@@ -1933,7 +1937,7 @@ public class CremaSupportImpl implements CremaSupport {
         System.arraycopy(args, 0, basicArgs, 1, args.length);
         logIntrinsic("[from compiled] invokeBasic ", vmentry, basicArgs);
         try {
-            return InterpreterToVM.dispatchInvocation(vmentry, basicArgs, CallKind.DIRECT, false, false, true);
+            return InterpreterToVM.dispatchInvocation(vmentry, basicArgs, CallKind.DIRECT, false, true);
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
         }
@@ -1949,7 +1953,7 @@ public class CremaSupportImpl implements CremaSupport {
         Object[] basicArgs = unbasic(args, signature, true);
         logIntrinsic("[from compiled] linkToVirtual ", target, basicArgs);
         try {
-            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.VTABLE_LOOKUP, false, false, true);
+            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.VTABLE_LOOKUP, false, true);
             return Interpreter.rebasic(result, signature.getReturnKind());
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
@@ -1966,7 +1970,7 @@ public class CremaSupportImpl implements CremaSupport {
         Object[] basicArgs = unbasic(args, signature, false);
         logIntrinsic("[from compiled] linkToStatic ", target, basicArgs);
         try {
-            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.STATIC, false, false, true);
+            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.STATIC, false, true);
             return Interpreter.rebasic(result, signature.getReturnKind());
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
@@ -1983,7 +1987,7 @@ public class CremaSupportImpl implements CremaSupport {
         Object[] basicArgs = unbasic(args, signature, true);
         logIntrinsic("[from compiled] linkToSpecial ", target, basicArgs);
         try {
-            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.DIRECT, false, false, true);
+            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.DIRECT, false, true);
             return Interpreter.rebasic(result, signature.getReturnKind());
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
@@ -2000,7 +2004,7 @@ public class CremaSupportImpl implements CremaSupport {
         Object[] basicArgs = unbasic(args, signature, true);
         logIntrinsic("[from compiled] linkToInterface ", target, basicArgs);
         try {
-            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.ITABLE_LOOKUP, false, false, true);
+            Object result = InterpreterToVM.dispatchInvocation(target, basicArgs, CallKind.ITABLE_LOOKUP, false, true);
             return Interpreter.rebasic(result, signature.getReturnKind());
         } catch (SemanticJavaException e) {
             throw uncheckedThrow(e.getCause());
@@ -2098,18 +2102,18 @@ public class CremaSupportImpl implements CremaSupport {
 
     @Override
     @Platforms(Platform.HOSTED_ONLY.class)
-    public CFunctionPointer getCremaJNIMethodCallWrapperEntryPoint(CallVariant variant, boolean nonVirtual) {
+    public CFunctionPointer getCremaJNIUpcallWrapperEntryPoint(CallVariant variant, boolean nonVirtual) {
         CFunctionPointer result;
         if (variant == CallVariant.VARARGS) {
-            result = nonVirtual ? cremaJNIMethodVarargsNonVirtualWrapperEntryPoint : cremaJNIMethodVarargsVirtualWrapperEntryPoint;
+            result = nonVirtual ? cremaJNIUpcallVarargsNonVirtualWrapperEntryPoint : cremaJNIUpcallVarargsVirtualWrapperEntryPoint;
         } else if (variant == CallVariant.ARRAY) {
-            result = nonVirtual ? cremaJNIMethodArrayNonVirtualWrapperEntryPoint : cremaJNIMethodArrayVirtualWrapperEntryPoint;
+            result = nonVirtual ? cremaJNIUpcallArrayNonVirtualWrapperEntryPoint : cremaJNIUpcallArrayVirtualWrapperEntryPoint;
         } else if (variant == CallVariant.VA_LIST) {
-            result = nonVirtual ? cremaJNIMethodVaListNonVirtualWrapperEntryPoint : cremaJNIMethodVaListVirtualWrapperEntryPoint;
+            result = nonVirtual ? cremaJNIUpcallVaListNonVirtualWrapperEntryPoint : cremaJNIUpcallVaListVirtualWrapperEntryPoint;
         } else {
             throw VMError.shouldNotReachHereUnexpectedInput(variant);
         }
-        VMError.guarantee(result.isNonNull(), "entry point for runtime JNI method call wrapper was not setup at build-time");
+        VMError.guarantee(result.isNonNull(), "entry point for runtime JNI upcall wrapper was not setup at build-time");
         return result;
     }
 
@@ -2121,14 +2125,14 @@ public class CremaSupportImpl implements CremaSupport {
 
     @Override
     @Platforms(Platform.HOSTED_ONLY.class)
-    public void setCremaJNIMethodCallWrapperEntryPoints(CFunctionPointer varargsVirtual, CFunctionPointer arrayVirtual, CFunctionPointer vaListVirtual, CFunctionPointer varargsNonVirtual,
+    public void setCremaJNIUpcallWrapperEntryPoints(CFunctionPointer varargsVirtual, CFunctionPointer arrayVirtual, CFunctionPointer vaListVirtual, CFunctionPointer varargsNonVirtual,
                     CFunctionPointer arrayNonVirtual, CFunctionPointer vaListNonVirtual) {
-        cremaJNIMethodVarargsVirtualWrapperEntryPoint = varargsVirtual;
-        cremaJNIMethodArrayVirtualWrapperEntryPoint = arrayVirtual;
-        cremaJNIMethodVaListVirtualWrapperEntryPoint = vaListVirtual;
-        cremaJNIMethodVarargsNonVirtualWrapperEntryPoint = varargsNonVirtual;
-        cremaJNIMethodArrayNonVirtualWrapperEntryPoint = arrayNonVirtual;
-        cremaJNIMethodVaListNonVirtualWrapperEntryPoint = vaListNonVirtual;
+        cremaJNIUpcallVarargsVirtualWrapperEntryPoint = varargsVirtual;
+        cremaJNIUpcallArrayVirtualWrapperEntryPoint = arrayVirtual;
+        cremaJNIUpcallVaListVirtualWrapperEntryPoint = vaListVirtual;
+        cremaJNIUpcallVarargsNonVirtualWrapperEntryPoint = varargsNonVirtual;
+        cremaJNIUpcallArrayNonVirtualWrapperEntryPoint = arrayNonVirtual;
+        cremaJNIUpcallVaListNonVirtualWrapperEntryPoint = vaListNonVirtual;
     }
 
     @Override

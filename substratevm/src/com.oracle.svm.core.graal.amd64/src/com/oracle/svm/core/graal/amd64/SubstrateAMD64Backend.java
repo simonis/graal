@@ -62,12 +62,10 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.BoxedRelocatedPointer;
 import com.oracle.svm.core.c.CGlobalDataLoadPolicy;
-import com.oracle.svm.core.config.ObjectLayout;
-import com.oracle.svm.core.cpufeature.Stubs;
+import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.deopt.DeoptimizationRuntime;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.jvmci.shared.meta.DeoptStub;
-import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.jvmci.shared.code.AssignedLocation;
 import com.oracle.svm.core.graal.code.PatchConsumerFactory;
 import com.oracle.svm.core.graal.code.SharedCompilationResult;
@@ -80,29 +78,30 @@ import com.oracle.svm.jvmci.shared.code.SubstrateCallingConventionType;
 import com.oracle.svm.core.graal.code.SubstrateCompiledCode;
 import com.oracle.svm.core.graal.code.SubstrateDataBuilder;
 import com.oracle.svm.core.graal.code.SubstrateDebugInfoBuilder;
-import com.oracle.svm.core.graal.code.SubstrateLIRGenerator;
-import com.oracle.svm.core.graal.code.SubstrateNodeLIRBuilder;
 import com.oracle.svm.core.graal.code.SubstrateFrameContextSupport;
 import com.oracle.svm.core.graal.code.SubstrateFrameContextSupport.FrameContextWithTailCallTrampolines;
+import com.oracle.svm.core.graal.code.SubstrateLIRGenerator;
+import com.oracle.svm.core.graal.code.SubstrateNodeLIRBuilder;
 import com.oracle.svm.core.graal.lir.VerificationMarkerOp;
 import com.oracle.svm.core.graal.meta.KnownOffsets;
 import com.oracle.svm.core.graal.meta.SharedConstantReflectionProvider;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
+import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig;
 import com.oracle.svm.core.graal.nodes.CGlobalDataLoadAddressNode;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode.Computation;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode.FieldLoad;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode.FieldLoadIfZero;
+import com.oracle.svm.core.graal.snippets.StackOverflowCheckImpl;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.SubstrateReferenceMapBuilder;
 import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.interpreter.InterpreterSupport;
 import com.oracle.svm.core.jni.CallVariant;
-import com.oracle.svm.core.graal.snippets.StackOverflowCheckImpl;
 import com.oracle.svm.core.meta.CompressedNullConstant;
-import com.oracle.svm.core.meta.MethodPointer;
+import com.oracle.svm.core.meta.MethodRefSupport;
 import com.oracle.svm.jvmci.shared.meta.SharedField;
 import com.oracle.svm.jvmci.shared.meta.SharedMethod;
 import com.oracle.svm.core.meta.SubstrateMethodOffsetConstant;
@@ -1310,20 +1309,8 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
                 return null;
             }
             // Assume the SVM ForeignCallSignature are identical to the Graal ones.
-            return gen.getForeignCalls().lookupForeignCall(chooseCPUFeatureVariant(foreignCallDescriptor, gen.target(), Stubs.getRequiredCPUFeatures(valueNode.getClass())));
-        }
-    }
-
-    @SuppressWarnings("unlikely-arg-type")
-    private static ForeignCallDescriptor chooseCPUFeatureVariant(ForeignCallDescriptor descriptor, TargetDescription target, EnumSet<?> runtimeCheckedCPUFeatures) {
-        EnumSet<?> buildtimeCPUFeatures = ImageSingletons.lookup(CPUFeatureAccess.class).buildtimeCPUFeatures();
-        EnumSet<?> amd64Features = ((AMD64) target.arch).getFeatures();
-        if (buildtimeCPUFeatures.containsAll(runtimeCheckedCPUFeatures) || !amd64Features.containsAll(runtimeCheckedCPUFeatures)) {
-            return descriptor;
-        } else {
-            GraalError.guarantee(RuntimeCompilation.isEnabled(), "should be reached in JIT mode only");
-            return new ForeignCallDescriptor(descriptor.getName() + Stubs.RUNTIME_CHECKED_CPU_FEATURES_NAME_SUFFIX, descriptor.getResultType(), descriptor.getArgumentTypes(),
-                            descriptor.getSideEffect(), descriptor.getKilledLocations(), descriptor.canDeoptimize(), descriptor.isGuaranteedSafepoint());
+            SubstrateForeignCallsProvider foreignCalls = (SubstrateForeignCallsProvider) gen.getForeignCalls();
+            return foreignCalls.lookupForeignCallWithCPUFeatures(foreignCallDescriptor, ((AMD64) gen.target().arch).getFeatures());
         }
     }
 
@@ -1911,7 +1898,7 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
 
         private static AMD64LIRInstruction createLoadMethodPointerConstant(AllocatableValue dst, SubstrateMethodPointerConstant constant) {
             if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
-                if (constant.pointer().getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
+                if (constant.getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
                     DynamicImageLayerInfo dynamicImageLayerInfo = DynamicImageLayerInfo.singleton();
                     if (dynamicImageLayerInfo.isMethodCompilationDelayed(sharedMethod)) {
                         return new AMD64CGlobalDataDirectLoadAddressOp(dynamicImageLayerInfo.getSymbolForDelayedMethod(sharedMethod), dst);
@@ -1932,7 +1919,7 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
 
         private static AMD64LIRInstruction createLoadMethodOffsetConstant(AllocatableValue dst, SubstrateMethodOffsetConstant constant) {
             if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
-                if (constant.offset().getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
+                if (MethodRefSupport.getMethod(constant.offset()) instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
                     DynamicImageLayerInfo dynamicImageLayerInfo = DynamicImageLayerInfo.singleton();
                     if (dynamicImageLayerInfo.isMethodCompilationDelayed(sharedMethod)) {
                         return new AMD64LoadLayeredMethodOffsetConstantOp(dynamicImageLayerInfo.getSymbolForDelayedMethod(sharedMethod), dst, 0);
@@ -2185,8 +2172,8 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
         /** The offset at which the frame pointer save area is located. */
         private int framePointerSaveAreaOffset = -1;
 
-        private StackSlot interpreterJNIUpcallData;
-        private StackSlot interpreterFFMUpcallData;
+        private StackSlot interpreterData;
+        private StackSlot interpreterLeaveData;
 
         SubstrateAMD64FrameMap(CodeCacheProvider codeCache, SubstrateAMD64RegisterConfig registerConfig, ReferenceMapBuilderFactory referenceMapFactory, SharedMethod method) {
             super(codeCache, registerConfig, referenceMapFactory, registerConfig.shouldUseBasePointer());
@@ -2197,22 +2184,22 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
             }
         }
 
-        void allocateInterpreterJNIUpcallData() {
-            assert interpreterJNIUpcallData == null;
-            interpreterJNIUpcallData = allocateStackMemory(AMD64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
+        void allocateInterpreterData() {
+            assert interpreterData == null;
+            interpreterData = allocateStackMemory(AMD64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
         }
 
-        StackSlot getInterpreterJNIUpcallData() {
-            return interpreterJNIUpcallData;
+        StackSlot getInterpreterData() {
+            return interpreterData;
         }
 
-        void allocateInterpreterFFMUpcallData() {
-            assert interpreterFFMUpcallData == null;
-            interpreterFFMUpcallData = allocateStackMemory(AMD64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
+        void allocateInterpreterLeaveData() {
+            assert interpreterLeaveData == null;
+            interpreterLeaveData = allocateStackMemory(2 * getTarget().wordSize, getTarget().wordSize);
         }
 
-        StackSlot getInterpreterFFMUpcallData() {
-            return interpreterFFMUpcallData;
+        StackSlot getInterpreterLeaveData() {
+            return interpreterLeaveData;
         }
 
         private boolean finalized;
@@ -2285,19 +2272,19 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
             InterpreterJNIUpcallStubGuestValue jniAnnotation = InterpreterJNIUpcallStubGuestValue.get(method);
             if (jniAnnotation != null && jniAnnotation.callVariant() == CallVariant.VARARGS) {
                 assert InterpreterSupport.isEnabled();
-                ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterJNIUpcallData();
+                ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterData();
             }
             if (stubType == DeoptStub.StubType.InterpreterFFMUpcallStub) {
                 assert InterpreterSupport.isEnabled();
-                ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterFFMUpcallData();
+                ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterData();
             }
         }
         if (stubType == DeoptStub.StubType.InterpreterEnterStub) {
             assert InterpreterSupport.isEnabled();
-            frameMap.reserveOutgoing(AMD64InterpreterStubs.additionalFrameSizeEnterStub());
+            ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterData();
         } else if (stubType == DeoptStub.StubType.InterpreterLeaveStub || stubType == DeoptStub.StubType.InterpreterNativeDowncallStub) {
             assert InterpreterSupport.isEnabled();
-            frameMap.reserveOutgoing(AMD64InterpreterStubs.additionalFrameSizeLeaveStub());
+            ((SubstrateAMD64FrameMap) frameMap).allocateInterpreterLeaveData();
         }
 
         return lirGenerationResult;
@@ -2578,7 +2565,7 @@ public class SubstrateAMD64Backend extends SubstrateBackendWithAssembler<AMD64Ma
             // Negative method IDs encode CremaResolvedJavaMethod instances.
             asm.testq(methodIdArg.getRegister(), methodIdArg.getRegister());
             asm.jccb(AMD64Assembler.ConditionFlag.GreaterEqual, nonCremaMethodId);
-            result.recordDataPatch(asm.position(), new ConstantReference(new SubstrateMethodPointerConstant(new MethodPointer(cremaData.wrapperMethod()))));
+            result.recordDataPatch(asm.position(), new ConstantReference(new SubstrateMethodPointerConstant(MethodRefSupport.createMethodPointer(cremaData.wrapperMethod()))));
             asm.leaq(jumpTargetRegister, asm.getPlaceholder(asm.position()));
             asm.jmp(jumpTargetRegister);
             asm.bind(nonCremaMethodId);

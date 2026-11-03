@@ -2,6 +2,10 @@
 
 This changelog summarizes major changes between Truffle versions relevant to languages implementors building upon the Truffle framework. The main focus is on APIs exported by Truffle.
 
+## Version 25.6
+
+* GR-80881: Bytecode DSL: `Float` and `Double` constants are now compared by their raw bits, so distinct NaN payloads no longer share a constant-pool slot.
+
 ## Version 25.5
 
 * GR-79534: Added `HostCompilerDirectives.BytecodeInterpreterHandlerConfig.enableTailDuplication()` to opt threaded bytecode handlers into dispatch-tail duplication; disabled by default.
@@ -10,6 +14,10 @@ This changelog summarizes major changes between Truffle versions relevant to lan
 * GR-13989: `TruffleFile.newByteChannel` now returns `FileChannel`, enabling file regions to be mapped to `MemorySegment` instances on JDK 22 and later.
 * GR-79068: `FileChannel` instances returned by `TruffleFile.newByteChannel` now expose file locking through the `lock` and `tryLock` methods when supported by the underlying file system.
 * GR-80089: Bytecode DSL: Made the ClearLocal builtin non-optional. Custom operations that conflict with this builtin should be renamed.
+* GR-79950: Added `DynamicObject.SetAllPropertyFlagsNode` for updating flags of multiple existing properties without assigning their values. It supports uniform flags, per-key flags, and remove/add masks.
+* GR-80293: Added `HostCompilerDirectives.BytecodeInterpreterHandlerConfig.Argument.expandedType()` to select an exact concrete class for virtual argument expansion. Added `Argument.Field.validWhen()` and `valid()` to control incoming field validity by template state.
+* GR-79562: Bytecode DSL: Added `GenerateBytecode.unwindExceptions` to select exceptions that run finally cleanup while bypassing guest catches and exception interception, preserving exception identity across suspension and resumption.
+* GR-80124: Added `PropertyGetter.getShape()` to expose the shape accepted by a property getter.
 
 ## Version 25.4
 * GR-77721: Removed Truffle Object APIs deprecated in 22.2 and no longer in use.

@@ -69,7 +69,8 @@ import com.oracle.svm.core.heap.RestrictHeapAccessCallees;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.imagelayer.LayeredImageOptions;
 import com.oracle.svm.core.interpreter.InterpreterSupport;
-import com.oracle.svm.core.meta.MethodRef;
+import com.oracle.svm.guest.staging.meta.MethodRef;
+import com.oracle.svm.core.meta.MethodRefSupport;
 import com.oracle.svm.core.meta.SubstrateMethodOffsetConstant;
 import com.oracle.svm.core.meta.SubstrateMethodPointerConstant;
 import com.oracle.svm.core.util.InterruptImageBuilding;
@@ -110,6 +111,7 @@ import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.debug.DebugContext.Description;
 import jdk.graal.compiler.debug.DebugDumpHandlersFactory;
+import jdk.graal.compiler.duplication.phases.simulation.TailCallDuplicationPhase;
 import jdk.graal.compiler.debug.GlobalMetrics;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.debug.Indent;
@@ -117,6 +119,7 @@ import jdk.graal.compiler.debug.TTY;
 import jdk.graal.compiler.graph.Node;
 import jdk.graal.compiler.graph.Node.NodeIntrinsic;
 import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.alloc.lsra.LinearScan;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilderFactory;
 import jdk.graal.compiler.lir.asm.DataBuilder;
@@ -161,6 +164,7 @@ import jdk.graal.compiler.phases.tiers.HighTierContext;
 import jdk.graal.compiler.phases.tiers.LowTierContext;
 import jdk.graal.compiler.phases.tiers.MidTierContext;
 import jdk.graal.compiler.phases.tiers.Suites;
+import jdk.graal.compiler.virtual.phases.ea.FinalPartialEscapePhase;
 import jdk.graal.compiler.phases.util.GraphOrder;
 import jdk.graal.compiler.phases.util.Providers;
 import jdk.graal.compiler.replacements.PEGraphDecoder;
@@ -804,7 +808,7 @@ public class CompileQueue {
         }
 
         SubstrateForeignCallsProvider foreignCallsProvider = (SubstrateForeignCallsProvider) runtimeConfig.getProviders().getForeignCalls();
-        for (SubstrateForeignCallLinkage linkage : foreignCallsProvider.getForeignCalls().values()) {
+        for (SubstrateForeignCallLinkage linkage : foreignCallsProvider.getForeignCalls()) {
             HostedMethod method = (HostedMethod) linkage.getDescriptor().findMethod(runtimeConfig.getProviders().getMetaAccess());
             if (method.wrapped.isDirectRootMethod() && method.wrapped.isSimplyImplementationInvoked()) {
                 ensureParsed(method, null, new EntryPointReason());
@@ -1328,7 +1332,8 @@ public class CompileQueue {
         OptionValues customizedOptions = debug.getOptions();
         if (InterpreterSupport.isEnabled() && InterpreterSupport.singleton().isInterpreterBytecodeHandlerStub(method)) {
             // Keep handler reads fixed and branch-local to avoid increasing register pressure.
-            customizedOptions = new OptionValues(customizedOptions, GraalOptions.OptFloatingReads, false, GraalOptions.OptDeduplicateReadsAcrossBranches, false);
+            customizedOptions = new OptionValues(customizedOptions, GraalOptions.OptFloatingReads, false, GraalOptions.OptDeduplicateReadsAcrossBranches, false,
+                            LinearScan.Options.LIROptLSRACallClobberAwareSpilling, true);
         }
         if (omitPriorityInliningTuning()) {
             return customizedOptions;
@@ -1611,6 +1616,9 @@ public class CompileQueue {
                 if (InterpreterSupport.isEnabled() && InterpreterSupport.singleton().isInterpreterBytecodeHandlerStub(method)) {
                     // Suites are shared between compilation threads; specialize only this stub.
                     suites = suites.copy();
+                    if (suites.getHighTier().findPhase(FinalPartialEscapePhase.class) != null) {
+                        suites.getHighTier().insertAfterPhase(FinalPartialEscapePhase.class, new TailCallDuplicationPhase(CanonicalizerPhase.create()));
+                    }
                     // Keep reloads after calls instead of extending their live ranges through GVN.
                     suites.getHighTier().removeSubTypePhases(DominatorBasedGlobalValueNumberingPhase.class);
                     suites.getMidTier().removeSubTypePhases(DominatorBasedGlobalValueNumberingPhase.class);
@@ -1727,7 +1735,7 @@ public class CompileQueue {
                     ref = offsetConstant.offset();
                 }
                 if (ref != null) {
-                    HostedMethod referencedMethod = (HostedMethod) ref.getMethod();
+                    HostedMethod referencedMethod = (HostedMethod) MethodRefSupport.getMethod(ref);
                     ensureCompiled(referencedMethod, new MethodRefConstantReason(method, referencedMethod, reason));
                 }
             }

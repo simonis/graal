@@ -85,7 +85,6 @@ import com.oracle.svm.core.jfr.JfrGCWhen;
 import com.oracle.svm.core.jfr.JfrTicks;
 import com.oracle.svm.core.jfr.events.AllocationRequiringGCEvent;
 import com.oracle.svm.core.metaspace.Metaspace;
-import com.oracle.svm.core.os.ChunkBasedCommittedMemoryProvider;
 import com.oracle.svm.core.snippets.ImplicitExceptions;
 import com.oracle.svm.core.stack.JavaFrame;
 import com.oracle.svm.core.stack.JavaFrames;
@@ -830,14 +829,23 @@ public final class GCImpl implements GC {
             /*
              * Scan the pinned objects. We cannot do this in the same loop as above because when not
              * all objects have been marked, scanning a reference to a yet unmarked pinned object
-             * will copy the object.
+             * will copy the object. Scanning may also copy a handle in this list, so resolve its
+             * forwarding pointer before reading its fields and save its next link before scanning.
              */
             cur = first;
+            ObjectHeaderImpl objectHeader = ObjectHeaderImpl.getObjectHeaderImpl();
             while (cur != null) {
-                if (canMove(cur.getObject())) {
-                    scanPinnedObject(cur.getObject());
+                Pointer curPointer = Word.objectToUntrackedPointer(cur);
+                UnsignedWord header = objectHeader.readHeaderFromPointer(curPointer);
+                if (ObjectHeaderImpl.isForwardedHeader(header)) {
+                    cur = (PinnedObjectImpl) objectHeader.getForwardedObject(curPointer, header);
                 }
-                cur = cur.getNext();
+                PinnedObjectImpl next = cur.getNext();
+                Object pinned = cur.getObject();
+                if (canMove(pinned)) {
+                    scanPinnedObject(pinned);
+                }
+                cur = next;
             }
         } finally {
             promotePinnedObjectsTimer.stop();

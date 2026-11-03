@@ -74,6 +74,7 @@ import org.graalvm.nativeimage.impl.APIDeprecationSupport;
 import org.graalvm.nativeimage.impl.AnnotationExtractor;
 import org.graalvm.nativeimage.impl.CConstantValueSupport;
 import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
+import org.graalvm.nativeimage.impl.RuntimeStateSupport;
 import org.graalvm.nativeimage.impl.RuntimeSerializationSupport;
 import org.graalvm.nativeimage.impl.SizeOfSupport;
 import org.graalvm.nativeimage.impl.VMRuntimeSupport;
@@ -166,8 +167,8 @@ import com.oracle.svm.core.imagelayer.LayeredImageOptions;
 import com.oracle.svm.core.jdk.ImageKindInfoSingleton;
 import com.oracle.svm.core.jdk.ServiceCatalogSupport;
 import com.oracle.svm.core.layeredimagesingleton.LoadedLayeredImageSingletonInfo;
-import com.oracle.svm.core.meta.MethodOffset;
-import com.oracle.svm.core.meta.MethodPointer;
+import com.oracle.svm.guest.staging.meta.MethodOffset;
+import com.oracle.svm.guest.staging.meta.MethodPointer;
 import com.oracle.svm.core.snippets.SnippetRuntime;
 import com.oracle.svm.core.util.ExitStatus;
 import com.oracle.svm.core.util.InterruptImageBuilding;
@@ -374,9 +375,13 @@ public class NativeImageGenerator {
     protected MainEntryPoint mainEntryPoint;
 
     public NativeImageGenerator(ImageClassLoader loader, HostedOptionProvider optionProvider, MainEntryPoint mainEntryPoint, ProgressReporter reporter) {
+        this(loader, optionProvider, mainEntryPoint, reporter, new FeatureHandler());
+    }
+
+    protected NativeImageGenerator(ImageClassLoader loader, HostedOptionProvider optionProvider, MainEntryPoint mainEntryPoint, ProgressReporter reporter, FeatureHandler featureHandler) {
         this.loader = loader;
         this.mainEntryPoint = mainEntryPoint;
-        this.featureHandler = new FeatureHandler();
+        this.featureHandler = featureHandler;
         this.optionProvider = optionProvider;
         this.reporter = reporter;
         optionProvider.getHostedValues().put(CompilationAlarm.Options.CompilationNoProgressPeriod, 0D);
@@ -601,6 +606,7 @@ public class NativeImageGenerator {
                  * Use @AutomaticallyRegisteredImageSingleton here if that support becomes available.
                  */
                 ImageSingletons.add(VMRuntimeSupport.class, runtimeSupport);
+                ImageSingletons.add(RuntimeStateSupport.class, runtimeSupport);
                 ImageSingletons.add(RuntimeSupport.class, runtimeSupport);
             }
             if (ImageLayerBuildingSupport.lastImageBuild()) {
@@ -1136,6 +1142,7 @@ public class NativeImageGenerator {
                 registerEntryPoints(entryPoints);
 
                 setDefaultConfiguration();
+                GuestImageGeneratorSupport.setupObjectLayout();
 
                 SVMImageLayerSnapshotUtil imageLayerSnapshotUtil = null;
                 if (ImageLayerBuildingSupport.buildingImageLayer()) {
@@ -1253,6 +1260,7 @@ public class NativeImageGenerator {
                     FeatureImpl.DuringSetupAccessImpl config = new FeatureImpl.DuringSetupAccessImpl(featureHandler, loader, bb, debug);
                     featureHandler.forEachFeature(feature -> feature.duringSetup(config));
                 }
+                nativeLibraries.collectAllStaticLibs();
                 BuildPhaseProviderImpl.markSetupFinished();
 
                 initializeBigBang(bb, options, featureHandler, nativeLibraries, debug, aMetaAccess, aUniverse.getSubstitutions(), loader, true,

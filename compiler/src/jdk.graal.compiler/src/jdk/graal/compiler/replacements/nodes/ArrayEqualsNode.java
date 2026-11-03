@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -49,6 +49,7 @@ import jdk.graal.compiler.nodes.util.GraphUtil;
 import jdk.graal.compiler.nodes.virtual.VirtualObjectNode;
 import org.graalvm.word.Pointer;
 
+import jdk.vm.ci.code.Architecture;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
@@ -202,6 +203,7 @@ public class ArrayEqualsNode extends PureFunctionStubIntrinsicNode implements Ca
     }
 
     @NodeIntrinsic
+    @GenerateStub.Default(runtimeCPUFeaturesAMD64 = "amd64FeaturesAVX2")
     @GenerateStub(name = "longArraysEquals", parameters = {"Long"})
     @GenerateStub(name = "floatArraysEquals", parameters = {"Float"})
     @GenerateStub(name = "doubleArraysEquals", parameters = {"Double"})
@@ -237,6 +239,11 @@ public class ArrayEqualsNode extends PureFunctionStubIntrinsicNode implements Ca
     @Override
     public ValueNode[] getForeignCallArguments() {
         return new ValueNode[]{array1, offset1, array2, offset2, length};
+    }
+
+    @Override
+    public boolean needsExplicitZeroExtension(Architecture arch) {
+        return false;
     }
 
     @Override

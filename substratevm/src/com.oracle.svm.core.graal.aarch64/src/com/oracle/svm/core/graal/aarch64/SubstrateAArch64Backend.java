@@ -56,7 +56,7 @@ import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.aarch64.SubstrateAArch64MacroAssembler;
 import com.oracle.svm.core.c.BoxedRelocatedPointer;
 import com.oracle.svm.core.c.CGlobalDataLoadPolicy;
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.deopt.DeoptimizationRuntime;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.jvmci.shared.meta.DeoptStub;
@@ -80,6 +80,7 @@ import com.oracle.svm.core.graal.lir.VerificationMarkerOp;
 import com.oracle.svm.core.graal.meta.KnownOffsets;
 import com.oracle.svm.core.graal.meta.SharedConstantReflectionProvider;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
+import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig;
 import com.oracle.svm.core.graal.nodes.CGlobalDataLoadAddressNode;
 import com.oracle.svm.core.graal.nodes.ComputedIndirectCallTargetNode;
@@ -90,7 +91,7 @@ import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.interpreter.InterpreterSupport;
 import com.oracle.svm.core.jni.CallVariant;
 import com.oracle.svm.core.meta.CompressedNullConstant;
-import com.oracle.svm.core.meta.MethodPointer;
+import com.oracle.svm.core.meta.MethodRefSupport;
 import com.oracle.svm.jvmci.shared.meta.SharedField;
 import com.oracle.svm.jvmci.shared.meta.SharedMethod;
 import com.oracle.svm.core.meta.SubstrateMethodOffsetConstant;
@@ -1126,7 +1127,8 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
                 return null;
             }
             // Assume the SVM ForeignCallSignature are identical to the Graal ones.
-            return gen.getForeignCalls().lookupForeignCall(foreignCallDescriptor);
+            SubstrateForeignCallsProvider foreignCalls = (SubstrateForeignCallsProvider) gen.getForeignCalls();
+            return foreignCalls.lookupForeignCallWithCPUFeatures(foreignCallDescriptor, ((AArch64) gen.target().arch).getFeatures());
         }
     }
 
@@ -1681,7 +1683,7 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
 
         private static AArch64LIRInstruction createLoadMethodPointerConstant(AllocatableValue dst, SubstrateMethodPointerConstant constant) {
             if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
-                if (constant.pointer().getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
+                if (constant.getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
                     DynamicImageLayerInfo dynamicImageLayerInfo = DynamicImageLayerInfo.singleton();
                     if (dynamicImageLayerInfo.isMethodCompilationDelayed(sharedMethod)) {
                         return new AArch64CGlobalDataDirectLoadAddressOp(dynamicImageLayerInfo.getSymbolForDelayedMethod(sharedMethod), dst);
@@ -1702,7 +1704,7 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
 
         private static AArch64LIRInstruction createLoadMethodOffsetConstant(AllocatableValue dst, SubstrateMethodOffsetConstant constant) {
             if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
-                if (constant.offset().getMethod() instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
+                if (MethodRefSupport.getMethod(constant.offset()) instanceof SharedMethod sharedMethod && sharedMethod.forceIndirectCall()) {
                     DynamicImageLayerInfo dynamicImageLayerInfo = DynamicImageLayerInfo.singleton();
                     if (dynamicImageLayerInfo.isMethodCompilationDelayed(sharedMethod)) {
                         return new AArch64LoadLayeredMethodOffsetConstantOp(dynamicImageLayerInfo.getSymbolForDelayedMethod(sharedMethod), dst, 0);
@@ -1822,29 +1824,29 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
     }
 
     static class SubstrateAArch64FrameMap extends AArch64FrameMap {
-        private StackSlot interpreterJNIUpcallData;
-        private StackSlot interpreterFFMUpcallData;
+        private StackSlot interpreterData;
+        private StackSlot interpreterLeaveData;
 
         SubstrateAArch64FrameMap(CodeCacheProvider codeCache, RegisterConfig registerConfig, ReferenceMapBuilderFactory referenceMapFactory) {
             super(codeCache, registerConfig, referenceMapFactory);
         }
 
-        void allocateInterpreterJNIUpcallData() {
-            assert interpreterJNIUpcallData == null;
-            interpreterJNIUpcallData = allocateStackMemory(AArch64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
+        void allocateInterpreterData() {
+            assert interpreterData == null;
+            interpreterData = allocateStackMemory(AArch64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
         }
 
-        StackSlot getInterpreterJNIUpcallData() {
-            return interpreterJNIUpcallData;
+        StackSlot getInterpreterData() {
+            return interpreterData;
         }
 
-        void allocateInterpreterFFMUpcallData() {
-            assert interpreterFFMUpcallData == null;
-            interpreterFFMUpcallData = allocateStackMemory(AArch64InterpreterStubs.sizeOfInterpreterData(), getTarget().wordSize);
+        void allocateInterpreterLeaveData() {
+            assert interpreterLeaveData == null;
+            interpreterLeaveData = allocateStackMemory(2 * getTarget().wordSize, getTarget().wordSize);
         }
 
-        StackSlot getInterpreterFFMUpcallData() {
-            return interpreterFFMUpcallData;
+        StackSlot getInterpreterLeaveData() {
+            return interpreterLeaveData;
         }
     }
 
@@ -2071,7 +2073,7 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
                 Label nonCremaMethodId = new Label();
                 // Negative method IDs encode CremaResolvedJavaMethod instances.
                 asm.tbz(methodIdArg.getRegister(), 63, nonCremaMethodId);
-                result.recordDataPatch(asm.position(), new ConstantReference(new SubstrateMethodPointerConstant(new MethodPointer(cremaData.wrapperMethod()))));
+                result.recordDataPatch(asm.position(), new ConstantReference(new SubstrateMethodPointerConstant(MethodRefSupport.createMethodPointer(cremaData.wrapperMethod()))));
                 asm.adrpAdd(scratchRegister);
                 asm.jmp(scratchRegister);
                 asm.bind(nonCremaMethodId);
@@ -2158,19 +2160,19 @@ public class SubstrateAArch64Backend extends SubstrateBackendWithAssembler<Subst
             InterpreterJNIUpcallStubGuestValue jniAnnotation = InterpreterJNIUpcallStubGuestValue.get(method);
             if (jniAnnotation != null && jniAnnotation.callVariant() == CallVariant.VARARGS && !Platform.includedIn(Platform.DARWIN.class)) {
                 assert InterpreterSupport.isEnabled();
-                ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterJNIUpcallData();
+                ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterData();
             }
             if (stubType == DeoptStub.StubType.InterpreterFFMUpcallStub) {
                 assert InterpreterSupport.isEnabled();
-                ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterFFMUpcallData();
+                ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterData();
             }
         }
         if (stubType == DeoptStub.StubType.InterpreterEnterStub) {
             assert InterpreterSupport.isEnabled();
-            frameMap.reserveOutgoing(AArch64InterpreterStubs.additionalFrameSizeEnterStub());
+            ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterData();
         } else if (stubType == DeoptStub.StubType.InterpreterLeaveStub || stubType == DeoptStub.StubType.InterpreterNativeDowncallStub) {
             assert InterpreterSupport.isEnabled();
-            frameMap.reserveOutgoing(AArch64InterpreterStubs.additionalFrameSizeLeaveStub());
+            ((SubstrateAArch64FrameMap) frameMap).allocateInterpreterLeaveData();
         }
         return lirGenerationResult;
     }

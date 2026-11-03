@@ -35,7 +35,7 @@ import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.SubstrateTarget;
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
 import com.oracle.svm.core.genscavenge.UnalignedHeapChunk;
@@ -344,6 +344,9 @@ final class UnalignedChunkRememberedSet {
                     if (!CardTable.isDirty(ctAdr, curIdx)) {
                         return curIdx;
                     }
+                    if (clean) {
+                        CardTable.setClean(ctAdr, curIdx);
+                    }
                     curIdx = curIdx.add(1);
                 }
                 VMError.shouldNotReachHere("should have early-returned");
@@ -409,7 +412,7 @@ final class UnalignedChunkRememberedSet {
 
     @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     private static Pointer getCardTableEnd(UnalignedHeader chunk) {
-        return getCardTableStart(chunk).add(getCardTableSize(getObjectStartOffset(chunk).subtract(sizeOfObjectStartOffsetField())));
+        return getCardTableStart(chunk).add(getCardTableSize(chunk));
     }
 
     @Fold

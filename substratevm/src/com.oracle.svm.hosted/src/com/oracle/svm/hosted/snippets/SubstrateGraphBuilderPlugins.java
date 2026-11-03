@@ -62,7 +62,8 @@ import com.oracle.svm.core.StaticFieldsSupport;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.core.config.ObjectLayoutCompilerSupport;
 import com.oracle.svm.core.encoder.SymbolEncoder;
 import com.oracle.svm.core.graal.nodes.DeoptEntryNode;
 import com.oracle.svm.core.graal.nodes.FarReturnNode;
@@ -108,6 +109,7 @@ import com.oracle.svm.hosted.nodes.DeoptProxyNode;
 import com.oracle.svm.hosted.nodes.ReadReservedRegister;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
 import com.oracle.svm.shared.NeverInline;
+import com.oracle.svm.shared.SharedIntrinsics;
 import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.shared.singletons.LayeredImageSingletonSupport;
 import com.oracle.svm.shared.singletons.traits.LayeredInstallationKindSingletonTrait;
@@ -160,7 +162,6 @@ import jdk.graal.compiler.nodes.java.DynamicNewInstanceWithExceptionNode;
 import jdk.graal.compiler.nodes.java.InstanceOfDynamicNode;
 import jdk.graal.compiler.nodes.java.NewArrayNode;
 import jdk.graal.compiler.nodes.java.StoreIndexedNode;
-import jdk.graal.compiler.nodes.java.ValidateNewInstanceClassNode;
 import jdk.graal.compiler.nodes.spi.ArrayLengthProvider;
 import jdk.graal.compiler.nodes.type.NarrowOopStamp;
 import jdk.graal.compiler.nodes.type.StampTool;
@@ -177,6 +178,7 @@ import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins.IntegerPolyno
 import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins.IntegerPolynomialP256MontgomeryMultPlugin;
 import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins.Poly1305ProcessBlocksPlugin;
 import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins.ReachabilityFencePlugin;
+import jdk.graal.compiler.replacements.ReplacementsUtil;
 import jdk.graal.compiler.replacements.nodes.AESNode;
 import jdk.graal.compiler.replacements.nodes.CountLeadingZerosNode;
 import jdk.graal.compiler.replacements.nodes.CountTrailingZerosNode;
@@ -219,6 +221,7 @@ public class SubstrateGraphBuilderPlugins {
         registerSerializationPlugins(loader, plugins, parsingReason);
         registerAtomicUpdaterPlugins(plugins);
         registerObjectPlugins(plugins);
+        registerSharedIntrinsicsPlugins(plugins);
         registerUnsafePlugins(plugins);
         registerKnownIntrinsicsPlugins(plugins);
         registerMemoryBarriersPlugins(plugins);
@@ -238,6 +241,30 @@ public class SubstrateGraphBuilderPlugins {
             registerPoly1305Plugin(plugins);
             registerIntegerPolynomialPlugins(plugins);
         }
+    }
+
+    private static void registerSharedIntrinsicsPlugins(InvocationPlugins plugins) {
+        Registration r = new Registration(plugins, new TypeSymbol(GuestAccess.get().lookupType(SharedIntrinsics.class)));
+        r.register(new RequiredInlineOnlyInvocationPlugin("inIntrinsic") {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
+                b.addPush(JavaKind.Boolean, ConstantNode.forBoolean(b.parsingIntrinsic()));
+                return true;
+            }
+        });
+
+        r.register(new RequiredInlineOnlyInvocationPlugin("dynamicAssert", boolean.class, String.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode condition, ValueNode message) {
+                if (!b.parsingIntrinsic()) {
+                    return false;
+                }
+                ResolvedJavaMethod dynamicAssertMethod = b.getMetaAccess().lookupJavaMethod(
+                                ReflectionUtil.lookupMethod(ReplacementsUtil.class, "dynamicAssert", boolean.class, String.class));
+                b.handleReplacedInvoke(InvokeKind.Static, dynamicAssertMethod, new ValueNode[]{condition, message}, true);
+                return true;
+            }
+        });
     }
 
     private static void registerUninterruptibleUtilsPlugins(InvocationPlugins plugins) {
@@ -858,28 +885,7 @@ public class SubstrateGraphBuilderPlugins {
                 return false;
             }
         });
-        r.register(new RequiredInvocationPlugin("allocateInstance", Receiver.class, Class.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver unsafe, ValueNode clazz) {
-                /* Emits a null-check for the otherwise unused receiver. */
-                unsafe.get(true);
-                /*
-                 * The allocated class must be null-checked already before the class initialization
-                 * check.
-                 */
-                ValueNode clazzNonNull = b.nullCheckedValue(clazz, DeoptimizationAction.None);
-                EnsureClassInitializedNode ensureInitialized = b.append(new EnsureClassInitializedNode(clazzNonNull));
-                ensureInitialized.setStateAfter(b.getInvocationPluginBeforeState());
-
-                ValidateNewInstanceClassNode clazzLegal = b.add(new ValidateNewInstanceClassNode(clazzNonNull));
-                if (b.currentBlockCatchesOOME()) {
-                    b.addPush(JavaKind.Object, new DynamicNewInstanceWithExceptionNode(clazzLegal, true, true));
-                } else {
-                    b.addPush(JavaKind.Object, new DynamicNewInstanceNode(clazzLegal, true, true));
-                }
-                return true;
-            }
-        });
+        SubstrateSharedGraphBuilderPlugins.registerUnsafeAllocateInstancePlugin(r);
     }
 
     private static boolean processFieldOffset(GraphBuilderContext b, Receiver receiver, boolean isSunMiscUnsafe, ResolvedJavaField resolvedJavaField) {
@@ -1509,7 +1515,7 @@ public class SubstrateGraphBuilderPlugins {
         if (elementKind == null) {
             return null;
         }
-        if (!offset.isJavaConstant() || offset.asJavaConstant().asLong() != ObjectLayout.singleton().getArrayBaseOffset(elementKind)) {
+        if (!offset.isJavaConstant() || offset.asJavaConstant().asLong() != ObjectLayoutCompilerSupport.getArrayBaseOffset(ObjectLayout.singleton(), elementKind)) {
             /* The native routines expect indices relative to the first array element. */
             return null;
         }
@@ -1682,4 +1688,5 @@ public class SubstrateGraphBuilderPlugins {
 
         throw UserError.abort("%s: parameter %s of call to %s in %s", message, parameterName, targetMethod, b.getMethod().asStackTraceElement(b.bci()));
     }
+
 }

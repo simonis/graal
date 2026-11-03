@@ -277,9 +277,6 @@ public abstract class VMThreads {
      * Use the following pattern to iterate over all attached threads. It is allocation free and can
      * therefore also be used during a GC:
      *
-     * Use the following pattern to iterate over all attached threads. It is allocation free and can
-     * therefore also be used during a GC:
-     * 
      * <pre>
      * for (VMThread thread = VMThreads.firstThread(); thread.isNonNull(); thread = VMThreads.nextThread(thread)) {
      * </pre>

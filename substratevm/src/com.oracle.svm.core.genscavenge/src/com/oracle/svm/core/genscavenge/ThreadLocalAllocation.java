@@ -47,7 +47,7 @@ import org.graalvm.word.impl.Word;
 import com.oracle.svm.guest.staging.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.c.BooleanPointer;
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.genscavenge.UnalignedHeapChunk.UnalignedHeader;
 import com.oracle.svm.core.genscavenge.graal.GenScavengeAllocationSupport;
 import com.oracle.svm.core.genscavenge.graal.nodes.FormatArrayNode;
@@ -231,7 +231,11 @@ public final class ThreadLocalAllocation {
         HeapImpl.exitIfAllocationDisallowed("ThreadLocalAllocation.slowPathNewInstanceWithoutAllocating", DynamicHub.toClass(hub).getName());
         GCImpl.getGCImpl().maybeCollectOnAllocation(size);
 
-        return slowPathNewInstanceWithoutAllocation0(hub, size);
+        try {
+            return slowPathNewInstanceWithoutAllocation0(hub, size);
+        } catch (HeapChunkAllocationException e) {
+            throw OutOfMemoryUtil.reportOutOfMemoryError(e.getOutOfMemoryError());
+        }
     }
 
     @Uninterruptible(reason = "Possible use of StackValue in virtual thread.")
@@ -274,7 +278,11 @@ public final class ThreadLocalAllocation {
         HeapImpl.exitIfAllocationDisallowed("ThreadLocalAllocation.slowPathNewArrayLikeObjectWithoutAllocating", DynamicHub.toClass(hub).getName());
         GCImpl.getGCImpl().maybeCollectOnAllocation(size);
 
-        return slowPathNewArrayLikeObjectWithoutAllocation0(hub, length, size, podReferenceMap);
+        try {
+            return slowPathNewArrayLikeObjectWithoutAllocation0(hub, length, size, podReferenceMap);
+        } catch (HeapChunkAllocationException e) {
+            throw OutOfMemoryUtil.reportOutOfMemoryError(e.getOutOfMemoryError());
+        }
     }
 
     @Uninterruptible(reason = "Possible use of StackValue in virtual thread.")
@@ -287,7 +295,7 @@ public final class ThreadLocalAllocation {
         allocatedOutsideTlab.write(false);
 
         Object array;
-        if (!GenScavengeAllocationSupport.arrayAllocatedInAlignedChunk(size)) {
+        if (!GenScavengeAllocationSupport.shouldAllocateInAlignedChunk(size)) {
             /*
              * Large arrays go into their own unaligned chunk. Only arrays and stored continuations
              * may be allocated in an unaligned chunk.

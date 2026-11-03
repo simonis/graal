@@ -110,6 +110,7 @@ final class RuntimeBootModuleLayerStartupHook implements RuntimeSupport.Hook {
     @Override
     public void execute(boolean isFirstIsolate) {
         RuntimeBootModuleLayerSupport.boot2();
+        ClassLoaderHelper.initializeSystemClassLoader();
     }
 }
 
@@ -480,6 +481,7 @@ public final class RuntimeBootModuleLayerSupport {
     /// manually here so the existing boot-layer object can be preserved and patched in place
     /// afterwards.
     private static Map<String, Module> createRuntimeModules(ModuleLayer bootLayer, Set<ResolvedModule> runtimeModules, Function<String, ClassLoader> clf) {
+        SubstrateUtil.guaranteeRuntimeOnly();
         Target_jdk_internal_access_JavaLangAccess jla = javaLangAccess();
         LinkedHashMap<String, Module> nameToModule = new LinkedHashMap<>();
 
@@ -512,10 +514,18 @@ public final class RuntimeBootModuleLayerSupport {
                 initializeExportsAndOpens(jla, bootLayer, module, descriptor, nameToModule);
             }
         }
+
+        // Qualified targets absent at image build time can now receive exports and opens.
+        for (Module module : bootLayer.modules()) {
+            ModuleDescriptor descriptor = module.getDescriptor();
+            if (!descriptor.isOpen() && !descriptor.isAutomatic()) {
+                initializeExportsAndOpens(jla, bootLayer, module, descriptor, nameToModule);
+            }
+        }
         return nameToModule;
     }
 
-    /// Initializes descriptor-defined exports and opens for a runtime-created module.
+    /// Initializes descriptor-defined exports and opens against the augmented boot layer.
     private static void initializeExportsAndOpens(Target_jdk_internal_access_JavaLangAccess javaLangAccess, ModuleLayer bootLayer, Module module, ModuleDescriptor descriptor,
                     Map<String, Module> nameToModule) {
         Module everyoneModule = Target_java_lang_Module.EVERYONE_MODULE;
@@ -711,6 +721,14 @@ public final class RuntimeBootModuleLayerSupport {
             if (mref != null) {
                 if (!isCompatibleModuleReference(mref, resolvedModule.reference())) {
                     throw new IllegalArgumentException("Runtime boot-layer resolved module has conflicting refs '" + resolvedModule.reference() + "' != '" + mref + "'");
+                }
+                // Preserved module references can outlive their entries in the package map.
+                var loadedModule = new Target_jdk_internal_loader_BuiltinClassLoader_LoadedModule(builtinLoader, mref);
+                for (String packageName : mref.descriptor().packages()) {
+                    var previous = Target_jdk_internal_loader_BuiltinClassLoader.packageToModule.putIfAbsent(packageName, loadedModule);
+                    if (previous != null && (previous.loader() != builtinLoader || !previous.mref.descriptor().name().equals(resolvedModule.name()))) {
+                        throw new IllegalArgumentException("Runtime module package conflicts with an existing module: " + packageName);
+                    }
                 }
             } else {
                 builtinLoader.loadModule(resolvedModule.reference());

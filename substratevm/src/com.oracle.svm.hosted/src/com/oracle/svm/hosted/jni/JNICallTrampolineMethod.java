@@ -46,7 +46,8 @@ import com.oracle.svm.core.jni.access.JNIAccessibleMethod;
 import com.oracle.svm.core.jni.headers.JNIEnvironment;
 import com.oracle.svm.core.jni.headers.JNIMethodId;
 import com.oracle.svm.core.jni.headers.JNIObjectHandle;
-import com.oracle.svm.core.meta.MethodPointer;
+import com.oracle.svm.guest.staging.meta.MethodPointer;
+import com.oracle.svm.core.meta.MethodRefSupport;
 import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.threadlocal.VMThreadLocalOffsetProvider;
 import com.oracle.svm.hosted.annotation.CustomSubstitutionMethod;
@@ -133,8 +134,8 @@ public class JNICallTrampolineMethod extends CustomSubstitutionMethod {
             CremaJNITrampolineData cremaData = null;
             if (RuntimeClassLoading.isSupported()) {
                 CallVariant variant = JNIJavaCallTrampolineHolder.getVariant(getName());
-                CFunctionPointer cremaMethodWrapperEntryPoint = CremaSupport.singleton().getCremaJNIMethodCallWrapperEntryPoint(variant, nonVirtual);
-                ResolvedJavaMethod wrapperMethod = ((MethodPointer) cremaMethodWrapperEntryPoint).getMethod();
+                CFunctionPointer cremaJNIUpcallWrapperEntryPoint = CremaSupport.singleton().getCremaJNIUpcallWrapperEntryPoint(variant, nonVirtual);
+                ResolvedJavaMethod wrapperMethod = MethodRefSupport.getMethod((MethodPointer) cremaJNIUpcallWrapperEntryPoint);
                 cremaData = new CremaJNITrampolineData(wrapperMethod, variant);
             }
             return backend.createJNITrampolineMethod(method, identifier, threadArg, threadIsolateOffset, methodIdArg, getFieldOffset(providers), cremaData);

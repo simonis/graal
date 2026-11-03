@@ -26,8 +26,10 @@ package com.oracle.svm.util;
 
 import java.io.InputStream;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.VarHandle;
 import java.lang.ref.Reference;
 import java.lang.reflect.Array;
+import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.ByteOrder;
@@ -38,6 +40,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -56,6 +61,7 @@ import org.graalvm.word.WordBase;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.shared.singletons.ImageSingletonsSupportImpl;
 
+import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.vmaccess.VMAccess;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
@@ -150,6 +156,8 @@ public abstract sealed class GuestElements permits GuestAccess.GuestElementsImpl
     public final ResolvedJavaMethod java_lang_invoke_MethodHandle_type = lookupMethod(java_lang_invoke_MethodHandle, "type");
     public final ResolvedJavaMethod java_lang_invoke_MethodHandle_maybeCustomize = lookupMethod(java_lang_invoke_MethodHandle, "maybeCustomize");
 
+    public final ResolvedJavaType java_lang_invoke_VarHandle = lookupType(VarHandle.class);
+
     public final ResolvedJavaType java_lang_Object = lookupType(Object.class);
     public final ResolvedJavaMethod java_lang_Object_clone = lookupMethod(java_lang_Object, "clone");
     public final ResolvedJavaMethod java_lang_Object_equals = lookupMethod(java_lang_Object, "equals", Object.class);
@@ -171,6 +179,8 @@ public abstract sealed class GuestElements permits GuestAccess.GuestElementsImpl
     public final ResolvedJavaType java_lang_reflect_Array = lookupType(Array.class);
     public final ResolvedJavaMethod java_lang_reflect_Array_newInstance = lookupMethod(java_lang_reflect_Array, "newInstance", Class.class, int.class);
     public final ResolvedJavaMethod java_lang_reflect_Array_newArray = lookupMethod(java_lang_reflect_Array, "newArray", Class.class, int.class);
+
+    public final ResolvedJavaType java_lang_reflect_Executable = lookupType(Executable.class);
 
     public final ResolvedJavaType java_lang_reflect_Field = lookupType(Field.class);
     public final ResolvedJavaMethod java_lang_reflect_Field_setAccessible = lookupMethod(java_lang_reflect_Field, "setAccessible", boolean.class);
@@ -200,6 +210,10 @@ public abstract sealed class GuestElements permits GuestAccess.GuestElementsImpl
     public final ResolvedJavaType java_util_Set = lookupType(Set.class);
     public final ResolvedJavaMethod java_util_Set_of = lookupMethod(java_util_Set, "of", Object[].class);
 
+    public final ResolvedJavaType java_util_concurrent_atomic_AtomicIntegerFieldUpdater = lookupType(AtomicIntegerFieldUpdater.class);
+    public final ResolvedJavaType java_util_concurrent_atomic_AtomicLongFieldUpdater = lookupType(AtomicLongFieldUpdater.class);
+    public final ResolvedJavaType java_util_concurrent_atomic_AtomicReferenceFieldUpdater = lookupType(AtomicReferenceFieldUpdater.class);
+
     public final ResolvedJavaType java_util_Map_Entry = lookupType("java.util.Map$Entry");
     public final ResolvedJavaMethod java_util_Map_Entry_getKey = lookupMethod(java_util_Map_Entry, "getKey");
     public final ResolvedJavaMethod java_util_Map_Entry_getValue = lookupMethod(java_util_Map_Entry, "getValue");
@@ -223,6 +237,8 @@ public abstract sealed class GuestElements permits GuestAccess.GuestElementsImpl
 
     public final ResolvedJavaType java_util_function_Predicate = lookupType(Predicate.class);
     public final ResolvedJavaMethod java_util_function_Predicate_test = lookupMethod(java_util_function_Predicate, "test", Object.class);
+
+    public final ResolvedJavaType jdk_graal_compiler_options_OptionKey = lookupType(OptionKey.class);
 
     public final ResolvedJavaType jdk_internal_foreign_AbstractMemorySegmentImpl = lookupType("jdk.internal.foreign.AbstractMemorySegmentImpl");
     public final ResolvedJavaMethod jdk_internal_foreign_AbstractMemorySegmentImpl_equals = lookupMethod(jdk_internal_foreign_AbstractMemorySegmentImpl, "equals", Object.class);
@@ -255,6 +271,7 @@ public abstract sealed class GuestElements permits GuestAccess.GuestElementsImpl
 
     public final ResolvedJavaType HostedManagement = lookupType(ImageSingletonsSupportImpl.HostedManagement.class);
     public final ResolvedJavaMethod HostedManagement_install = lookupMethod(HostedManagement, "install");
+    public final ResolvedJavaMethod HostedManagement_clear = lookupMethod(HostedManagement, "clear");
 
     public final ResolvedJavaType RuntimeOptionKey = lookupType("com.oracle.svm.guest.staging.option.RuntimeOptionKey");
     public final ResolvedJavaMethod RuntimeOptionKey_getValue = lookupMethod(RuntimeOptionKey, "getValue");

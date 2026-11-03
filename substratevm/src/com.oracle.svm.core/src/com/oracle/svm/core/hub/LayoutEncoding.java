@@ -33,7 +33,7 @@ import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.shared.AlwaysInline;
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.metaspace.Metaspace;
@@ -219,13 +219,20 @@ public class LayoutEncoding {
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord getPureInstanceSize(DynamicHub hub, boolean withOptionalIdHashField) {
-        UnsignedWord size = getPureInstanceAllocationSize(hub.getLayoutEncoding());
+        int identityHashOffset = withOptionalIdHashField && ObjectLayout.singleton().isIdentityHashFieldOptional() ? hub.getIdentityHashOffset() : 0;
+        return Word.unsigned(getPureInstanceSize(hub.getLayoutEncoding(), identityHashOffset, withOptionalIdHashField));
+    }
+
+    /** Computes the instance size from its layout encoding and identity hash offset. */
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public static long getPureInstanceSize(int encoding, int identityHashOffset, boolean withOptionalIdHashField) {
+        long size = encoding;
         ObjectLayout ol = ObjectLayout.singleton();
         if (withOptionalIdHashField && ol.isIdentityHashFieldOptional()) {
-            int afterIdHashField = hub.getIdentityHashOffset() + Integer.BYTES;
-            if (size.belowThan(afterIdHashField)) {
+            long afterIdHashField = (long) identityHashOffset + Integer.BYTES;
+            if (size < afterIdHashField) {
                 /* Identity hash is at the end of the object and does not fit in a gap. */
-                size = Word.unsigned(ol.alignUp(afterIdHashField));
+                size = ol.alignUp(afterIdHashField);
             }
         }
         return size;

@@ -32,13 +32,14 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import com.oracle.svm.core.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platform.HOSTED_ONLY;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.options.OptionDescriptors;
 
+import com.oracle.svm.core.config.ObjectLayoutCompilerSupport;
 import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.deopt.Deoptimizer;
 import com.oracle.svm.core.deopt.SubstrateSpeculationLog;
@@ -243,14 +244,14 @@ public final class SubstrateTruffleRuntime extends OptimizedTruffleRuntime {
         if (profilingEnabled == null) {
             profilingEnabled = getEngineData(rootNode).profilingEnabled;
         }
-        OptimizedCallTarget callTarget = TruffleSupport.singleton().createOptimizedCallTarget(source, rootNode);
+        OptimizedCallTarget callTarget = new SubstrateOptimizedCallTarget(source, rootNode);
         ensureInitializedAtRuntime(callTarget);
         return callTarget;
     }
 
     @Override
     protected OptimizedCallTarget createInitializationCallTarget(EngineData engine) {
-        return TruffleSupport.singleton().createOptimizedCallTarget(engine);
+        return new SubstrateOptimizedCallTarget(engine);
     }
 
     private void ensureInitializedAtRuntime(OptimizedCallTarget callTarget) {
@@ -413,12 +414,12 @@ public final class SubstrateTruffleRuntime extends OptimizedTruffleRuntime {
 
     @Override
     protected int getArrayBaseOffset(Class<?> componentType) {
-        return ObjectLayout.singleton().getArrayBaseOffset(JavaKind.fromJavaClass(componentType));
+        return ObjectLayoutCompilerSupport.getArrayBaseOffset(ObjectLayout.singleton(), JavaKind.fromJavaClass(componentType));
     }
 
     @Override
     protected int getArrayIndexScale(Class<?> componentType) {
-        return ObjectLayout.singleton().getArrayIndexScale(JavaKind.fromJavaClass(componentType));
+        return ObjectLayoutCompilerSupport.getArrayIndexScale(ObjectLayout.singleton(), JavaKind.fromJavaClass(componentType));
     }
 
     @Override

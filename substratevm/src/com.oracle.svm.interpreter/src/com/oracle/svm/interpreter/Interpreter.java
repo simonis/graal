@@ -37,6 +37,8 @@ import static com.oracle.svm.espresso.classfile.Constants.JVM_ArrayType_Int;
 import static com.oracle.svm.espresso.classfile.Constants.JVM_ArrayType_Long;
 import static com.oracle.svm.espresso.classfile.Constants.JVM_ArrayType_Object;
 import static com.oracle.svm.espresso.classfile.Constants.JVM_ArrayType_Short;
+import static com.oracle.svm.interpreter.CachedInterpreterOperandStack.STATE_TOS_1;
+import static com.oracle.svm.interpreter.CachedInterpreterOperandStack.STATE_TOS_2;
 import static com.oracle.svm.interpreter.InterpreterOperandStack.STATE_DEBUGGING;
 import static com.oracle.svm.interpreter.InterpreterOperandStack.STATE_PROFILING;
 import static com.oracle.svm.interpreter.InterpreterOptions.InterpreterTraceSupport;
@@ -503,6 +505,7 @@ public final class Interpreter {
                         .string("/top=").unsigned(top).newline();
     }
 
+    @NeverInline("Keep return tracing out of the interpreter")
     private static void traceInterpreterReturn(InterpreterResolvedJavaMethod method, int indent, long curBCI, long top) {
         /* arguments to Log methods might have side-effects */
         if (!InterpreterTraceSupport.getValue()) {
@@ -527,10 +530,14 @@ public final class Interpreter {
      * Ristretto OSR returns bypass this helper because the OSR continuation has already left the
      * interpreter and returns as runtime-compiled code.
      */
-    private static void returnFromInterpreter(InterpreterResolvedJavaMethod method, int indent, long curBCI, long top, Object returnValue, int state) {
-        traceInterpreterReturn(method, indent, curBCI, top);
+    @AlwaysInline("Keep the operand-stack overlay virtual across interpreter returns")
+    private static void returnFromInterpreter(InterpreterResolvedJavaMethod method, int indent, long curBCI, InterpreterFrame frame, InterpreterOperandStack virtualStack, Object returnValue) {
+        if (InterpreterTraceSupport.getValue()) {
+            virtualStack.flushCache(frame);
+            traceInterpreterReturn(method, indent, curBCI, virtualStack.topForFrameStackOperation());
+        }
         Thread currentThread = Thread.currentThread();
-        if (state == STATE_DEBUGGING && DebuggerEvents.singleton().isEventEnabled(currentThread, EventKind.METHOD_EXIT)) {
+        if (virtualStack.getState() == STATE_DEBUGGING && DebuggerEvents.singleton().isEventEnabled(currentThread, EventKind.METHOD_EXIT)) {
             if (method.getDeclaringClass().isMethodExitEvent()) {
                 int flags = EventKind.METHOD_EXIT.getFlag() | EventKind.METHOD_EXIT_WITH_RETURN_VALUE.getFlag();
                 DebuggerEvents.singleton().getEventHandler().onEventAt(currentThread, method, (int) curBCI, returnValue, flags);
@@ -538,6 +545,7 @@ public final class Interpreter {
         }
     }
 
+    @NeverInline("Keep instruction tracing out of bytecode-handler stubs")
     private static void traceInterpreterInstruction(InterpreterFrame frame, int indent, long curBCI, long top, int curOpcode) {
         /* arguments to Log methods might have side-effects */
         if (!InterpreterTraceSupport.getValue()) {
@@ -553,6 +561,7 @@ public final class Interpreter {
         traceInterpreter("").newline();
     }
 
+    @NeverInline("Keep exception tracing out of the interpreter")
     private static void traceInterpreterException(InterpreterResolvedJavaMethod method, int indent, long curBCI, long top) {
         /* arguments to Log methods might have side-effects */
         if (!InterpreterTraceSupport.getValue()) {
@@ -637,10 +646,9 @@ public final class Interpreter {
                     InterpreterUnresolvedSignature signature = method.getSignature();
                     Object[] calleeArgs = rebasic(frame.getArguments(), signature, !method.isStatic());
                     // This should integrate with the debugger GR-70801
-                    boolean preferStayInInterpreter = forceStayInInterpreter;
                     traceInvokeBasic(target, indent);
                     try {
-                        Object result = InterpreterToVM.dispatchInvocation(target, calleeArgs, CallKind.DIRECT, forceStayInInterpreter, preferStayInInterpreter, false);
+                        Object result = InterpreterToVM.dispatchInvocation(target, calleeArgs, CallKind.DIRECT, forceStayInInterpreter, false);
                         yield unbasic(result, signature.getReturnKind());
                     } catch (SemanticJavaException e) {
                         throw uncheckedThrow(e.getCause());
@@ -652,12 +660,19 @@ public final class Interpreter {
                     InterpreterResolvedJavaMethod resolutionSeed = InterpreterResolvedJavaMethod.fromMemberName(memberName);
                     InterpreterUnresolvedSignature signature = resolutionSeed.getSignature();
                     boolean hasReceiver = intrinsic != SignaturePolymorphicIntrinsic.LinkToStatic;
-                    Object[] basicArgs = unbasic(arguments, signature, hasReceiver);
+                    /*
+                     * Frame arguments are boxed according to the linkTo call-site signature, which
+                     * can contain sub-word types and need not match the target signature. Convert
+                     * through basic kinds to adapt between them: an int call-site parameter can
+                     * correspond to a byte target parameter, or vice versa. For matching sub-word
+                     * kinds, the conversions cancel each other out.
+                     */
+                    Object[] basicArgs = rebasic(arguments, method.getSignature(), !method.isStatic());
+                    Object[] calleeArgs = unbasic(basicArgs, signature, hasReceiver);
                     // This should integrate with the debugger GR-70801
-                    boolean preferStayInInterpreter = forceStayInInterpreter;
                     traceLinkTo(resolutionSeed, intrinsic, indent);
                     try {
-                        Object result = InterpreterToVM.dispatchInvocation(resolutionSeed, basicArgs, intrinsic.getCallKind(), forceStayInInterpreter, preferStayInInterpreter, false);
+                        Object result = InterpreterToVM.dispatchInvocation(resolutionSeed, calleeArgs, intrinsic.getCallKind(), forceStayInInterpreter, false);
                         yield rebasic(result, signature.getReturnKind());
                     } catch (SemanticJavaException e) {
                         throw uncheckedThrow(e.getCause());
@@ -769,8 +784,14 @@ public final class Interpreter {
                                         @BytecodeInterpreterHandlerConfig.Argument.Field(name = "primitives"),
                                         @BytecodeInterpreterHandlerConfig.Argument.Field(name = "references")
                         }),
-                        @BytecodeInterpreterHandlerConfig.Argument(expand = BytecodeInterpreterHandlerConfig.Argument.ExpansionKind.VIRTUAL, fields = {
-                                        @BytecodeInterpreterHandlerConfig.Argument.Field(name = "state", templateVariable = 3)
+                        @BytecodeInterpreterHandlerConfig.Argument(expand = BytecodeInterpreterHandlerConfig.Argument.ExpansionKind.VIRTUAL, expandedType = CachedInterpreterOperandStack.class, fields = {
+                                        @BytecodeInterpreterHandlerConfig.Argument.Field(name = "state", templateVariable = STATE_TOS_2 + 1),
+                                        @BytecodeInterpreterHandlerConfig.Argument.Field(name = "tosPrimitive0", validWhen = "state", valid = {
+                                                        STATE_TOS_1, STATE_TOS_2
+                                        }),
+                                        @BytecodeInterpreterHandlerConfig.Argument.Field(name = "tosPrimitive1", validWhen = "state", valid = {
+                                                        STATE_TOS_2
+                                        })
                         })
         })
         private static Object executeBodyFromBCI(InterpreterFrame frame, InterpreterResolvedJavaMethod method, int startBCI, int startTop,
@@ -780,7 +801,7 @@ public final class Interpreter {
              * precedence so events enabled during this invocation are still observed. Both
              * capability checks fold at image build time.
              */
-            InterpreterOperandStack virtualStack = new InterpreterOperandStack(startTop);
+            InterpreterOperandStack virtualStack = new CachedInterpreterOperandStack(startTop);
             final MethodProfile methodProfile;
             if (debuggerEventsSupported()) {
                 methodProfile = null;
@@ -1096,7 +1117,7 @@ public final class Interpreter {
                         case ARETURN: // fall through
                         case RETURN: {
                             Object returnValue = virtualStack.peekKindAsObject(frame, method.getSignature().getReturnKind());
-                            returnFromInterpreter(method, indent, curBCI, virtualStack.topForFrameStackOperation(), returnValue, virtualStack.getState());
+                            returnFromInterpreter(method, indent, curBCI, frame, virtualStack, returnValue);
                             return returnValue;
                         }
                         // @formatter:off
@@ -1171,11 +1192,14 @@ public final class Interpreter {
                         virtualStack.clearOperandStack(frame);
                         virtualStack.pushObject(frame, exception);
                         // The completed stack update marks the transition to the exception-handler entry BCI.
-                        curBCI = beforeJumpChecks(frame, curBCI, handler.getHandlerBCI(), virtualStack.topForFrameStackOperation(), virtualStack.getState());
+                        curBCI = beforeJumpChecks(frame, curBCI, handler.getHandlerBCI(), virtualStack);
                         prepareOpcodeForDispatch(curBCI, frame, virtualStack);
                         continue;
                     } else {
-                        traceInterpreterException(method, indent, curBCI, virtualStack.topForFrameStackOperation());
+                        if (InterpreterTraceSupport.getValue()) {
+                            virtualStack.flushCache(frame);
+                            traceInterpreterException(method, indent, curBCI, virtualStack.topForFrameStackOperation());
+                        }
                         throw uncheckedThrow(exception);
                     }
                 } catch (Throwable e) {
@@ -1225,6 +1249,7 @@ public final class Interpreter {
          */
         @AlwaysInline("Keep the interpreter fast path call-free")
         private static void prepareOpcodeForDispatch(long curBCI, InterpreterFrame frame, InterpreterOperandStack virtualStack) {
+            virtualStack.beforeDispatch();
             boolean debuggerEventsSupported = virtualStack.getState() == STATE_DEBUGGING;
             if (!debuggerEventsSupported && !InterpreterOptions.InterpreterTraceSupport.getValue()) {
                 return;
@@ -1250,7 +1275,8 @@ public final class Interpreter {
                     frame.debugState.debuggerEventFlags = 0;
                 }
             }
-            if (InterpreterOptions.InterpreterTraceSupport.getValue()) {
+            if (InterpreterOptions.InterpreterTraceSupport.getValue() && InterpreterOptions.InterpreterTrace.getValue()) {
+                virtualStack.flushCache(frame);
                 traceInterpreterInstruction(frame, frame.debugState.indent, curBCI, virtualStack.topForFrameStackOperation(), opcode);
             }
             if (debuggerEventsSupported) {
@@ -3238,6 +3264,7 @@ public final class Interpreter {
         @BytecodeInterpreterHandler(value = QUICK_GETSTATIC)
         private static long quickGetstaticHandler(long curBCI, InterpreterFrame frame, InterpreterOperandStack virtualStack) {
             StaticStorage staticStorage = quickGetStaticStorage(curBCI, frame);
+            InterpreterUtil.guarantee(staticStorage.storage != null);
             getField(frame, staticStorage.field, virtualStack, staticStorage.type, true, staticStorage.storage);
             return advanceToNextBytecode(curBCI, QUICK_GETSTATIC, frame, virtualStack);
         }
@@ -3293,6 +3320,7 @@ public final class Interpreter {
             LinkedInvoke linkedInvoke = getOrLinkInvoke(callerFrame, callerFrame.code, curBCI, opcode);
             Object[] calleeArgs;
             if (opcode == INVOKESTATIC && linkedInvoke.argumentCount == 0) {
+                virtualStack.flushCache(callerFrame);
                 calleeArgs = InterpreterFrame.EMPTY;
             } else {
                 calleeArgs = new Object[linkedInvoke.argumentCount];
@@ -3310,17 +3338,20 @@ public final class Interpreter {
                 if (linkedInvoke.requiresSymbolicTypeCheck(opcode)) {
                     DynamicHub instanceHub = DynamicHubIntrinsics.readHub(receiver);
                     if (linkedInvoke.symbolicHolder != null) {
-                        DynamicHub typeHub = linkedInvoke.symbolicHolder.getHub();
+                        // JVMS 4.9.2, Structural Constraints (the non-constructor invokespecial
+                        // target-reference paragraph), requires compatibility with the calling type.
+                        // https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html#jvms-4.9.2
+                        DynamicHub typeHub = opcode == INVOKESPECIAL ? callerFrame.method.getDeclaringClass().getHub() : linkedInvoke.symbolicHolder.getHub();
                         boolean assignable = InterpreterToVM.isAssignableFrom(typeHub, instanceHub, opcode != INVOKEINTERFACE);
-                        if (!assignable) {
-                            throw incompatibleInvokeReceiver(instanceHub.getInterpreterType(), linkedInvoke.symbolicHolder);
+                        if (GraalDirectives.injectBranchProbability(GraalDirectives.SLOWPATH_PROBABILITY, !assignable)) {
+                            throw incompatibleInvokeReceiver(instanceHub.getInterpreterType(), typeHub.getInterpreterType(), opcode);
                         }
                     }
                 }
             }
 
-            Object retObj = InterpreterToVM.dispatchInvocation(linkedInvoke.seedMethod, calleeArgs, linkedInvoke.callKind,
-                            callerFrame.forceStayInInterpreter(), callerFrame.forceStayInInterpreter() | preferStayInInterpreter, false);
+            boolean stayInInterpreter = callerFrame.forceStayInInterpreter() | preferStayInInterpreter;
+            Object retObj = InterpreterToVM.dispatchInvocation(linkedInvoke.seedMethod, calleeArgs, linkedInvoke.callKind, stayInInterpreter, false);
             virtualStack.pushBasicType(callerFrame, retObj, linkedInvoke.returnKind);
         }
 
@@ -3379,6 +3410,7 @@ public final class Interpreter {
         @NeverInlineTrivial(reason = "BytecodeInterpreterHandler")
         @BytecodeInterpreterHandler(value = INVOKEDYNAMIC)
         private static long invokedynamicHandler(long curBCI, InterpreterFrame frame, InterpreterOperandStack virtualStack) {
+            virtualStack.flushCache(frame);
             if (virtualStack.getState() == STATE_DEBUGGING) {
                 boolean preferStayInInterpreter = frame.debugState.beforeInvoke();
                 try {
@@ -3408,7 +3440,7 @@ public final class Interpreter {
             Object indyEntry = frame.constantPoolResolvedAt(indyCPI);
             if (indyEntry instanceof ResolvedInvokeDynamicConstant invokeDynamicConstant) {
                 // runtime-loaded case
-                SuccessfulCallSiteLink link = getOrLinkInvokeDynamic(invokeDynamicConstant, frame.method, frame.code, (int) curBCI, indyCPI, extraCPI);
+                SuccessfulCallSiteLink link = getOrLinkInvokeDynamic(invokeDynamicConstant, frame, (int) curBCI, fullCPI);
                 appendix = link.getUnboxedAppendix();
                 seedMethod = link.getInvoker();
             } else if (indyEntry instanceof InterpreterResolvedJavaMethod entryMethod) {
@@ -3439,8 +3471,8 @@ public final class Interpreter {
                 profileAndCheckReceiver(frame, curBCI, calleeArgs, virtualStack.getState());
             }
 
-            Object retObj = InterpreterToVM.dispatchInvocation(seedMethod, calleeArgs, CallKind.DIRECT, frame.forceStayInInterpreter(), frame.forceStayInInterpreter() | preferStayInInterpreter,
-                            false);
+            boolean stayInInterpreter = frame.forceStayInInterpreter() | preferStayInInterpreter;
+            Object retObj = InterpreterToVM.dispatchInvocation(seedMethod, calleeArgs, CallKind.DIRECT, stayInInterpreter, false);
             virtualStack.pushKind(frame, retObj, seedSignature.getReturnKind());
         }
 
@@ -3471,6 +3503,7 @@ public final class Interpreter {
             int length = virtualStack.peekInt(frame, -1);
             long cpi = BytecodeStream.uncheckedReadCPI2(frame.code, curBCI);
             InterpreterResolvedJavaType componentType = resolveType(frame, ANEWARRAY, cpi);
+            virtualStack.flushCache(frame);
             Object array = InterpreterToVM.createNewReferenceArray(componentType, length);
             virtualStack.pop1(frame, false);
             virtualStack.pushObject(frame, array);
@@ -3644,12 +3677,8 @@ public final class Interpreter {
             InterpreterResolvedJavaType multiArrayType = resolveType(frame, MULTIANEWARRAY, cpi);
             int allocatedDimensions = BytecodeStream.uncheckedReadUByte(frame.code, curBCI + 3);
             int[] dimensions = new int[allocatedDimensions];
-            // Keep the guest stack intact until allocation succeeds.
-            for (int i = allocatedDimensions - 1; i >= 0; --i) {
-                dimensions[i] = virtualStack.peekInt(frame, i - allocatedDimensions);
-            }
+            virtualStack.popInts(frame, dimensions);
             Object value = allocateMultiArray(multiArrayType, dimensions);
-            virtualStack.applyFrameStackOperationDelta(-allocatedDimensions);
             virtualStack.pushObject(frame, value);
             return advanceToNextBytecode(curBCI, MULTIANEWARRAY, frame, virtualStack);
         }
@@ -3664,7 +3693,7 @@ public final class Interpreter {
          */
         @AlwaysInline("Keep branch completion on the fast path")
         private static long finishJump(long curBCI, long targetBCI, InterpreterFrame frame, InterpreterOperandStack virtualStack) {
-            long nextBCI = beforeJumpChecks(frame, curBCI, targetBCI, virtualStack.topForFrameStackOperation(), virtualStack.getState());
+            long nextBCI = beforeJumpChecks(frame, curBCI, targetBCI, virtualStack);
             prepareOpcodeForDispatch(nextBCI, frame, virtualStack);
             return nextBCI;
         }
@@ -3724,10 +3753,12 @@ public final class Interpreter {
      * must stay in the interpreter.
      */
     @SuppressWarnings("unused")
-    private static long beforeJumpChecks(InterpreterFrame frame, long curBCI, long targetBCI, long stackTop, int state) {
+    @AlwaysInline("Keep the operand-stack overlay virtual across interpreter backedges")
+    private static long beforeJumpChecks(InterpreterFrame frame, long curBCI, long targetBCI, InterpreterOperandStack virtualStack) {
         if (targetBCI <= curBCI) {
             GraalDirectives.safepoint();
-            if (state == STATE_PROFILING && SubstrateOptions.useRistretto() && frame.useOSR()) {
+            if (virtualStack.getState() == STATE_PROFILING && SubstrateOptions.useRistretto() && frame.useOSR()) {
+                long stackTop = virtualStack.topForFrameStackOperation();
                 RistrettoInterpreterSupport.singleton().tryOSR(frame.method, frame.methodProfile, frame, (int) targetBCI, (int) stackTop);
             }
         }
@@ -3889,8 +3920,13 @@ public final class Interpreter {
         throw SemanticJavaException.raiseInlined(new NoSuchMethodError(message));
     }
 
+    /// Reports an invalid interface receiver with the exception required by `opcode`.
     @NeverInline("Keep incompatible-receiver exception construction out of bytecode-handler stubs")
-    private static SemanticJavaException incompatibleInvokeReceiver(ResolvedJavaType receiverType, InterpreterResolvedJavaType symbolicHolder) {
+    private static SemanticJavaException incompatibleInvokeReceiver(ResolvedJavaType receiverType, ResolvedJavaType symbolicHolder, int opcode) {
+        if (opcode == INVOKESPECIAL) {
+            throw SemanticJavaException.raiseInlined(new IllegalAccessError(MetadataUtil.fmt("Receiver class %s must be the current class or a subtype of interface %s",
+                            receiverType.toJavaName(), symbolicHolder.toJavaName())));
+        }
         String message = MetadataUtil.fmt("Class %s does not implement the requested interface %s",
                         receiverType.toJavaName(),
                         symbolicHolder.toJavaName());
@@ -3965,7 +4001,10 @@ public final class Interpreter {
                 // workaround for the JDWP debugger until proper INVOKEDYNAMIC resolution is
                 // implemented.
                 Object appendix = frame.constantPoolResolvedAt(cpi, null);
-                if (appendix instanceof ReferenceConstant<?> referenceConstant) {
+                if (JavaConstant.NULL_POINTER.equals(appendix)) {
+                    // Hydrated Java null is distinct from an unavailable image-heap reference.
+                    yield ReferenceConstant.createFromReference(null);
+                } else if (appendix instanceof ReferenceConstant<?> referenceConstant) {
                     VMError.guarantee(referenceConstant.isNonNull(), FAILURE_CONSTANT_NOT_PART_OF_IMAGE_HEAP);
                     Object constantValue = referenceConstant.getReferent();
                     yield ReferenceConstant.createFromReference(constantValue);
@@ -3983,24 +4022,26 @@ public final class Interpreter {
     }
 
     @AlwaysInline("Keep cached INVOKEDYNAMIC linkage lookup in bytecode-handler stubs")
-    private static SuccessfulCallSiteLink getOrLinkInvokeDynamic(ResolvedInvokeDynamicConstant constant, InterpreterResolvedJavaMethod method, byte[] code,
-                    int curBCI, int indyCPI, int extraCPI) {
+    private static SuccessfulCallSiteLink getOrLinkInvokeDynamic(ResolvedInvokeDynamicConstant constant, InterpreterFrame frame, int curBCI, int fullCPI) {
+        int extraCPI = fullCPI & 0xFFFF;
         if (GraalDirectives.injectBranchProbability(FASTPATH_PROBABILITY, extraCPI != 0)) {
             CallSiteLink link = constant.getCallSiteLink(extraCPI);
             if (GraalDirectives.injectBranchProbability(FASTPATH_PROBABILITY, link instanceof SuccessfulCallSiteLink)) {
                 SuccessfulCallSiteLink successfulLink = (SuccessfulCallSiteLink) link;
-                if (GraalDirectives.injectBranchProbability(FASTPATH_PROBABILITY, successfulLink.matchesCallSite(method, curBCI))) {
+                if (GraalDirectives.injectBranchProbability(FASTPATH_PROBABILITY, successfulLink.matchesCallSite(frame.method, curBCI))) {
                     return successfulLink;
                 }
             }
         }
-        return linkInvokeDynamic(constant, method, code, curBCI, indyCPI, extraCPI);
+        return linkInvokeDynamic(constant, frame, curBCI, fullCPI);
     }
 
     @NeverInline("Keep INVOKEDYNAMIC linkage, patching retries, and failures out of bytecode-handler stubs")
-    private static SuccessfulCallSiteLink linkInvokeDynamic(ResolvedInvokeDynamicConstant constant, InterpreterResolvedJavaMethod method, byte[] code,
-                    int curBCI, int indyCPI, int extraCPI) {
-        int linkedExtraCPI = extraCPI;
+    private static SuccessfulCallSiteLink linkInvokeDynamic(ResolvedInvokeDynamicConstant constant, InterpreterFrame frame, int curBCI, int fullCPI) {
+        InterpreterResolvedJavaMethod method = frame.method;
+        byte[] code = frame.code;
+        int indyCPI = fullCPI >>> 16;
+        int linkedExtraCPI = fullCPI & 0xFFFF;
         if (linkedExtraCPI == 0) {
             linkedExtraCPI = linkInvokeDynamicCallSite(constant, method, code, curBCI, indyCPI);
         }
@@ -4064,11 +4105,22 @@ public final class Interpreter {
         InterpreterResolvedJavaMethod seedMethod;
         CallKind callKind;
 
-        // Ensure receivers of an interface method call actually implement the declared
-        // interface. This is not checked by the verifier, so we need to dynamically
-        // check that property. Note: this condition covers both INVOKEINTERFACE, and
-        // INVOKESPECIAL of an interface method.
-        boolean requiresSymbolicTypeCheck = frame.constantPoolTagAt(cpi) == ConstantPool.Tag.INTERFACE_METHOD_REF;
+        /*
+         * JVMS 6.5, invokeinterface, Run-time Exceptions (the resolved-interface implementation
+         * check), requires the receiver to implement the symbolic interface:
+         * https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-6.html#jvms-6.5.invokeinterface
+         *
+         * The verifier does not check interface assignability, so this property is checked
+         * dynamically. The INTERFACE_METHOD_REF condition covers both INVOKEINTERFACE and
+         * INVOKESPECIAL of an interface method. A non-constructor INVOKESPECIAL from an interface
+         * can also target an Object method through a METHOD_REF entry.
+         *
+         * For INVOKESPECIAL, JVMS 4.9.2, Structural Constraints (the non-constructor invokespecial
+         * target-reference paragraph), requires compatibility with the calling type:
+         * https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html#jvms-4.9.2
+         */
+        boolean requiresSymbolicTypeCheck = frame.constantPoolTagAt(cpi) == ConstantPool.Tag.INTERFACE_METHOD_REF ||
+                        (opcode == INVOKESPECIAL && method.getDeclaringClass().isInterface() && !symbolicResolution.isConstructor());
 
         try {
             ResolvedCall<InterpreterResolvedJavaType, InterpreterResolvedJavaMethod, InterpreterResolvedJavaField> resolvedCall = CremaLinkResolver.resolveCallSiteOrThrow(

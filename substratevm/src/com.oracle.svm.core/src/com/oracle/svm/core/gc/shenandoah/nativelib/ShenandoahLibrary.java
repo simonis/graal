@@ -85,8 +85,11 @@ public class ShenandoahLibrary {
                     CFunctionPointer transitionVMToNative, CFunctionPointer fastTransitionNativeToVM, CFunctionPointer slowTransitionNativeToVM,
                     CFunctionPointer lockThreadsRead, CFunctionPointer unlockThreadsRead);
 
-    @CFunction(value = "svm_gc_update_option_value", transition = Transition.NO_TRANSITION)
+    @CFunction(value = "svm_gc_update_long_option_value", transition = Transition.NO_TRANSITION)
     public static native void updateOptionValue(Word optionName, long value);
+
+    @CFunction(value = "svm_gc_update_string_option_value", transition = Transition.NO_TRANSITION)
+    public static native void updateOptionValue(Word optionName, Word value);
 
     @CFunction(value = "svm_gc_teardown", transition = Transition.NO_TRANSITION)
     public static native boolean tearDown();

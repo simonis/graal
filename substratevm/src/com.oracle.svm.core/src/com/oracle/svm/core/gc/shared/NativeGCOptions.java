@@ -367,7 +367,12 @@ public class NativeGCOptions {
                         RuntimeOptionKey<?> key = (RuntimeOptionKey<?>) field.get(null);
                         if (key.hasBeenSet(optionValues)) {
                             buffer.putString(key.getName());
-                            buffer.putPrimitive(key.getValue(optionValues));
+                            Object val = key.getValue(optionValues);
+                            if (val instanceof String strVal) {
+                                buffer.putString(strVal);
+                            } else {
+                                buffer.putPrimitive(val);
+                            }
                         }
                     }
                 } catch (IllegalArgumentException | IllegalAccessException e) {

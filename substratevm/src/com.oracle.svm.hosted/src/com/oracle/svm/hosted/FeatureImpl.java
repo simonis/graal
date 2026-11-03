@@ -74,7 +74,6 @@ import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.meta.JVMCIObjectReachableCallback;
-import com.oracle.graal.pointsto.meta.ObjectReachableCallback;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.common.meta.MethodVariant;
 import com.oracle.svm.core.LinkerInvocation;
@@ -569,16 +568,6 @@ public class FeatureImpl {
         }
 
         /**
-         * Register an object replacer which may return an ImageHeapConstant. Note only one replacer
-         * can be triggered for a given object; otherwise an error will be thrown. Too, if the
-         * object should not be replaced then {@code null} should be returned.
-         */
-        public void registerObjectToConstantReplacer(Function<Object, ImageHeapConstant> replacer) {
-            // GR-78998: migrate all clients to constant-based replacers.
-            getUniverse().registerObjectToConstantReplacer(new LegacyObjectToConstantReplacerAdapter(replacer, getUniverse().getHostedValuesProvider()));
-        }
-
-        /**
          * Registers a constant-based object replacer which may return an {@link ImageHeapConstant}.
          * Only one replacer can be triggered for a given constant. A replacer returns {@code null}
          * when the constant should not be replaced.
@@ -603,18 +592,17 @@ public class FeatureImpl {
          * object based on specific validation rules. This will stop the image build and report how
          * the object was reached.
          *
-         * @since 24.0
+         * @param callback the callback to register
+         * @param type the type whose reachable objects trigger {@code callback}
          */
-        public <T> void registerObjectReachableCallback(Class<T> clazz, ObjectReachableCallback<T> callback) {
-            // GR-78902: migrate all clients to JVMCI or guest callbacks.
-            getMetaAccess().lookupJavaType(clazz).registerObjectReachableCallback(new LegacyObjectReachableCallbackAdapter<>(callback));
+        public void registerObjectReachableCallback(JVMCIObjectReachableCallback callback, ResolvedJavaType type) {
+            asAnalysisType(type).registerObjectReachableCallback(callback);
         }
 
         @Override
         public <T> void registerObjectReachabilityHandler(Consumer<T> callback, Class<T> clazz) {
             // GR-78928: migrate builder-side clients to JVMCI or guest callbacks.
-            JavaConstant guestCallback = GuestAccess.get().getSnippetReflection().forObject(callback);
-            registerObjectReachabilityHandler(new WrappedObjectReachabilityHandler(guestCallback), getMetaAccess().lookupJavaType(clazz));
+            getMetaAccess().lookupJavaType(clazz).registerObjectReachableCallback(new LegacyObjectReachabilityHandlerAdapter<>(callback, getUniverse().getHostedValuesProvider()));
         }
 
         @Override

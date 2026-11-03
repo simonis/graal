@@ -29,12 +29,11 @@ import java.lang.ref.Reference;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.oracle.svm.core.os.ChunkBasedCommittedMemoryProvider;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
-import org.graalvm.nativeimage.RuntimeStateTrimConfig.Mode;
+import org.graalvm.nativeimage.impl.RuntimeStateTrimConfig.Mode;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.impl.Word;
@@ -161,16 +160,19 @@ public final class HeapImpl extends Heap {
         VMOperation.guaranteeInProgressAtSafepoint("HeapImpl.trimRuntimeState");
         VMError.guarantee(NoAllocationVerifier.isActive(), "A NoAllocationVerifier must be active.");
 
-        GCCause gcCause = mode == Mode.LATENCY ? GCCause.RuntimeStateTrimYoungGC : GCCause.RuntimeStateTrimFullGC;
+        GCCause gcCause = mode == Mode.LATENCY || mode == Mode.CONSERVATIVE
+                        ? GCCause.RuntimeStateTrimYoungGC
+                        : GCCause.RuntimeStateTrimFullGC;
         gcImpl.collect(gcCause);
 
-        if (mode == Mode.SIZE) {
+        if (mode == Mode.CONSERVATIVE || mode == Mode.SIZE) {
             getChunkProvider().freeUnusedAlignedChunks();
             ChunkBasedCommittedMemoryProvider.get().uncommitUnusedMemory();
         }
 
-        boolean cleanUnusedMemory = mode == Mode.BALANCED || mode == Mode.SIZE;
-        if (cleanUnusedMemory) {
+        if (mode == Mode.CONSERVATIVE) {
+            getChunkProvider().cleanUnusedAlignedChunks();
+        } else if (mode == Mode.BALANCED || mode == Mode.SIZE) {
             boolean cleanFillerObjectMemory = mode == Mode.SIZE;
             getHeapImpl().makeParseable();
             getYoungGeneration().clean(true, cleanFillerObjectMemory);
@@ -242,10 +244,6 @@ public final class HeapImpl extends Heap {
         oldGeneration.tearDown();
         chunkProvider.tearDown();
         gcImpl.tearDown();
-
-        if (Metaspace.isSupported()) {
-            MetaspaceImpl.singleton().tearDown();
-        }
         return true;
     }
 
@@ -522,6 +520,12 @@ public final class HeapImpl extends Heap {
     @Override
     public int getHeapBaseAlignment() {
         return getImageHeapAlignment();
+    }
+
+    @Fold
+    @Override
+    public int getMaxInstanceSize() {
+        return NumUtil.safeToInt(AlignedHeapChunk.getUsableSizeForObjects().rawValue());
     }
 
     @Fold

@@ -50,8 +50,8 @@ import com.oracle.svm.core.GCRelatedMXBeans;
 import com.oracle.svm.core.SubstrateDiagnostics;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateTarget;
-import com.oracle.svm.core.config.ObjectLayout;
-import com.oracle.svm.core.config.ObjectLayout.IdentityHashMode;
+import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.shared.config.ObjectLayout.IdentityHashMode;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.g1.G1CommittedMemoryProvider;
 import com.oracle.svm.core.g1.G1Constants;
@@ -75,7 +75,6 @@ import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.graal.snippets.SubstrateAllocationSnippets;
 import com.oracle.svm.core.heap.AllocationFeature;
 import com.oracle.svm.core.heap.BarrierSetProvider;
-import com.oracle.svm.core.heap.FillerArray;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.PlatformPhysicalMemorySupport;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
@@ -207,9 +206,6 @@ public class G1Feature implements InternalFeature {
         ResolvedJavaType g1HeapType = accessImpl.getMetaAccess().lookupJavaType(G1Heap.class);
         accessImpl.registerAsRead((AnalysisField) JVMCIReflectionUtil.getUniqueDeclaredField(g1HeapType, "barrierAndAllocationDataTL"), "its offset is used by G1 native code");
         accessImpl.registerAsRead((AnalysisField) JVMCIReflectionUtil.getUniqueDeclaredField(g1HeapType, "javaThreadTL"), "its offset is used by G1 native code");
-
-        /* G1 needs a custom filler array class that does not match int[].class. */
-        accessImpl.registerAsUsed(FillerArray.class);
 
         /* Needed for the barrier set. */
         accessImpl.registerAsUsed(Object[].class);
@@ -370,7 +366,7 @@ public class G1Feature implements InternalFeature {
         int identityHashNumBits = 31;
         int identityHashShift = 6;
 
-        return new ObjectLayout(target, referenceSize, objectAlignment, hubSize, hubOffset, firstFieldOffset, arrayLengthOffset, arrayBaseOffset,
+        return new ObjectLayout(referenceSize, objectAlignment, hubSize, hubOffset, firstFieldOffset, arrayLengthOffset, arrayBaseOffset,
                         headerIdentityHashOffset, IdentityHashMode.OBJECT_HEADER, identityHashNumBits, identityHashShift);
     }
 

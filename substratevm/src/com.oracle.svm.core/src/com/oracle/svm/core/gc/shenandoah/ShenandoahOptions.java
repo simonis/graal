@@ -31,9 +31,12 @@ import static com.oracle.svm.shared.option.HostedOptionKey.HostedOptionKeyFlag.D
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Scanner;
 import java.util.function.Consumer;
 
 import com.oracle.svm.guest.staging.option.RuntimeOptionKey;
+import com.oracle.svm.guest.staging.option.RuntimeOptionValidation;
+
 import org.graalvm.nativeimage.c.type.CCharPointer;
 
 import com.oracle.svm.guest.staging.SubstrateGCOptions;
@@ -74,9 +77,6 @@ public class ShenandoahOptions {
     @Option(help = "Size of the Shenandoah heap regions in bytes. " + SUPPORTED_REGION_SIZES + ".", type = OptionType.User)//
     public static final HostedOptionKey<Integer> ShenandoahRegionSize = new ShenandoahHostedOptionKey<>(1 * M, ShenandoahOptions::validateRegionSize);
 
-    @Option(help = "Enable normal processing of flags relating to field diagnostics.", type = OptionType.Debug)//
-    public static final RuntimeOptionKey<Boolean> UnlockDiagnosticVMOptions = new ShenandoahRuntimeOptionKey<>(false, IsolateCreationOnly);
-
     private static final String SUPPORTED_GC_MODES = "satb, passive, generational";
 
     /**
@@ -89,6 +89,20 @@ public class ShenandoahOptions {
      */
     @Option(help = "GC mode to use. The mode is fixed at image build time. Possible values are: [" + SUPPORTED_GC_MODES + "].", type = OptionType.User)//
     public static final HostedOptionKey<String> ShenandoahGCMode = new ShenandoahHostedOptionKey<>("satb", ShenandoahOptions::validateGCMode);
+
+    private static final String SUPPORTED_GC_HEURISTICS = "adaptive, static, aggressive, compact";
+
+    @Option(help = "GC mode to use. The mode is fixed at image build time. Possible values are: [" + SUPPORTED_GC_HEURISTICS + "].", type = OptionType.User)//
+    public static final RuntimeOptionKey<String> ShenandoahGCHeuristics = new ShenandoahRuntimeOptionKey<>("adaptive",
+        // We can't simply use 'ShenandoahOptions::validateGCHeuristics' here like for hosted options because it will
+        // trigger the dynamic creation of a class through Java's built-in lambda meta-factory which will then throw
+        // an "UnsupportedPlatformException: Type is not available in this platform" exception when running native-image.
+        new Consumer<RuntimeOptionKey<String>>() {
+            @Override
+            public void accept(RuntimeOptionKey<String> key) {
+                ShenandoahOptions.validateGCHeuristics(key);
+            }
+        }, IsolateCreationOnly);
 
     @Fold
     public static String getGCMode() {
@@ -131,8 +145,15 @@ public class ShenandoahOptions {
 
     private static void validateGCMode(HostedOptionKey<String> optionKey) {
         String value = optionKey.getValue();
-        if (!"satb".equals(value) && !"passive".equals(value) && !"generational".equals(value)) {
+        if (!new Scanner(SUPPORTED_GC_MODES).useDelimiter(", ").tokens().anyMatch(token -> token.equals(value))) {
             throw UserError.invalidOptionValue(ShenandoahGCMode, value, "Supported values are: " + SUPPORTED_GC_MODES);
+        }
+    }
+
+    private static void validateGCHeuristics(RuntimeOptionKey<String> optionKey) {
+        String value = optionKey.getValue();
+        if (!new Scanner(SUPPORTED_GC_HEURISTICS).useDelimiter(", ").tokens().anyMatch(token -> token.equals(value))) {
+            throw RuntimeOptionValidation.invalidOptionValue(optionKey, value, "Supported values are: " + SUPPORTED_GC_HEURISTICS);
         }
     }
 
@@ -166,9 +187,24 @@ public class ShenandoahOptions {
             super(defaultValue, ShenandoahRuntimeOptionKey::validateShenandoahAndNativeGCOption, flags);
         }
 
+        ShenandoahRuntimeOptionKey(T defaultValue, Consumer<RuntimeOptionKey<T>> validation, RuntimeOptionKeyFlag... flags) {
+            super(defaultValue, extendedValidator(validation), flags);
+        }
+
         private static void validateShenandoahAndNativeGCOption(RuntimeOptionKey<?> optionKey) {
             validateShenandoahOption(optionKey);
             validateNativeGCOption(optionKey);
         }
-    }
+
+        private static <T> Consumer<RuntimeOptionKey<T>> extendedValidator(Consumer<RuntimeOptionKey<T>> validation) {
+            return new Consumer<RuntimeOptionKey<T>>() {
+                @Override
+                public void accept(RuntimeOptionKey<T> key) {
+                ShenandoahRuntimeOptionKey.validateShenandoahAndNativeGCOption(key);
+                if (validation != null) {
+                    validation.accept(key);
+                }
+            }
+        };
+}    }
 }

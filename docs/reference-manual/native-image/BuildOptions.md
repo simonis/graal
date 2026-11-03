@@ -19,6 +19,10 @@ Options to configure Native Image are provided in the following categories:
 - Table of available options: run `native-image --print-options` (table), `native-image --print-options=md` (Markdown), or `native-image --print-options=json` (machine-readable JSON).
 
 Depending on the GraalVM version, the options to the `native-image` builder may differ.
+An unrecognized option starting with `-` or `--` produces an error instead of being treated as a main class or an output filename.
+To use an output filename beginning with a dash, specify it with `-o`, for example `native-image -jar hello.jar -o --my-image`, or prefix it with `./`.
+Use `native-image --help` to check which build options your installed distribution supports.
+
 Native Image options can also be categorized as **hosted** or **runtime** options:
 
 - **Hosted options**: to configure the build process and set default values for run-time behavior. These options use the prefix `-H:`. For example, `-H:MaxHeapSize=2g` sets the default maximum heap size for the native executable.
@@ -204,11 +208,20 @@ The following system properties are automatically copied into the generated exec
 | java.vm.specification.version | Java Virtual Machine specification version                        |
 | line.separator                | Line separator                                                    |
 | native.encoding               | Specifies the host environment's character encoding               |
+| org.graalvm.nativeimage.graalos | Specifies whether the image is built for GraalOS                   |
 | org.graalvm.nativeimage.kind  | Specifies if the image is built as a shared library or executable |
 | path.separator                | Path separator                                                    |
 | stdin.encoding                | Specifies the encoding for `System.in`                            |
 | stdout.encoding               | Specifies the encoding for `System.out` and `System.err`          |
 | sun.jnu.encoding              | Specifies encoding when parsing values passed via the commandline |
+
+### Identify Images Built for GraalOS
+
+Read the `org.graalvm.nativeimage.graalos` Java system property to determine whether an image was built for GraalOS, for example with `Boolean.getBoolean("org.graalvm.nativeimage.graalos")`.
+The `native-image` builder initializes it to `true` when you build with `-H:+GraalOS`, or `false` otherwise; you do not need to set an additional system property.
+The property is available during language resource inclusion and polyglot context preinitialization, and is preserved in the generated image at runtime.
+It describes the image build target, not the current execution environment, so a GraalOS-targeted image retains `true` even when you execute it outside GraalOS.
+Like other Java system properties, you can override it at runtime.
 
 ## Related Documentation
 

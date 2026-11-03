@@ -166,7 +166,12 @@ public class TestVirtualThreadsDelayedThreadReferences extends JfrRecordingTest 
             while (!invokeVmOperation.get()) {
                 Thread.onSpinWait();
             }
-            System.gc();
+            // Trigger a safepoint VM operation that is attributed to the requesting thread on every GC.
+            // Notice that a call to System.gc(), which was initially used here in order to trigger the
+            // VM operation is unsuitable because collectors like e.g. Shenandoah might drive the collection
+            // from an internal, native, unattached GC thread, so the resulting ExecuteVMOperation will have
+            // no Java caller to resolve. Use Thread.getAllStackTraces() instead for triggering the VM operation.
+            GraalDirectives.blackhole(Thread.getAllStackTraces());
         });
 
         waitUntilTrue(callerReady::get);

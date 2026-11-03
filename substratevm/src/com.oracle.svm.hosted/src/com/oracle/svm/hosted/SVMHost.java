@@ -60,6 +60,7 @@ import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.api.PointstoOptions;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.constraints.UnsupportedPlatformException;
+import com.oracle.graal.pointsto.flow.AnalysisParsedGraph.GraphMetadata;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
@@ -71,9 +72,7 @@ import com.oracle.graal.pointsto.phases.InlineBeforeAnalysisGraphDecoder;
 import com.oracle.graal.pointsto.phases.InlineBeforeAnalysisPolicy;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.common.meta.MethodVariant;
-import com.oracle.svm.shared.BuildPhaseProvider;
 import com.oracle.svm.core.MissingRegistrationSupport;
-import com.oracle.svm.shared.NeverInline;
 import com.oracle.svm.core.NeverInlineTrivial;
 import com.oracle.svm.core.NeverStrengthenGraphWithConstants;
 import com.oracle.svm.core.SubstrateOptions;
@@ -89,7 +88,6 @@ import com.oracle.svm.core.graal.stackvalue.StackValueNode;
 import com.oracle.svm.core.heap.FillerArray;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.Target_java_lang_ref_Reference;
-import com.oracle.svm.guest.staging.core.heap.UnknownClass;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.DynamicHubCompanion;
 import com.oracle.svm.guest.staging.hub.Hybrid;
@@ -107,6 +105,7 @@ import com.oracle.svm.core.threadlocal.VMThreadLocalSupport;
 import com.oracle.svm.core.util.Counter;
 import com.oracle.svm.core.util.HostedStringDeduplication;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.guest.staging.core.heap.UnknownClass;
 import com.oracle.svm.hosted.analysis.SVMParsingSupport;
 import com.oracle.svm.hosted.c.libc.HostedLibCBase;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationFeature;
@@ -140,6 +139,8 @@ import com.oracle.svm.hosted.sboutlining.SBOutliningPhase;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
 import com.oracle.svm.hosted.substitute.AutomaticUnsafeTransformationSupport;
 import com.oracle.svm.shared.AlwaysInline;
+import com.oracle.svm.shared.BuildPhaseProvider;
+import com.oracle.svm.shared.NeverInline;
 import com.oracle.svm.shared.meta.GuaranteeFolded;
 import com.oracle.svm.shared.meta.GuestFold;
 import com.oracle.svm.shared.option.HostedOptionKey;
@@ -147,8 +148,8 @@ import com.oracle.svm.shared.option.SubstrateOptionsParser;
 import com.oracle.svm.shared.util.LogUtils;
 import com.oracle.svm.shared.util.ReflectionUtil;
 import com.oracle.svm.shared.util.VMError;
-import com.oracle.svm.util.GuestAnnotationAccess;
 import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.GuestAnnotationAccess;
 import com.oracle.svm.util.OriginalClassProvider;
 import com.oracle.svm.util.OriginalFieldProvider;
 import com.oracle.svm.util.OriginalMethodProvider;
@@ -170,6 +171,7 @@ import jdk.graal.compiler.nodes.ValueNode;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import jdk.graal.compiler.nodes.graphbuilderconf.IntrinsicContext;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugins;
+import jdk.graal.compiler.nodes.java.StoreFieldNode;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionValues;
@@ -309,8 +311,12 @@ public class SVMHost extends HostVM {
         }
         layerId = buildingImageLayer ? DynamicImageLayerInfo.getCurrentLayerNumber() : 0;
 
-        /* In a closed-world analysis all fields are closed, so the set is null. */
-        closedWorldFields = isClosedTypeWorld ? null : getAlwaysClosedFields();
+        /*
+         * Only closed-world builds outside extension layers can omit this set. Extension
+         * layers need it for the shared-field write check.
+         */
+        boolean needsClosedWorldFieldSet = !isClosedTypeWorld || buildingExtensionLayer();
+        closedWorldFields = needsClosedWorldFieldSet ? getAlwaysClosedFields() : null;
         sharedLayerForbiddenModules = buildingSharedLayer ? initializeSharedLayerForbiddenModules() : null;
         layeredStaticFieldSupport = buildingImageLayer ? LayeredStaticFieldSupport.singleton() : null;
 
@@ -556,12 +562,18 @@ public class SVMHost extends HostVM {
     public Optional<AnalysisMethod> handleForeignCall(ForeignCallDescriptor foreignCallDescriptor, ForeignCallsProvider foreignCallsProvider) {
         SubstrateForeignCallsProvider foreignCalls = (SubstrateForeignCallsProvider) foreignCallsProvider;
         /* In unit tests, we run with no registered foreign calls. */
-        Optional<AnalysisMethod> targetMethod = Optional.empty();
-        if (foreignCalls.getForeignCalls().size() > 0) {
-            SubstrateForeignCallLinkage linkage = foreignCalls.lookupForeignCall(foreignCallDescriptor);
-            targetMethod = Optional.of((AnalysisMethod) linkage.getMethod());
+        if (!foreignCalls.hasForeignCalls()) {
+            return Optional.empty();
         }
-        return targetMethod;
+        SubstrateForeignCallLinkage linkage = foreignCalls.lookupOptionalForeignCall(foreignCallDescriptor);
+        if (linkage == null && foreignCalls.hasForeignCall(foreignCallDescriptor)) {
+            /* CPU-feature variants are explicitly rooted and have no ordinary analysis target. */
+            return Optional.empty();
+        }
+        if (linkage == null) {
+            linkage = foreignCalls.lookupForeignCall(foreignCallDescriptor);
+        }
+        return Optional.of((AnalysisMethod) linkage.getMethod());
     }
 
     public DynamicHub dynamicHub(Class<?> type) {
@@ -764,6 +776,13 @@ public class SVMHost extends HostVM {
         }
     }
 
+    /** Validate writes to always-closed fields from a newly parsed or loaded method graph. */
+    public void checkClosedFieldWrites(AnalysisMethod method, List<AnalysisField> closedFieldWrites) {
+        if (buildingExtensionLayer()) {
+            ExtensionLayerImageFeature.checkNewClosedFieldWrites(method, closedFieldWrites);
+        }
+    }
+
     protected boolean deoptsForbidden(AnalysisMethod method) {
         /*
          * Runtime compiled methods can deoptimize.
@@ -772,13 +791,26 @@ public class SVMHost extends HostVM {
     }
 
     @Override
-    public void methodAfterParsingHook(BigBang bb, AnalysisMethod method, StructuredGraph graph) {
+    public void methodAfterParsingHook(BigBang bb, AnalysisMethod method, StructuredGraph graph, GraphMetadata.Builder metadata) {
         if (graph != null) {
             if (deoptsForbidden(method)) {
                 graph.getGraphState().configureExplicitExceptionsNoDeoptIfNecessary();
             }
             if (parsingSupport != null) {
                 parsingSupport.afterParsingHook(method, graph);
+            }
+
+            if (buildingImageLayer()) {
+                /*
+                 * Conservatively retain writes observed after parsing and the parsing-support hook,
+                 * before static-final-field folding, optimizeAfterParsing, and final canonicalization.
+                 * Later elimination of a store does not discharge its validation obligation. Parsing
+                 * may already have simplified the graph, so this is not a bytecode-level write summary.
+                 */
+                List<AnalysisField> closedFieldWrites = graph.getNodes().filter(StoreFieldNode.class).stream()
+                                .map(store -> (AnalysisField) store.field()).filter(this::isAlwaysClosedField).distinct().toList();
+                metadata.setClosedFieldWrites(closedFieldWrites);
+                checkClosedFieldWrites(method, closedFieldWrites);
             }
 
             if (!SubstrateCompilationDirectives.isRuntimeCompiledMethod(method)) {
@@ -822,7 +854,7 @@ public class SVMHost extends HostVM {
                 }
             }
 
-            super.methodAfterParsingHook(bb, method, graph);
+            super.methodAfterParsingHook(bb, method, graph, metadata);
         }
     }
 

@@ -140,6 +140,8 @@ public final class ShenandoahHeap extends Heap {
 
     private boolean isInitialized = false;
     private List<Class<?>> classList;
+    /* Storage of the auxiliary bitmap used by {@link ShenandoahHeapWalker}. */
+    private Pointer auxBitmapAddress;
 
     @UnknownObjectField(availability = ReadyForCompilation.class) private byte[] accessedFieldOffsets;
 
@@ -237,6 +239,11 @@ public final class ShenandoahHeap extends Heap {
 
         VMError.guarantee(initState.isNonNull(), "Fatal error while initializing Shenandoah");
         validateInitState(initState);
+        auxBitmapAddress = initState.auxBitmapAddress();
+    }
+
+    Pointer getAuxBitmapAddress() {
+        return auxBitmapAddress;
     }
 
     @Uninterruptible(reason = "Called during startup.")
@@ -492,6 +499,8 @@ public final class ShenandoahHeap extends Heap {
         VMError.guarantee(ShenandoahConstants.markOffset() == state.markOffset(), "Failed while validating the Shenandoah state: markOffset");
         VMError.guarantee(ShenandoahConstants.gcStateOffsetRel() == state.gcStateOffset(), "Failed while validating the Shenandoah state: gcStateOffset");
         VMError.guarantee(ShenandoahConstants.csetMapOffsetRel() == state.csetMapOffset(), "Failed while validating the Shenandoah state: csetMapOffset");
+        VMError.guarantee(ShenandoahConstants.auxBitmapShift() == state.auxBitmapShift(), "Failed while validating the Shenandoah state: auxBitmapShift");
+        VMError.guarantee(state.auxBitmapAddress().isNonNull(), "Failed while validating the Shenandoah state: auxBitmapAddress");
         VMError.guarantee(SizeOf.get(NativeGCVMOperationData.class) <= state.vmOperationDataSize(), "Failed while validating the Shenandoah state: vmOperationDataSize");
         VMError.guarantee(SizeOf.get(NativeGCVMOperationWrapperData.class) <= state.vmOperationWrapperDataSize(), "Failed while validating the Shenandoah state: vmOperationWrapperDataSize");
     }
@@ -659,6 +668,17 @@ public final class ShenandoahHeap extends Heap {
 
         VMError.guarantee(obj instanceof StoredContinuation);
         ShenandoahLibrary.dirtyAllReferencesOf(Word.objectToUntrackedWord(obj));
+    }
+
+    @Override
+    @Uninterruptible(reason = "No GC may occur between this call and copying the frames.", callerMustBe = true)
+    public void prepareStoredContinuationForThaw(Object storedContinuation) {
+        /*
+         * The frames are copied to the stack with raw memory accesses. If the GC evacuated objects
+         * that the frames reference and did not update the frames yet, the stack would get stale
+         * (from-space) references. Heal them with load barriers first (like HotSpot's thaw).
+         */
+        ShenandoahLibrary.prepareStackChunkForThaw(Word.objectToUntrackedWord(storedContinuation));
     }
 
     @Override

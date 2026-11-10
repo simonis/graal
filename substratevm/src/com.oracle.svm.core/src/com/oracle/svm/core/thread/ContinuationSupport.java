@@ -40,6 +40,7 @@ import com.oracle.svm.core.SubstrateTarget;
 import com.oracle.svm.core.code.CodeInfoQueryResult;
 import com.oracle.svm.core.deopt.Deoptimizer;
 import com.oracle.svm.core.graal.nodes.WriteStackPointerNode;
+import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
 import com.oracle.svm.core.imagelayer.LayeredFoldResolver;
@@ -127,6 +128,12 @@ public class ContinuationSupport {
     @NeverInline("The caller modified the stack pointer manually, so we need a new stack frame.")
     @Uninterruptible(reason = "Copies stack frames containing references.")
     private static void enter0(StoredContinuation storedCont, Pointer topSP, Object preparedData) {
+        /*
+         * References on the stack must be up-to-date for the GC, so give the GC a chance to apply
+         * load barriers to the stored frames before they are copied with raw memory accesses. This
+         * must happen in the same uninterruptible region as the copy below.
+         */
+        Heap.getHeap().prepareStoredContinuationForThaw(storedCont);
         // copyFrames() may do something interruptible before uninterruptibly copying frames.
         // Code must not rely on remaining uninterruptible until after frames were copied.
         CodePointer enterIP = singleton().copyFrames(storedCont, topSP, preparedData);

@@ -179,6 +179,9 @@ public class ShenandoahLibrary {
     @CFunction(value = "svm_gc_dirty_all_references_of", transition = Transition.NO_TRANSITION)
     public static native void dirtyAllReferencesOf(Word obj);
 
+    @CFunction(value = "svm_gc_prepare_stack_chunk_for_thaw", transition = Transition.NO_TRANSITION)
+    public static native void prepareStackChunkForThaw(Word obj);
+
     @CFunction(value = "svm_gc_millis_since_last_whole_heap_examined", transition = Transition.NO_TRANSITION)
     public static native long getMillisSinceLastWholeHeapExamined();
 
@@ -200,6 +203,12 @@ public class ShenandoahLibrary {
 
     @CFunction(value = "svm_gc_get_region_boundaries", transition = Transition.TO_NATIVE)
     public static native void getRegionBoundaries(ShenandoahRegionBoundaries regionBoundaries);
+
+    @CFunction(value = "svm_gc_prepare_heap_walk", transition = Transition.TO_NATIVE)
+    public static native boolean prepareHeapWalk(ShenandoahRegionBoundaries regionBoundaries);
+
+    @CFunction(value = "svm_gc_finish_heap_walk", transition = Transition.TO_NATIVE)
+    public static native void finishHeapWalk();
 
     @CFunction(value = "svm_gc_register_object_fields", transition = Transition.NO_TRANSITION)
     public static native void registerObjectFields(CodeInfo codeInfo);

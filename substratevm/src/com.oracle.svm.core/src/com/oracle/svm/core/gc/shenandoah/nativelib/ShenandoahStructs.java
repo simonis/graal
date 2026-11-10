@@ -58,6 +58,12 @@ public class ShenandoahStructs {
         @CField("cset_fast_test_address")
         Word csetFastTestAddress();
 
+        @CField("aux_bitmap_address")
+        Word auxBitmapAddress();
+
+        @CField("aux_bitmap_shift")
+        int auxBitmapShift();
+
         @CField("tlab_top_offset")
         int tlabTopOffset();
 

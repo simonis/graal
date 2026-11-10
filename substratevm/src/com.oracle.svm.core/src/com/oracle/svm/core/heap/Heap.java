@@ -265,6 +265,16 @@ public abstract class Heap {
     public abstract void dirtyAllReferencesOf(Object obj);
 
     /**
+     * Called right before the frames of the given {@link StoredContinuation} are copied back to a
+     * thread stack. GCs that need it (e.g., concurrently evacuating GCs) can apply load barriers to
+     * all references in the frames, because references on thread stacks must be up-to-date. The
+     * caller must remain uninterruptible until the frames are copied.
+     */
+    @Uninterruptible(reason = "No GC may occur between this call and copying the frames.", callerMustBe = true)
+    public void prepareStoredContinuationForThaw(@SuppressWarnings("unused") Object storedContinuation) {
+    }
+
+    /**
      * Notifies the collector that the referent of a {@link java.lang.ref.Reference} has just been
      * read (e.g. via {@link java.lang.ref.Reference#get()}). Concurrent-marking collectors must keep
      * the returned referent alive (an SATB "keep-alive" / referent-read barrier), so that a referent

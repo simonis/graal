@@ -31,6 +31,7 @@ import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.gc.shared.NativeGCOptions;
 import com.oracle.svm.core.threadlocal.VMThreadLocalOffsetProvider;
+import com.oracle.svm.shared.config.ObjectLayout;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.vm.ci.code.CodeUtil;
@@ -123,6 +124,15 @@ public class ShenandoahConstants {
     @Fold
     public static int logOfHeapRegionGrainBytes() {
         return CodeUtil.log2(ShenandoahRegionSize.getValue());
+    }
+
+    /**
+     * Log2 of the number of heap bytes per bit in the auxiliary bitmap used for heap walks,
+     * one bit per possible object start, i.e., per object alignment unit.
+     */
+    @Fold
+    public static int auxBitmapShift() {
+        return CodeUtil.log2(ObjectLayout.singleton().getAlignment());
     }
 
     /*

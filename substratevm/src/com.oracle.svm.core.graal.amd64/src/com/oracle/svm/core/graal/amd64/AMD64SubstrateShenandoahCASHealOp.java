@@ -30,7 +30,6 @@ import static jdk.vm.ci.code.ValueUtil.asRegister;
 
 import com.oracle.svm.core.ReservedRegisters;
 import com.oracle.svm.core.gc.shenandoah.ShenandoahConstants;
-import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
 
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.asm.amd64.AMD64Address;
@@ -42,7 +41,6 @@ import jdk.graal.compiler.core.common.spi.ForeignCallLinkage;
 import jdk.graal.compiler.lir.LIRInstructionClass;
 import jdk.graal.compiler.lir.Opcode;
 import jdk.graal.compiler.lir.amd64.AMD64AddressValue;
-import jdk.graal.compiler.lir.amd64.AMD64Call;
 import jdk.graal.compiler.lir.amd64.AMD64LIRInstruction;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 
@@ -117,6 +115,9 @@ public class AMD64SubstrateShenandoahCASHealOp extends AMD64LIRInstruction {
     /** The runtime stub that evacuates (if needed), resolves and heals the field. */
     private final ForeignCallLinkage callTarget;
 
+    /** How the slow path calls {@link #callTarget}. */
+    private final AMD64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall;
+
     /** Whether the reference field is a full machine word (8 bytes) vs. 32 bits. */
     private final boolean loadWordSized;
 
@@ -131,7 +132,7 @@ public class AMD64SubstrateShenandoahCASHealOp extends AMD64LIRInstruction {
     private final boolean canInlineCsetCheck;
 
     public AMD64SubstrateShenandoahCASHealOp(AMD64AddressValue address, AllocatableValue tmp, AllocatableValue tmp2, AllocatableValue tmp3, AllocatableValue tmp4,
-                    ForeignCallLinkage callTarget, boolean loadWordSized, int narrowShift, boolean canInlineCsetCheck) {
+                    ForeignCallLinkage callTarget, AMD64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall, boolean loadWordSized, int narrowShift, boolean canInlineCsetCheck) {
         super(TYPE);
         this.address = address;
         this.tmp = tmp;
@@ -141,6 +142,7 @@ public class AMD64SubstrateShenandoahCASHealOp extends AMD64LIRInstruction {
         this.callArg = callTarget.getOutgoingCallingConvention().getArgument(0);
         this.raxTemp = AMD64.rax.asValue(LIRKind.value(AMD64Kind.QWORD));
         this.callTarget = callTarget;
+        this.stubCall = stubCall;
         this.loadWordSized = loadWordSized;
         this.narrowShift = narrowShift;
         this.canInlineCsetCheck = canInlineCsetCheck;
@@ -233,7 +235,7 @@ public class AMD64SubstrateShenandoahCASHealOp extends AMD64LIRInstruction {
         crb.getLIR().addSlowPath(this, () -> {
             masm.bind(slowPath);
             masm.leaq(asRegister(callArg), fieldAddr);
-            AMD64Call.directCall(crb, masm, ((SubstrateForeignCallLinkage) callTarget).getMethod(), null, false, null);
+            stubCall.emit(crb, masm, rtmp);
             masm.jmp(done);
         });
     }

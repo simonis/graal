@@ -78,6 +78,13 @@ public interface GuestStagingDependencyBridge {
     boolean useG1GC();
 
     /**
+     * Delegates to {@code com.oracle.svm.core.SubstrateOptions.useShenandoahGC()}.
+     * <p>
+     * Remove this method when GC selection becomes guest-owned.
+     */
+    boolean useShenandoahGC();
+
+    /**
      * Delegates to
      * {@code com.oracle.svm.core.heap.ReferenceAccess.singleton().getMaxAddressSpaceSize()}.
      * <p>

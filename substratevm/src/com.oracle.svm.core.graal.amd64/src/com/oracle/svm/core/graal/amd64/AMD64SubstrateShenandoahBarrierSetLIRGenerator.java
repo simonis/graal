@@ -25,15 +25,27 @@
 package com.oracle.svm.core.graal.amd64;
 
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.core.ReservedRegisters;
+import com.oracle.svm.core.code.ImageCodeInfoProvider;
 import com.oracle.svm.core.gc.shenandoah.graal.ShenandoahBarrierSupport;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
+import com.oracle.svm.core.graal.meta.KnownOffsets;
+import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
+import com.oracle.svm.jvmci.shared.meta.SharedMethod;
+import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
+import jdk.graal.compiler.asm.amd64.AMD64Address;
+import jdk.graal.compiler.asm.amd64.AMD64MacroAssembler;
 import jdk.graal.compiler.core.amd64.AMD64LIRGenerator;
 import jdk.graal.compiler.core.amd64.AMD64ReadBarrierSetLIRGenerator;
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.LIRKind;
+import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.core.common.memory.BarrierType;
 import jdk.graal.compiler.core.common.memory.MemoryExtendKind;
 import jdk.graal.compiler.core.common.memory.MemoryOrderMode;
@@ -42,11 +54,14 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.LIRFrameState;
 import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.amd64.AMD64AddressValue;
+import jdk.graal.compiler.lir.amd64.AMD64Call;
 import jdk.graal.compiler.lir.amd64.AMD64Move.CompareAndSwapOp;
+import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.lir.gen.LIRGeneratorTool;
 import jdk.graal.compiler.lir.gen.ShenandoahBarrierSetLIRGeneratorTool;
 import jdk.graal.compiler.nodes.gc.shenandoah.ShenandoahLoadRefBarrierNode;
 import jdk.vm.ci.amd64.AMD64Kind;
+import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.Value;
@@ -69,6 +84,58 @@ import jdk.vm.ci.meta.Value;
  */
 public class AMD64SubstrateShenandoahBarrierSetLIRGenerator implements ShenandoahBarrierSetLIRGeneratorTool, AMD64ReadBarrierSetLIRGenerator {
 
+    /**
+     * How a barrier slow path calls its runtime stub.
+     * <p>
+     * AOT-compiled code calls the stub directly. Runtime-compiled code (e.g., Truffle JIT code) must
+     * not contain direct calls, because it is not patched when it is installed (see
+     * {@code RuntimeCodeInstaller}). Other foreign calls in such code are therefore emitted as
+     * indirect calls whose target is computed from the code start of the image code (see
+     * {@code SubstrateAMD64LIRGenerator.emitIndirectForeignCallAddress}). The barrier slow paths do
+     * the same, but only on the slow path, so that the inlined fast paths stay as cheap as in AOT
+     * code: the image code info object is in the image heap, which is at a fixed displacement from
+     * the heap base, so its code start can be loaded with a single heap-base-relative load.
+     */
+    static final class StubCall {
+        private final SharedMethod target;
+        private final boolean indirect;
+        /** Displacement of the code start field of the stub's image code info from the heap base. */
+        private final int codeStartDisplacement;
+        /** Offset of the stub in the image code. */
+        private final int codeOffset;
+
+        private StubCall(SharedMethod target, boolean indirect, int codeStartDisplacement, int codeOffset) {
+            this.target = target;
+            this.indirect = indirect;
+            this.codeStartDisplacement = codeStartDisplacement;
+            this.codeOffset = codeOffset;
+        }
+
+        static StubCall create(ForeignCallLinkage linkage) {
+            SharedMethod target = (SharedMethod) ((SubstrateForeignCallLinkage) linkage).getMethod();
+            if (SubstrateUtil.HOSTED || !SubstrateBackend.shouldEmitOnlyIndirectCalls()) {
+                return new StubCall(target, false, 0, 0);
+            }
+            /* Runtime compilation: this code runs in the image, so the image heap is mapped. */
+            Object imageCodeInfo = ImageCodeInfoProvider.getImageCodeInfo(target);
+            long displacement = Word.objectToUntrackedPointer(imageCodeInfo).subtract(KnownIntrinsics.heapBase()).rawValue() +
+                            KnownOffsets.singleton().getImageCodeInfoCodeStartOffset();
+            GraalError.guarantee(NumUtil.isInt(displacement), "image code info too far from the heap base: %d", displacement);
+            return new StubCall(target, true, (int) displacement, target.getImageCodeOffset());
+        }
+
+        /** Emits the call. {@code scratch} may be clobbered and must not be an argument register. */
+        void emit(CompilationResultBuilder crb, AMD64MacroAssembler masm, Register scratch) {
+            if (!indirect) {
+                AMD64Call.directCall(crb, masm, target, null, false, null);
+            } else {
+                masm.movq(scratch, new AMD64Address(ReservedRegisters.singleton().getHeapBaseRegister(), codeStartDisplacement));
+                masm.addq(scratch, codeOffset);
+                AMD64Call.indirectCall(crb, masm, scratch, target, null);
+            }
+        }
+    }
+
     @Override
     public Value emitLoadReferenceBarrier(LIRGeneratorTool tool, Value obj, Value address, ShenandoahLoadRefBarrierNode.ReferenceStrength strength, boolean narrow, boolean notNull) {
         /*
@@ -89,7 +156,7 @@ public class AMD64SubstrateShenandoahBarrierSetLIRGenerator implements Shenandoa
         AllocatableValue tmp = tool.newVariable(LIRKind.value(AMD64Kind.QWORD));
         AllocatableValue tmp2 = tool.newVariable(LIRKind.value(AMD64Kind.QWORD));
         tool.getResult().getFrameMapBuilder().callsMethod(linkage.getOutgoingCallingConvention());
-        tool.append(new AMD64SubstrateShenandoahLoadRefBarrierOp(result, tool.asAllocatable(obj), loadAddress, tmp, tmp2, linkage, strength, notNull));
+        tool.append(new AMD64SubstrateShenandoahLoadRefBarrierOp(result, tool.asAllocatable(obj), loadAddress, tmp, tmp2, linkage, StubCall.create(linkage), strength, notNull));
         return result;
     }
 
@@ -126,7 +193,7 @@ public class AMD64SubstrateShenandoahBarrierSetLIRGenerator implements Shenandoa
         // shift) inline when enqueuing it into the SATB buffer. It is 0 on Graal CE.
         int narrowShift = ImageSingletons.lookup(CompressEncoding.class).getShift();
         tool.getResult().getFrameMapBuilder().callsMethod(linkage.getOutgoingCallingConvention());
-        tool.append(new AMD64SubstrateShenandoahSATBBarrierOp(addr, tmp, preval, buf, preValue, linkage, loadWordSized, useNarrow, narrowShift, nonNull));
+        tool.append(new AMD64SubstrateShenandoahSATBBarrierOp(addr, tmp, preval, buf, preValue, linkage, StubCall.create(linkage), loadWordSized, useNarrow, narrowShift, nonNull));
     }
 
     @Override
@@ -194,7 +261,7 @@ public class AMD64SubstrateShenandoahBarrierSetLIRGenerator implements Shenandoa
         AllocatableValue tmp3 = tool.newVariable(LIRKind.value(AMD64Kind.QWORD));
         AllocatableValue tmp4 = tool.newVariable(LIRKind.value(AMD64Kind.QWORD));
         tool.getResult().getFrameMapBuilder().callsMethod(healLinkage.getOutgoingCallingConvention());
-        tool.append(new AMD64SubstrateShenandoahCASHealOp(address, tmp, tmp2, tmp3, tmp4, healLinkage, loadWordSized, narrowShift, canInlineCsetCheck));
+        tool.append(new AMD64SubstrateShenandoahCASHealOp(address, tmp, tmp2, tmp3, tmp4, healLinkage, StubCall.create(healLinkage), loadWordSized, narrowShift, canInlineCsetCheck));
     }
 
     @Override

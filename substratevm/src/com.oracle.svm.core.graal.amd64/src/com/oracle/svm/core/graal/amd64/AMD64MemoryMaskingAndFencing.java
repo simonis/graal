@@ -106,6 +106,7 @@ public class AMD64MemoryMaskingAndFencing {
         private static void validateMemoryMaskingAndFencing(RuntimeOptionKey<Boolean> optionKey) {
             RuntimeOptionValidators.onlyEnabledOnAMD64(optionKey);
             RuntimeOptionValidators.notEnabledWithG1(optionKey);
+            RuntimeOptionValidators.notEnabledWithShenandoah(optionKey);
         }
     }
 }
@@ -122,10 +123,10 @@ class AMD64MemoryMaskingAndFencingFeature implements InternalFeature {
              * for host compilation.
              */
             return;
-        } else if (SubstrateOptions.useG1GC()) {
+        } else if (SubstrateOptions.useG1GC() || SubstrateOptions.useShenandoahGC()) {
             /*
-             * The mitigation is not compatible with G1. Also, when only 1 isolate is used (G1 case)
-             * the mitigation is not needed.
+             * The mitigation is not compatible with G1 and Shenandoah. Also, when only 1 isolate is
+             * used (G1 and Shenandoah case) the mitigation is not needed.
              */
             return;
         }

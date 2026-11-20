@@ -86,4 +86,9 @@ public final class RuntimeOptionValidators {
         }
     }
 
+    public static void notEnabledWithShenandoah(RuntimeOptionKey<Boolean> optionKey) {
+        if (GuestStagingDependencyBridge.singleton().useShenandoahGC() && optionKey.getValue()) {
+            throw RuntimeOptionValidation.invalidOptionValue(optionKey, true, "The option is not supported when using Shenandoah");
+        }
+    }
 }

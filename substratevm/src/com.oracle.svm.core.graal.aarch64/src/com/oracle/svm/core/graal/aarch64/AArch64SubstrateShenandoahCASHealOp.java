@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.core.graal.aarch64;
 
-import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.callStub;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.heapBaseRegister;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.linkRegisterValue;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.loadThreadLocal;
@@ -93,6 +92,9 @@ public class AArch64SubstrateShenandoahCASHealOp extends AArch64LIRInstruction {
 
     private final ForeignCallLinkage callTarget;
 
+    /** How the slow path calls {@link #callTarget}. */
+    private final AArch64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall;
+
     /** Whether the reference field is a full machine word (8 bytes) vs. 32 bits. */
     private final boolean loadWordSized;
 
@@ -103,7 +105,8 @@ public class AArch64SubstrateShenandoahCASHealOp extends AArch64LIRInstruction {
     private final boolean canInlineCsetCheck;
 
     public AArch64SubstrateShenandoahCASHealOp(AllocatableValue address, AllocatableValue tmp, AllocatableValue tmp2, AllocatableValue tmp3, AllocatableValue tmp4,
-                    ForeignCallLinkage callTarget, boolean loadWordSized, int narrowShift, boolean canInlineCsetCheck) {
+                    ForeignCallLinkage callTarget, AArch64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall, boolean loadWordSized, int narrowShift,
+                    boolean canInlineCsetCheck) {
         super(TYPE);
         this.address = address;
         this.tmp = tmp;
@@ -113,6 +116,7 @@ public class AArch64SubstrateShenandoahCASHealOp extends AArch64LIRInstruction {
         this.callArg = callTarget.getOutgoingCallingConvention().getArgument(0);
         this.linkReg = linkRegisterValue();
         this.callTarget = callTarget;
+        this.stubCall = stubCall;
         this.loadWordSized = loadWordSized;
         this.narrowShift = narrowShift;
         this.canInlineCsetCheck = canInlineCsetCheck;
@@ -186,7 +190,7 @@ public class AArch64SubstrateShenandoahCASHealOp extends AArch64LIRInstruction {
         crb.getLIR().addSlowPath(this, () -> {
             masm.bind(slowPath);
             masm.mov(64, asRegister(callArg), addr);
-            callStub(crb, masm, callTarget);
+            stubCall.emit(crb, masm);
             masm.jmp(done);
         });
     }

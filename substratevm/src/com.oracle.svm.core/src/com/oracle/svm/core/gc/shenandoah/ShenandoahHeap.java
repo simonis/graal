@@ -60,6 +60,7 @@ import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.code.RuntimeCodeInfoMemory;
+import com.oracle.svm.core.code.RuntimeCodeInstallation;
 import com.oracle.svm.core.config.ObjectLayoutCompilerSupport;
 import com.oracle.svm.shared.config.ObjectLayout;
 import com.oracle.svm.core.gc.shared.NativeGCStackWalker;
@@ -72,7 +73,6 @@ import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahLibrary;
 import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahStructs.ShenandoahInitState;
 import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahStructs.ShenandoahInternalState;
 import com.oracle.svm.core.gc.shenandoah.nativelib.ShenandoahStructs.ShenandoahRegionInfo;
-import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.guest.staging.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.heap.FillerArray;
 import com.oracle.svm.core.heap.FillerObject;
@@ -248,7 +248,7 @@ public final class ShenandoahHeap extends Heap {
 
     @Uninterruptible(reason = "Called during startup.")
     private static Word getClassesAssumedReachableForCodeUnloading() {
-        if (RuntimeCompilation.isEnabled()) {
+        if (RuntimeCodeInstallation.isEnabled()) {
             return Word.objectToUntrackedWord(CLASSES_ASSUMED_REACHABLE);
         }
         return Word.nullPointer();

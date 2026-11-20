@@ -100,6 +100,11 @@ final class GuestStagingDependencyBridgeImpl implements GuestStagingDependencyBr
     }
 
     @Override
+    public boolean useShenandoahGC() {
+        return SubstrateOptions.useShenandoahGC();
+    }
+
+    @Override
     public UnsignedWord getMaxHeapAddressSpaceSize() {
         return ReferenceAccess.singleton().getMaxAddressSpaceSize();
     }

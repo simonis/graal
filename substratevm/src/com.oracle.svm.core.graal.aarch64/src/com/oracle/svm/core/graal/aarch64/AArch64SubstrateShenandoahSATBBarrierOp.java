@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.core.graal.aarch64;
 
-import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.callStub;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.heapBaseRegister;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.linkRegisterValue;
 import static com.oracle.svm.core.graal.aarch64.AArch64SubstrateShenandoahBarrierUtil.loadThreadLocal;
@@ -93,6 +92,9 @@ public class AArch64SubstrateShenandoahSATBBarrierOp extends AArch64LIRInstructi
 
     private final ForeignCallLinkage callTarget;
 
+    /** How the slow path calls {@link #callTarget}. */
+    private final AArch64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall;
+
     /** Whether the field value is a full 64-bit word (vs. a 32-bit compressed reference). */
     private final boolean loadWordSized;
 
@@ -106,7 +108,8 @@ public class AArch64SubstrateShenandoahSATBBarrierOp extends AArch64LIRInstructi
     private final boolean nonNull;
 
     public AArch64SubstrateShenandoahSATBBarrierOp(AArch64AddressValue address, AllocatableValue tmp, AllocatableValue preval, AllocatableValue buf,
-                    AllocatableValue preValue, ForeignCallLinkage callTarget, boolean loadWordSized, boolean narrow, int narrowShift, boolean nonNull) {
+                    AllocatableValue preValue, ForeignCallLinkage callTarget, AArch64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall, boolean loadWordSized, boolean narrow,
+                    int narrowShift, boolean nonNull) {
         super(TYPE);
         this.address = address;
         this.tmp = tmp;
@@ -116,6 +119,7 @@ public class AArch64SubstrateShenandoahSATBBarrierOp extends AArch64LIRInstructi
         this.callArg = callTarget.getOutgoingCallingConvention().getArgument(0);
         this.linkReg = linkRegisterValue();
         this.callTarget = callTarget;
+        this.stubCall = stubCall;
         this.loadWordSized = loadWordSized;
         this.narrow = narrow;
         this.narrowShift = narrowShift;
@@ -187,7 +191,7 @@ public class AArch64SubstrateShenandoahSATBBarrierOp extends AArch64LIRInstructi
         crb.getLIR().addSlowPath(this, () -> {
             masm.bind(runtime);
             masm.mov(valueBits, asRegister(callArg), rpre);
-            callStub(crb, masm, callTarget);
+            stubCall.emit(crb, masm);
             masm.jmp(done);
         });
     }

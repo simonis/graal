@@ -31,7 +31,6 @@ import static jdk.vm.ci.code.ValueUtil.asRegister;
 
 import com.oracle.svm.core.ReservedRegisters;
 import com.oracle.svm.core.gc.shenandoah.ShenandoahConstants;
-import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
 
 import jdk.graal.compiler.asm.Label;
 import jdk.graal.compiler.asm.amd64.AMD64Address;
@@ -42,7 +41,6 @@ import jdk.graal.compiler.core.common.spi.ForeignCallLinkage;
 import jdk.graal.compiler.lir.LIRInstructionClass;
 import jdk.graal.compiler.lir.Opcode;
 import jdk.graal.compiler.lir.amd64.AMD64AddressValue;
-import jdk.graal.compiler.lir.amd64.AMD64Call;
 import jdk.graal.compiler.lir.amd64.AMD64LIRInstruction;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 
@@ -99,6 +97,9 @@ public class AMD64SubstrateShenandoahSATBBarrierOp extends AMD64LIRInstruction {
     /** The runtime stub that enqueues the previous value (narrow or wide variant). */
     private final ForeignCallLinkage callTarget;
 
+    /** How the slow path calls {@link #callTarget}. */
+    private final AMD64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall;
+
     /**
      * Whether the previous value must be loaded from the field and passed to the stub as a full
      * machine word (8 bytes) rather than a 32-bit value. True for uncompressed (wide) references,
@@ -117,7 +118,8 @@ public class AMD64SubstrateShenandoahSATBBarrierOp extends AMD64LIRInstruction {
     private final boolean nonNull;
 
     public AMD64SubstrateShenandoahSATBBarrierOp(AMD64AddressValue address, AllocatableValue tmp, AllocatableValue preval, AllocatableValue buf,
-                    AllocatableValue preValue, ForeignCallLinkage callTarget, boolean loadWordSized, boolean narrow, int narrowShift, boolean nonNull) {
+                    AllocatableValue preValue, ForeignCallLinkage callTarget, AMD64SubstrateShenandoahBarrierSetLIRGenerator.StubCall stubCall, boolean loadWordSized, boolean narrow, int narrowShift,
+                    boolean nonNull) {
         super(TYPE);
         this.address = address;
         this.tmp = tmp;
@@ -126,6 +128,7 @@ public class AMD64SubstrateShenandoahSATBBarrierOp extends AMD64LIRInstruction {
         this.preValue = preValue;
         this.callArg = callTarget.getOutgoingCallingConvention().getArgument(0);
         this.callTarget = callTarget;
+        this.stubCall = stubCall;
         this.loadWordSized = loadWordSized;
         this.narrow = narrow;
         this.narrowShift = narrowShift;
@@ -226,7 +229,7 @@ public class AMD64SubstrateShenandoahSATBBarrierOp extends AMD64LIRInstruction {
             } else {
                 masm.movl(arg0, rpre);
             }
-            AMD64Call.directCall(crb, masm, ((SubstrateForeignCallLinkage) callTarget).getMethod(), null, false, null);
+            stubCall.emit(crb, masm, rtmp);
             masm.jmp(done);
         });
     }

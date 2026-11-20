@@ -25,16 +25,28 @@
 package com.oracle.svm.core.graal.aarch64;
 
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.core.ReservedRegisters;
+import com.oracle.svm.core.code.ImageCodeInfoProvider;
 import com.oracle.svm.core.gc.shenandoah.graal.ShenandoahBarrierSupport;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
+import com.oracle.svm.core.graal.meta.KnownOffsets;
+import com.oracle.svm.core.graal.meta.SubstrateForeignCallLinkage;
 import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
+import com.oracle.svm.guest.staging.core.graal.KnownIntrinsics;
+import com.oracle.svm.jvmci.shared.meta.SharedMethod;
+import com.oracle.svm.shared.config.ObjectLayout;
+import com.oracle.svm.shared.util.SubstrateUtil;
 
 import jdk.graal.compiler.asm.aarch64.AArch64Address;
+import jdk.graal.compiler.asm.aarch64.AArch64MacroAssembler;
+import jdk.graal.compiler.asm.aarch64.AArch64MacroAssembler.ScratchRegister;
 import jdk.graal.compiler.core.aarch64.AArch64LIRGenerator;
 import jdk.graal.compiler.core.aarch64.AArch64ReadBarrierSetLIRGenerator;
 import jdk.graal.compiler.core.common.CompressEncoding;
 import jdk.graal.compiler.core.common.LIRKind;
+import jdk.graal.compiler.core.common.NumUtil;
 import jdk.graal.compiler.core.common.memory.BarrierType;
 import jdk.graal.compiler.core.common.memory.MemoryExtendKind;
 import jdk.graal.compiler.core.common.memory.MemoryOrderMode;
@@ -44,10 +56,13 @@ import jdk.graal.compiler.lir.LIRFrameState;
 import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.aarch64.AArch64AddressValue;
 import jdk.graal.compiler.lir.aarch64.AArch64AtomicMove.CompareAndSwapOp;
+import jdk.graal.compiler.lir.aarch64.AArch64Call;
+import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
 import jdk.graal.compiler.lir.gen.LIRGeneratorTool;
 import jdk.graal.compiler.lir.gen.ShenandoahBarrierSetLIRGeneratorTool;
 import jdk.graal.compiler.nodes.gc.shenandoah.ShenandoahLoadRefBarrierNode;
 import jdk.vm.ci.aarch64.AArch64Kind;
+import jdk.vm.ci.code.Register;
 import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.Value;
 
@@ -74,6 +89,68 @@ import jdk.vm.ci.meta.Value;
  */
 public class AArch64SubstrateShenandoahBarrierSetLIRGenerator implements ShenandoahBarrierSetLIRGeneratorTool, AArch64ReadBarrierSetLIRGenerator {
 
+    /**
+     * How a barrier slow path calls its runtime stub (the AArch64 counterpart of
+     * {@code AMD64SubstrateShenandoahBarrierSetLIRGenerator.StubCall}).
+     * <p>
+     * AOT-compiled code calls the stub directly. Runtime-compiled code (e.g., Truffle JIT code) must
+     * not contain direct calls, because it is not patched when it is installed (see
+     * {@code RuntimeCodeInstaller}). Other foreign calls in such code are therefore emitted as
+     * indirect calls whose target is computed from the code start of the image code (see
+     * {@code SubstrateAArch64LIRGenerator.emitIndirectForeignCallAddress}). The barrier slow paths do
+     * the same, but only on the slow path, so that the inlined fast paths stay as cheap as in AOT
+     * code: the image code info object is in the image heap, which is at a fixed displacement from
+     * the heap base, so its code start can be loaded with a heap-base-relative load.
+     */
+    static final class StubCall {
+        private final SharedMethod target;
+        private final boolean indirect;
+        /** Displacement of the code start field of the stub's image code info from the heap base. */
+        private final int codeStartDisplacement;
+        /** Offset of the stub in the image code. */
+        private final int codeOffset;
+
+        private StubCall(SharedMethod target, boolean indirect, int codeStartDisplacement, int codeOffset) {
+            this.target = target;
+            this.indirect = indirect;
+            this.codeStartDisplacement = codeStartDisplacement;
+            this.codeOffset = codeOffset;
+        }
+
+        static StubCall create(ForeignCallLinkage linkage) {
+            SharedMethod target = (SharedMethod) ((SubstrateForeignCallLinkage) linkage).getMethod();
+            if (SubstrateUtil.HOSTED || !SubstrateBackend.shouldEmitOnlyIndirectCalls()) {
+                return new StubCall(target, false, 0, 0);
+            }
+            /* Runtime compilation: this code runs in the image, so the image heap is mapped. */
+            Object imageCodeInfo = ImageCodeInfoProvider.getImageCodeInfo(target);
+            long displacement = Word.objectToUntrackedPointer(imageCodeInfo).subtract(KnownIntrinsics.heapBase()).rawValue() +
+                            KnownOffsets.singleton().getImageCodeInfoCodeStartOffset();
+            GraalError.guarantee(NumUtil.isInt(displacement), "image code info too far from the heap base: %d", displacement);
+            return new StubCall(target, true, (int) displacement, target.getImageCodeOffset());
+        }
+
+        /**
+         * Emits the call. All SubstrateVM direct calls are within +-128 MB, so a plain {@code bl}
+         * suffices for them (see SubstrateAArch64DirectCallOp). The indirect call only uses the
+         * assembler scratch registers, which are neither allocatable nor argument registers.
+         */
+        void emit(CompilationResultBuilder crb, AArch64MacroAssembler masm) {
+            if (!indirect) {
+                AArch64Call.directCall(crb, masm, target, null, null);
+                return;
+            }
+            try (ScratchRegister sc1 = masm.getScratchRegister(); ScratchRegister sc2 = masm.getScratchRegister()) {
+                Register address = sc1.getRegister();
+                Register scratch = sc2.getRegister();
+                masm.ldr(64, address, masm.makeAddress(64, ReservedRegisters.singleton().getHeapBaseRegister(), codeStartDisplacement, scratch));
+                masm.mov(scratch, codeOffset);
+                masm.add(64, address, address, scratch);
+                AArch64Call.indirectCall(crb, masm, address, target, null);
+            }
+        }
+    }
+
     private static AArch64AddressValue asAddress(LIRGeneratorTool tool, Value address) {
         return ((AArch64LIRGenerator) tool).asAddressValue(address, AArch64Address.ANY_SIZE);
     }
@@ -95,7 +172,7 @@ public class AArch64SubstrateShenandoahBarrierSetLIRGenerator implements Shenand
         AllocatableValue tmp = tool.newVariable(LIRKind.value(AArch64Kind.QWORD));
         AllocatableValue tmp2 = tool.newVariable(LIRKind.value(AArch64Kind.QWORD));
         tool.getResult().getFrameMapBuilder().callsMethod(linkage.getOutgoingCallingConvention());
-        tool.append(new AArch64SubstrateShenandoahLoadRefBarrierOp(result, tool.asAllocatable(obj), loadAddress, tmp, tmp2, linkage, strength, notNull));
+        tool.append(new AArch64SubstrateShenandoahLoadRefBarrierOp(result, tool.asAllocatable(obj), loadAddress, tmp, tmp2, linkage, StubCall.create(linkage), strength, notNull));
         return result;
     }
 
@@ -122,7 +199,7 @@ public class AArch64SubstrateShenandoahBarrierSetLIRGenerator implements Shenand
         boolean loadWordSized = !useNarrow || ObjectLayout.singleton().getReferenceSize() == 8;
         int narrowShift = ImageSingletons.lookup(CompressEncoding.class).getShift();
         tool.getResult().getFrameMapBuilder().callsMethod(linkage.getOutgoingCallingConvention());
-        tool.append(new AArch64SubstrateShenandoahSATBBarrierOp(addr, tmp, preval, buf, preValue, linkage, loadWordSized, useNarrow, narrowShift, nonNull));
+        tool.append(new AArch64SubstrateShenandoahSATBBarrierOp(addr, tmp, preval, buf, preValue, linkage, StubCall.create(linkage), loadWordSized, useNarrow, narrowShift, nonNull));
     }
 
     @Override
@@ -177,7 +254,7 @@ public class AArch64SubstrateShenandoahBarrierSetLIRGenerator implements Shenand
         AllocatableValue tmp3 = tool.newVariable(LIRKind.value(AArch64Kind.QWORD));
         AllocatableValue tmp4 = tool.newVariable(LIRKind.value(AArch64Kind.QWORD));
         tool.getResult().getFrameMapBuilder().callsMethod(healLinkage.getOutgoingCallingConvention());
-        tool.append(new AArch64SubstrateShenandoahCASHealOp(address, tmp, tmp2, tmp3, tmp4, healLinkage, wordSized, oopEncoding.getShift(), oopEncoding.hasBase()));
+        tool.append(new AArch64SubstrateShenandoahCASHealOp(address, tmp, tmp2, tmp3, tmp4, healLinkage, StubCall.create(healLinkage), wordSized, oopEncoding.getShift(), oopEncoding.hasBase()));
     }
 
     @Override
